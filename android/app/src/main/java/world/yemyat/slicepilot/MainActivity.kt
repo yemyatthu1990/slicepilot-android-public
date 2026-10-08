@@ -7,17 +7,19 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import world.yemyat.slicepilot.cloud.ElegooCloudClient
 import world.yemyat.slicepilot.tracking.CrashlyticsEventTracker
 import world.yemyat.slicepilot.tracking.EventNotifier
 import world.yemyat.slicepilot.tracking.FirebaseEventTracker
 import world.yemyat.slicepilot.tracking.LogcatEventTracker
 import world.yemyat.slicepilot.ui.*
+import world.yemyat.slicepilot.ui.components.SpiritedBackground
 import world.yemyat.slicepilot.ui.theme.ElegooSlicerTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -49,9 +51,12 @@ class MainActivity : ComponentActivity() {
         handleIncomingModel(intent)
         maybeRunHeadlessSlice()
         setContent {
-            ElegooSlicerTheme {
-                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    AppRoot(vm)
+            ElegooSlicerTheme(darkTheme = false) {
+                Box(Modifier.fillMaxSize()) {
+                    SpiritedBackground(Modifier.fillMaxSize())
+                    Surface(Modifier.fillMaxSize(), color = Color.Transparent) {
+                        AppRoot(vm)
+                    }
                 }
             }
         }

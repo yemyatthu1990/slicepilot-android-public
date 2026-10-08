@@ -2,39 +2,62 @@ package world.yemyat.slicepilot.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Brand palette (Elegoo-inspired blue / cyan)
-val Blue800 = Color(0xFF0D47A1)
-val Blue600 = Color(0xFF1565C0)
-val Blue400 = Color(0xFF42A5F5)
-val Blue200 = Color(0xFF90CAF9)
-val Blue100 = Color(0xFFD6E3FF)
+// Spirited-away-inspired cartoon palette
+val PaperCream = Color(0xFFFFF7E8)
+val WashiWhite = Color(0xFFFFFBF2)
+val SumiInk = Color(0xFF1F1B1A)
+val Vermillion = Color(0xFFD94F3D)
+val LanternGold = Color(0xFFE8B84B)
+val RiverTeal = Color(0xFF2E7D74)
+val IndigoNight = Color(0xFF243B53)
+val SakuraPink = Color(0xFFF6C6CE)
+val MossGreen = Color(0xFF7A9A6D)
+val PlumMist = Color(0xFF7A5C86)
 
-val Cyan700 = Color(0xFF00838F)
-val Cyan200 = Color(0xFFB8EDF1)
+val LightSurfaceWarm = Color(0xFFF1E4D2)
+val LightOnSurfaceWarm = Color(0xFF6B5B4F)
+val LightOutlineWarm = Color(0xFF8A7565)
 
-val Violet500 = Color(0xFF6750A4)
-val Violet200 = Color(0xFFE6DEFF)
+val NightBackground = Color(0xFF121418)
+val NightSurface = Color(0xFF1B1F24)
+val NightSurfaceVariant = Color(0xFF2A2F36)
+val NightOnBackground = Color(0xFFF5E9D8)
+val NightOnSurfaceVariant = Color(0xFFD5C5B2)
+val NightOutline = Color(0xFF9A8A78)
 
-val Green600 = Color(0xFF2E7D32)
-val Green200 = Color(0xFFB6F0BA)
+// Compatibility aliases for existing screens
+val Blue800 = IndigoNight
+val Blue600 = Vermillion
+val Blue400 = LanternGold
+val Blue200 = SakuraPink
+val Blue100 = Color(0xFFFFE8C8)
 
-val Red600 = Color(0xFFBA1A1A)
-val Red200 = Color(0xFFFFDAD6)
+val Cyan700 = RiverTeal
+val Cyan200 = Color(0xFFBFE7E1)
+
+val Violet500 = PlumMist
+val Violet200 = Color(0xFFEADCF2)
+
+val Green600 = MossGreen
+val Green200 = Color(0xFFD8EAD1)
+
+val Red600 = Vermillion
+val Red200 = Color(0xFFFFDAD2)
 
 // Light neutrals
-val LightBackground = Color(0xFFF7F9FF)
-val LightSurface = Color(0xFFF7F9FF)
-val LightSurfaceVariant = Color(0xFFDEE3EB)
-val LightOnBackground = Color(0xFF1A1C1E)
-val LightOnSurface = Color(0xFF1A1C1E)
-val LightOnSurfaceVariant = Color(0xFF42474E)
-val LightOutline = Color(0xFF72777F)
+val LightBackground = PaperCream
+val LightSurface = WashiWhite
+val LightSurfaceVariant = LightSurfaceWarm
+val LightOnBackground = SumiInk
+val LightOnSurface = SumiInk
+val LightOnSurfaceVariant = LightOnSurfaceWarm
+val LightOutline = LightOutlineWarm
 
 // Dark neutrals
-val DarkBackground = Color(0xFF101418)
-val DarkSurface = Color(0xFF101418)
-val DarkSurfaceVariant = Color(0xFF2C3138)
-val DarkOnBackground = Color(0xFFE2E2E9)
-val DarkOnSurface = Color(0xFFE2E2E9)
-val DarkOnSurfaceVariant = Color(0xFFC2C7CF)
-val DarkOutline = Color(0xFF8C9199)
+val DarkBackground = NightBackground
+val DarkSurface = NightSurface
+val DarkSurfaceVariant = NightSurfaceVariant
+val DarkOnBackground = NightOnBackground
+val DarkOnSurface = NightOnBackground
+val DarkOnSurfaceVariant = NightOnSurfaceVariant
+val DarkOutline = NightOutline

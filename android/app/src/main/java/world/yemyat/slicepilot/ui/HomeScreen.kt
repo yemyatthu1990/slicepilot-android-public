@@ -1,5 +1,6 @@
 package world.yemyat.slicepilot.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -55,7 +56,7 @@ fun HomeScreen(
     val selectedPrinter by vm.selectedPrinterState.collectAsState()
     val availablePrinters by vm.availablePrinters.collectAsState()
 
-    Scaffold { padding ->
+    Scaffold(containerColor = Color.Transparent) { padding ->
         Column(
             modifier = Modifier
                 .padding(padding)
@@ -68,13 +69,13 @@ fun HomeScreen(
             BrandWordmark()
             Spacer(Modifier.height(18.dp))
             Text(
-                "Make anything.",
-                fontSize = 40.sp,
+                "Slice with a little magic.",
+                fontSize = 38.sp,
                 fontWeight = FontWeight.Bold,
-                letterSpacing = (-1).sp,
+                letterSpacing = (-0.8).sp,
             )
             Text(
-                "Slice your models for your 3D printer.",
+                "A cute little slicer for your next 3D print.",
                 fontSize = 17.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -322,13 +323,15 @@ fun BigCard(
     subtitle: String,
     onClick: () -> Unit,
 ) {
+    val shape = RoundedCornerShape(28.dp)
     Surface(
-        shape = RoundedCornerShape(24.dp),
-        color = MaterialTheme.colorScheme.surface,
+        shape = shape,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+        border = BorderStroke(1.dp, LanternGold.copy(alpha = 0.22f)),
         tonalElevation = 2.dp,
-        shadowElevation = 4.dp,
+        shadowElevation = 8.dp,
         modifier = modifier
-            .clip(RoundedCornerShape(24.dp))
+            .clip(shape)
             .clickable(onClick = onClick),
     ) {
         Column(
@@ -337,9 +340,10 @@ fun BigCard(
         ) {
             Box(
                 modifier = Modifier
-                    .size(56.dp)
+                    .size(58.dp)
                     .clip(CircleShape)
-                    .background(iconBg),
+                    .background(iconBg)
+                    .border(1.dp, LanternGold.copy(alpha = 0.18f), CircleShape),
                 contentAlignment = Alignment.Center,
             ) { icon() }
             Text(title, fontSize = 18.sp, fontWeight = FontWeight.Bold)

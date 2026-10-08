@@ -3,11 +3,14 @@ package world.yemyat.slicepilot.ui.theme
 import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
@@ -17,55 +20,63 @@ import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
 private val LightColors = lightColorScheme(
-    primary = Blue600,
+    primary = Vermillion,
     onPrimary = Color.White,
-    primaryContainer = Blue100,
-    onPrimaryContainer = Color(0xFF001B3B),
-    secondary = Cyan700,
+    primaryContainer = Color(0xFFFFE0D8),
+    onPrimaryContainer = Color(0xFF410B05),
+    secondary = RiverTeal,
     onSecondary = Color.White,
-    secondaryContainer = Cyan200,
-    onSecondaryContainer = Color(0xFF002023),
-    tertiary = Violet500,
-    onTertiary = Color.White,
-    tertiaryContainer = Violet200,
-    onTertiaryContainer = Color(0xFF22005D),
+    secondaryContainer = Color(0xFFC9EFE8),
+    onSecondaryContainer = Color(0xFF00201D),
+    tertiary = LanternGold,
+    onTertiary = Color(0xFF2A1A00),
+    tertiaryContainer = Color(0xFFFFE7B8),
+    onTertiaryContainer = Color(0xFF2A1A00),
     error = Red600,
     onError = Color.White,
     errorContainer = Red200,
     onErrorContainer = Color(0xFF410002),
-    background = LightBackground,
-    onBackground = LightOnBackground,
-    surface = LightSurface,
-    onSurface = LightOnSurface,
-    surfaceVariant = LightSurfaceVariant,
-    onSurfaceVariant = LightOnSurfaceVariant,
-    outline = LightOutline,
+    background = PaperCream,
+    onBackground = SumiInk,
+    surface = WashiWhite,
+    onSurface = SumiInk,
+    surfaceVariant = LightSurfaceWarm,
+    onSurfaceVariant = LightOnSurfaceWarm,
+    outline = LightOutlineWarm,
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Blue200,
-    onPrimary = Color(0xFF003258),
-    primaryContainer = Blue800,
-    onPrimaryContainer = Blue100,
-    secondary = Color(0xFF5CE5F0),
-    onSecondary = Color(0xFF00363B),
-    secondaryContainer = Color(0xFF004F57),
-    onSecondaryContainer = Cyan200,
-    tertiary = Color(0xFFC9BCFF),
-    onTertiary = Color(0xFF381E72),
-    tertiaryContainer = Color(0xFF4F378A),
-    onTertiaryContainer = Violet200,
+    primary = Color(0xFFFFB49E),
+    onPrimary = Color(0xFF5C1A0F),
+    primaryContainer = Color(0xFF7A2A1C),
+    onPrimaryContainer = Color(0xFFFFDAD2),
+    secondary = Color(0xFF7FD8CB),
+    onSecondary = Color(0xFF003731),
+    secondaryContainer = Color(0xFF11514A),
+    onSecondaryContainer = Color(0xFFBFE7E1),
+    tertiary = Color(0xFFF3C96B),
+    onTertiary = Color(0xFF422D00),
+    tertiaryContainer = Color(0xFF604300),
+    onTertiaryContainer = Color(0xFFFFE7B8),
     error = Color(0xFFFFB4AB),
     onError = Color(0xFF690005),
     errorContainer = Color(0xFF93000A),
     onErrorContainer = Red200,
-    background = DarkBackground,
-    onBackground = DarkOnBackground,
-    surface = DarkSurface,
-    onSurface = DarkOnSurface,
-    surfaceVariant = DarkSurfaceVariant,
-    onSurfaceVariant = DarkOnSurfaceVariant,
-    outline = DarkOutline,
+    background = NightBackground,
+    onBackground = NightOnBackground,
+    surface = NightSurface,
+    onSurface = NightOnBackground,
+    surfaceVariant = NightSurfaceVariant,
+    onSurfaceVariant = NightOnSurfaceVariant,
+    outline = NightOutline,
+)
+
+private val SpiritedShapes = Shapes(
+    extraSmall = RoundedCornerShape(12.dp),
+    small = RoundedCornerShape(16.dp),
+    medium = RoundedCornerShape(22.dp),
+    large = RoundedCornerShape(28.dp),
+    extraLarge = RoundedCornerShape(36.dp),
 )
 
 @Composable
@@ -96,6 +107,7 @@ fun ElegooSlicerTheme(
     MaterialTheme(
         colorScheme = colorScheme,
         typography = ElegooTypography,
+        shapes = SpiritedShapes,
         content = content,
     )
 }

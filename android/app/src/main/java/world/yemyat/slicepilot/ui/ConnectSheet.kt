@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import world.yemyat.slicepilot.cloud.CloudPrinter
+import world.yemyat.slicepilot.ui.theme.LanternGold
 
 private data class PrinterBrand(
     val id: String,
@@ -73,6 +74,10 @@ fun ConnectSheet(vm: AppViewModel, onDismiss: () -> Unit) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 0.dp,
+        dragHandle = { BottomSheetDefaults.DragHandle(color = LanternGold.copy(alpha = 0.45f)) },
     ) {
         Column(
             Modifier
