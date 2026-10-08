@@ -237,6 +237,8 @@ class AppViewModel(
     val printers: StateFlow<List<CloudPrinter>> = _printers.asStateFlow()
     private val _cloudMessage = MutableStateFlow<String?>(null)
     val cloudMessage: StateFlow<String?> = _cloudMessage.asStateFlow()
+    private val _pendingModelPath = MutableStateFlow<String?>(null)
+    val pendingModelPath: StateFlow<String?> = _pendingModelPath.asStateFlow()
 
     data class PrintSimStep(val label: String, val targetProgress: Float, val durationMs: Long)
     data class PrintSimState(
@@ -870,6 +872,27 @@ class AppViewModel(
         if (cloud.auth.isLoggedIn) refreshPrinters()
     }
 
+    fun requestLoadModel(path: String) {
+        if (_screen.value == Screen.Home) {
+            onModelPicked(path)
+        } else {
+            _pendingModelPath.value = path
+        }
+    }
+
+    fun confirmPendingModel() {
+        val path = _pendingModelPath.value ?: return
+        _pendingModelPath.value = null
+        if (_screen.value == Screen.Printing) {
+            cancelPrint()
+        }
+        onModelPicked(path)
+    }
+
+    fun dismissPendingModel() {
+        _pendingModelPath.value = null
+    }
+
     fun onModelPicked(path: String) {
         abandonSlice()
         resetModelTransform()
@@ -1104,9 +1127,9 @@ class AppViewModel(
 
     private fun abandonSlice() {
         sliceGeneration++
-        val jobId = SliceForegroundService.state.value.jobId
-        if (jobId != 0L) {
-            SliceForegroundService.cancel(context, jobId)
+        val serviceState = SliceForegroundService.state.value
+        if (serviceState.isRunning) {
+            SliceForegroundService.cancel(context, serviceState.jobId)
         }
         _slicing.value = false
     }
@@ -1168,6 +1191,7 @@ class AppViewModel(
                     if (_screen.value == Screen.Slicing) {
                         _screen.value = Screen.Slice
                     }
+                    SliceForegroundService.clearFinishedJob()
                 }
 
                 if (!s.isRunning && s.error == null && s.gcodePath != null && s.jobId != handledSliceJobId) {
@@ -1183,6 +1207,7 @@ class AppViewModel(
                     if (_screen.value == Screen.Slicing) {
                         _screen.value = Screen.Preview
                     }
+                    SliceForegroundService.clearFinishedJob()
                 }
             }
         }

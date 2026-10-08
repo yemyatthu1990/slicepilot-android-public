@@ -1,6 +1,7 @@
 package world.yemyat.slicepilot
 
 import android.Manifest
+import android.app.ActivityManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -27,9 +28,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.lang.ref.WeakReference
 import world.yemyat.slicepilot.model.ModelParser
 
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        private var activeInstance: WeakReference<MainActivity>? = null
+    }
 
     private lateinit var cloud: ElegooCloudClient
     private lateinit var vm: AppViewModel
@@ -39,6 +45,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val existing = activeInstance?.get()?.takeIf { !it.isFinishing && it !== this }
+        if (existing != null) {
+            existing.handleExternalIntent(intent)
+            val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            am.moveTaskToFront(existing.taskId, 0)
+            finish()
+            return
+        }
+        activeInstance = WeakReference(this)
         NativeLib.init(this)
         TrackingBootstrap.ensure(this)
         EventNotifier.trackEvent("app_opened")
@@ -98,6 +113,13 @@ class MainActivity : ComponentActivity() {
         handleIncomingModel(intent)
     }
 
+    override fun onDestroy() {
+        if (activeInstance?.get() === this) {
+            activeInstance = null
+        }
+        super.onDestroy()
+    }
+
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -112,7 +134,7 @@ class MainActivity : ComponentActivity() {
         if (path != null) {
             val f = File(path)
             if (f.exists()) {
-                vm.onModelPicked(f.absolutePath)
+                vm.requestLoadModel(f.absolutePath)
                 return
             }
         }
@@ -135,7 +157,7 @@ class MainActivity : ComponentActivity() {
             Thread {
                 try {
                     val f = copyToCache(this, uri)
-                    vm.onModelPicked(f.absolutePath)
+                    vm.requestLoadModel(f.absolutePath)
                 } catch (e: Exception) {
                     android.util.Log.e("MainActivity", "Failed to load model from uri: $uri", e)
                     EventNotifier.trackError("model_load_failed", e, mapOf("uri" to uri.toString()))
@@ -144,10 +166,20 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    fun handleExternalIntent(intent: android.content.Intent?) {
+        setIntent(intent)
+        if (intent?.getBooleanExtra("open_preview", false) == true) {
+            vm.openPreviewIfReady()
+        }
+        handleIncomingModel(intent)
+    }
+
     @Composable
     private fun AppRoot(vm: AppViewModel) {
         val screen by vm.screen.collectAsState()
         val cloudMessage by vm.cloudMessage.collectAsState()
+        val slicing by vm.slicing.collectAsState()
+        val pendingModelPath by vm.pendingModelPath.collectAsState()
         androidx.activity.compose.BackHandler(enabled = screen != Screen.Home) { vm.goBack() }
         var showConnect by remember { mutableStateOf(false) }
         var showConfigure by remember { mutableStateOf(false) }
@@ -169,8 +201,17 @@ class MainActivity : ComponentActivity() {
             onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
         }
 
+        val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
+
         val modelPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
             if (uri != null) {
+                val name = queryName(this@MainActivity, uri) ?: uri.lastPathSegment.orEmpty()
+                if (!name.endsWith(".stl", ignoreCase = true) && !name.endsWith(".3mf", ignoreCase = true)) {
+                    scope.launch {
+                        snackbarHostState.showSnackbar("Only STL and 3MF files are supported")
+                    }
+                    return@rememberLauncherForActivityResult
+                }
                 scope.launch {
                     try {
                         val f = withContext(Dispatchers.IO) { copyToCache(this@MainActivity, uri) }
@@ -207,7 +248,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
         androidx.compose.material3.Scaffold(
             snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
         ) { _ ->
@@ -217,17 +257,12 @@ class MainActivity : ComponentActivity() {
                     onPickModel = {
                         modelPicker.launch(
                             arrayOf(
-                                "*/*",
-                                "model/*",
-                                "model/3mf",
                                 "model/stl",
-                                "application/zip",
-                                "application/x-zip-compressed",
-                                "application/octet-stream",
+                                "model/3mf",
+                                "application/vnd.ms-pki.stl",
                                 "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
                                 "application/x-3mf",
                                 "application/sla",
-                                "application/vnd.ms-pki.stl",
                             )
                         )
                     },
@@ -256,6 +291,33 @@ class MainActivity : ComponentActivity() {
                     onBack = { vm.cancelPrint() },
                 )
             }
+        }
+
+        if (pendingModelPath != null) {
+            val busy = slicing || screen == Screen.Printing
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { vm.dismissPendingModel() },
+                title = { androidx.compose.material3.Text("Load new model?") },
+                text = {
+                    androidx.compose.material3.Text(
+                        if (busy) {
+                            "A slicing or print job is active. Cancel it and load the new model?"
+                        } else {
+                            "Loading this model will leave the current screen. Continue?"
+                        }
+                    )
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = { vm.confirmPendingModel() }) {
+                        androidx.compose.material3.Text(if (busy) "Cancel & load" else "Load")
+                    }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = { vm.dismissPendingModel() }) {
+                        androidx.compose.material3.Text("Keep current")
+                    }
+                },
+            )
         }
 
         if (fullscreen) {

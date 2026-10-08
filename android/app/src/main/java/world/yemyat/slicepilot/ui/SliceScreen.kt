@@ -23,7 +23,7 @@ import androidx.compose.ui.unit.sp
 import world.yemyat.slicepilot.ui.theme.*
 import kotlin.math.roundToInt
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SliceScreen(vm: AppViewModel) {
     val config by vm.config.collectAsState()
@@ -215,7 +215,11 @@ fun SliceScreen(vm: AppViewModel) {
                                 onSelect = { vm.setInfillPattern(it) },
                             )
                             Text("Adhesion", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
                                 listOf("auto", "none", "skirt", "brim", "raft").forEach { a ->
                                     FilterChip(
                                         selected = config.adhesion == a,

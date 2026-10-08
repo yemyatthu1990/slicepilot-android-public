@@ -123,11 +123,18 @@ class SliceForegroundService : Service() {
         }
 
         fun cancel(context: Context, jobId: Long) {
+            if (!_state.value.isRunning) return
             val intent = Intent(context, SliceForegroundService::class.java).apply {
                 action = ACTION_CANCEL
                 putExtra(EXTRA_JOB_ID, jobId)
             }
             ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun clearFinishedJob() {
+            _state.update {
+                if (it.isRunning) it else it.copy(jobId = 0L)
+            }
         }
     }
 
@@ -149,7 +156,12 @@ class SliceForegroundService : Service() {
         when (intent?.action) {
             ACTION_START -> startSlicing(intent)
             ACTION_CANCEL -> cancelSlicing(intent.getLongExtra(EXTRA_JOB_ID, 0L))
-            else -> stopSelf()
+            else -> {
+                if (intent != null) {
+                    ensureForeground(buildProgressNotification("Working…", _state.value.progress))
+                }
+                stopSelf()
+            }
         }
         return START_NOT_STICKY
     }
@@ -265,7 +277,11 @@ class SliceForegroundService : Service() {
     }
 
     private fun cancelSlicing(jobId: Long) {
-        if (jobId != 0L && _state.value.jobId != jobId) return
+        ensureForeground(buildProgressNotification("Cancelling…", _state.value.progress))
+        if (jobId != 0L && _state.value.jobId != jobId) {
+            stopAndClear()
+            return
+        }
         sliceJob?.cancel()
         NativeLib.nativeCancel()
         _state.update {
@@ -277,10 +293,29 @@ class SliceForegroundService : Service() {
                 error = null,
             )
         }
-        showProgressNotification(force = true)
+        stopAndClear()
+    }
+
+    private fun stopAndClear() {
+        try {
+            NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID)
+        } catch (_: Exception) {
+        }
         releaseWakeLock()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun ensureForeground(notification: Notification) {
+        try {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+        } catch (_: Exception) {
+        }
     }
 
     private fun handleFailure(
@@ -324,9 +359,7 @@ class SliceForegroundService : Service() {
                 "duration_ms" to (System.currentTimeMillis() - startedAt),
             ),
         )
-        releaseWakeLock()
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        stopAndClear()
     }
 
     private fun handleSuccess(
@@ -410,9 +443,7 @@ class SliceForegroundService : Service() {
                 "estimated_seconds" to stats?.estimatedSeconds,
             ),
         )
-        releaseWakeLock()
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        stopAndClear()
     }
 
     private fun createNotificationChannels() {

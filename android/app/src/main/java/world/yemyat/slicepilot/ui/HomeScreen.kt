@@ -75,7 +75,7 @@ fun HomeScreen(
                 letterSpacing = (-0.8).sp,
             )
             Text(
-                "A cute little slicer for your next 3D print.",
+                "A little slicer for your next 3D print.",
                 fontSize = 17.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
