@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/Theme.SlicePilot">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Match content:// URIs with .3mf and .stl extensions with wildcard or binary MIME types -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:host="*" />
+                <data android:mimeType="*/*" />
+                <data android:pathSuffix=".3mf" />
+                <data android:pathSuffix=".3MF" />
+                <data android:pathSuffix=".stl" />
+                <data android:pathSuffix=".STL" />
+                <data android:pathPattern=".*\\.3mf" />
+                <data android:pathPattern=".*\\..*\\.3mf" />
+                <data android:pathPattern=".*\\..*\\..*\\.3mf" />
+                <data android:pathPattern=".*\\.3MF" />
+                <data android:pathPattern=".*\\..*\\.3MF" />
+                <data android:pathPattern=".*\\..*\\..*\\.3MF" />
+                <data android:pathPattern=".*\\.stl" />
+                <data android:pathPattern=".*\\..*\\.stl" />
+                <data android:pathPattern=".*\\..*\\..*\\.stl" />
+                <data android:pathPattern=".*\\.STL" />
+                <data android:pathPattern=".*\\..*\\.STL" />
+                <data android:pathPattern=".*\\..*\\..*\\.STL" />
+            </intent-filter>
+
+            <!-- Match content:// URIs with .3mf and .stl extensions when NO mimeType is specified -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:host="*" />
+                <data android:pathSuffix=".3mf" />
+                <data android:pathSuffix=".3MF" />
+                <data android:pathSuffix=".stl" />
+                <data android:pathSuffix=".STL" />
+                <data android:pathPattern=".*\\.3mf" />
+                <data android:pathPattern=".*\\..*\\.3mf" />
+                <data android:pathPattern=".*\\..*\\..*\\.3mf" />
+                <data android:pathPattern=".*\\.3MF" />
+                <data android:pathPattern=".*\\..*\\.3MF" />
+                <data android:pathPattern=".*\\..*\\..*\\.3MF" />
+                <data android:pathPattern=".*\\.stl" />
+                <data android:pathPattern=".*\\..*\\.stl" />
+                <data android:pathPattern=".*\\..*\\..*\\.stl" />
+                <data android:pathPattern=".*\\.STL" />
+                <data android:pathPattern=".*\\..*\\.STL" />
+                <data android:pathPattern=".*\\..*\\..*\\.STL" />
+            </intent-filter>
+
+            <!-- Match file:// URIs with .3mf and .stl extensions with wildcard MIME type -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="file" />
+                <data android:mimeType="*/*" />
+                <data android:pathSuffix=".3mf" />
+                <data android:pathSuffix=".3MF" />
+                <data android:pathSuffix=".stl" />
+                <data android:pathSuffix=".STL" />
+                <data android:pathPattern=".*\\.3mf" />
+                <data android:pathPattern=".*\\..*\\.3mf" />
+                <data android:pathPattern=".*\\..*\\..*\\.3mf" />
+                <data android:pathPattern=".*\\.3MF" />
+                <data android:pathPattern=".*\\..*\\.3MF" />
+                <data android:pathPattern=".*\\..*\\..*\\.3MF" />
+                <data android:pathPattern=".*\\.stl" />
+                <data android:pathPattern=".*\\..*\\.stl" />
+                <data android:pathPattern=".*\\..*\\..*\\.stl" />
+                <data android:pathPattern=".*\\.STL" />
+                <data android:pathPattern=".*\\..*\\.STL" />
+                <data android:pathPattern=".*\\..*\\..*\\.STL" />
+            </intent-filter>
+
+            <!-- Match file:// URIs with .3mf and .stl extensions when NO mimeType is specified -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="file" />
+                <data android:pathSuffix=".3mf" />
+                <data android:pathSuffix=".3MF" />
+                <data android:pathSuffix=".stl" />
+                <data android:pathSuffix=".STL" />
+                <data android:pathPattern=".*\\.3mf" />
+                <data android:pathPattern=".*\\..*\\.3mf" />
+                <data android:pathPattern=".*\\..*\\..*\\.3mf" />
+                <data android:pathPattern=".*\\.3MF" />
+                <data android:pathPattern=".*\\..*\\.3MF" />
+                <data android:pathPattern=".*\\..*\\..*\\.3MF" />
+                <data android:pathPattern=".*\\.stl" />
+                <data android:pathPattern=".*\\..*\\.stl" />
+                <data android:pathPattern=".*\\..*\\..*\\.stl" />
+                <data android:pathPattern=".*\\.STL" />
+                <data android:pathPattern=".*\\..*\\.STL" />
+                <data android:pathPattern=".*\\..*\\..*\\.STL" />
+            </intent-filter>
+
+            <!-- Match explicit 3MF and STL MIME types (regardless of URI path scheme) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="model/3mf" />
+                <data android:mimeType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml" />
+                <data android:mimeType="application/x-3mf" />
+                <data android:mimeType="application/3mf" />
+                <data android:mimeType="model/stl" />
+                <data android:mimeType="application/sla" />
+                <data android:mimeType="application/vnd.ms-pki.stl" />
+                <data android:mimeType="application/x-stl" />
+                <data android:mimeType="model/x.stl-ascii" />
+                <data android:mimeType="model/x.stl-binary" />
+            </intent-filter>
+
+            <!-- Match sharing / sending 3D models via share sheet -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="model/3mf" />
+                <data android:mimeType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml" />
+                <data android:mimeType="application/x-3mf" />
+                <data android:mimeType="application/3mf" />
+                <data android:mimeType="model/stl" />
+                <data android:mimeType="application/sla" />
+                <data android:mimeType="application/vnd.ms-pki.stl" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

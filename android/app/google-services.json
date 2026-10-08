@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "34598205043",
+    "project_id": "slicepilot-bbfb5",
+    "storage_bucket": "slicepilot-bbfb5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:34598205043:android:d5476f8143a8ae8ec19c06",
+        "android_client_info": {
+          "package_name": "world.yemyat.slicepilot"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAIG85synexZ17hjTkTH2HoIOprsHSgv98"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
