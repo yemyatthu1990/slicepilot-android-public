@@ -1,7 +1,10 @@
 package world.yemyat.slicepilot
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -14,10 +17,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import world.yemyat.slicepilot.cloud.ElegooCloudClient
-import world.yemyat.slicepilot.tracking.CrashlyticsEventTracker
 import world.yemyat.slicepilot.tracking.EventNotifier
-import world.yemyat.slicepilot.tracking.FirebaseEventTracker
-import world.yemyat.slicepilot.tracking.LogcatEventTracker
+import world.yemyat.slicepilot.tracking.TrackingBootstrap
 import world.yemyat.slicepilot.ui.*
 import world.yemyat.slicepilot.ui.components.SpiritedBackground
 import world.yemyat.slicepilot.ui.theme.ElegooSlicerTheme
@@ -33,21 +34,25 @@ class MainActivity : ComponentActivity() {
     private lateinit var cloud: ElegooCloudClient
     private lateinit var vm: AppViewModel
 
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         NativeLib.init(this)
-        if (BuildConfig.DEBUG) {
-            EventNotifier.registerTracker(LogcatEventTracker())
-        }
-        EventNotifier.registerTracker(FirebaseEventTracker(this))
-        EventNotifier.registerTracker(CrashlyticsEventTracker(this))
+        TrackingBootstrap.ensure(this)
         EventNotifier.trackEvent("app_opened")
+        requestNotificationPermissionIfNeeded()
         cloud = ElegooCloudClient(this)
         vm = AppViewModel(
             cloud = cloud,
             cacheDir = cacheDir,
             prefs = getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE),
+            context = this,
         )
+        if (intent?.getBooleanExtra("open_preview", false) == true) {
+            vm.openPreviewIfReady()
+        }
         handleIncomingModel(intent)
         maybeRunHeadlessSlice()
         setContent {
@@ -65,6 +70,9 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (intent.getBooleanExtra("open_preview", false)) {
+            vm.openPreviewIfReady()
+        }
         val data = intent.data
         android.util.Log.i("AuthCallback", "onNewIntent scheme=${intent.scheme} data=$data extras=${intent.extras?.keySet()?.joinToString()}")
         if (data != null) {
@@ -88,6 +96,14 @@ class MainActivity : ComponentActivity() {
             }
         }
         handleIncomingModel(intent)
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
 
     private fun handleIncomingModel(intent: android.content.Intent?) {

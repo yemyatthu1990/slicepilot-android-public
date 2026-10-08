@@ -1,8 +1,11 @@
 package world.yemyat.slicepilot.ui
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import world.yemyat.slicepilot.NativeLib
+import world.yemyat.slicepilot.SliceForegroundService
+import world.yemyat.slicepilot.SliceTransform
 import world.yemyat.slicepilot.cloud.CloudPrinter
 import world.yemyat.slicepilot.cloud.CloudResult
 import world.yemyat.slicepilot.cloud.ElegooCloudClient
@@ -95,6 +98,7 @@ class AppViewModel(
     private val cloud: ElegooCloudClient,
     private val cacheDir: File,
     private val prefs: android.content.SharedPreferences,
+    private val context: Context,
 ) : ViewModel() {
 
     private val _screen = MutableStateFlow<Screen>(Screen.Home)
@@ -170,6 +174,12 @@ class AppViewModel(
     val slicing: StateFlow<Boolean> = _slicing.asStateFlow()
 
     @Volatile private var sliceGeneration = 0
+    @Volatile private var handledSliceJobId = 0L
+    @Volatile private var handledSliceErrorJobId = 0L
+
+    init {
+        observeSliceService()
+    }
 
     private val _liveSliceLayers = MutableStateFlow<List<world.yemyat.slicepilot.model.GcodeLayer>>(emptyList())
     val liveSliceLayers: StateFlow<List<world.yemyat.slicepilot.model.GcodeLayer>> = _liveSliceLayers.asStateFlow()
@@ -999,8 +1009,7 @@ class AppViewModel(
         val process = cfg.process ?: return
         val filament = cfg.filament ?: return
         val out = File(cacheDir, suggestedGcodeName).absolutePath
-        val generation = ++sliceGeneration
-        val sliceStartedAt = System.currentTimeMillis()
+        val jobId = (++sliceGeneration).toLong()
         _gcodePreview.value = null
         _gcodeStats.value = null
         gcodePath = null
@@ -1052,114 +1061,53 @@ class AppViewModel(
             if (bedType != null) appendLine("curr_bed_type=$bedType")
         }
         val t = _modelTransform.value
-        NativeLib.nativeSetModelTransform(t.rotX, t.rotY, t.rotZ, t.mirrorX, t.mirrorY, t.mirrorZ, t.offsetX, t.offsetY)
-        val ok = NativeLib.nativeSliceWithOverrides(mp, printer, filament, process, overrides, out,
-            object : NativeLib.SliceCallback {
-                override fun onProgress(step: Int, text: String, percent: Int) {
-                    viewModelScope.launch(Dispatchers.Main) {
-                        _sliceProgress.value = percent / 100f
-                        _sliceStatus.value = text
-                    }
-                }
-            })
-        if (!ok) {
+        try {
+            SliceForegroundService.start(
+                context = context,
+                jobId = jobId,
+                modelPath = mp,
+                printer = printer,
+                filament = filament,
+                process = process,
+                overrides = overrides,
+                outPath = out,
+                autoPrint = autoPrint,
+                transform = SliceTransform(
+                    rotX = t.rotX,
+                    rotY = t.rotY,
+                    rotZ = t.rotZ,
+                    mirrorX = t.mirrorX,
+                    mirrorY = t.mirrorY,
+                    mirrorZ = t.mirrorZ,
+                    offsetX = t.offsetX,
+                    offsetY = t.offsetY,
+                ),
+            )
+        } catch (e: Exception) {
             _slicing.value = false
             _sliceProgress.value = 0f
-            val err = NativeLib.nativeGetError()
+            _sliceStatus.value = "Could not start background slicing"
+            _cloudMessage.value = _sliceStatus.value
+            _screen.value = Screen.Slice
             EventNotifier.trackError(
-                "slice_failed",
-                null,
+                "slice_service_start_failed",
+                e,
                 mapOf(
-                    "stage" to "launch",
-                    "error" to err,
                     "printer" to printer,
                     "filament" to filament,
                     "process" to process,
-                    "duration_ms" to (System.currentTimeMillis() - sliceStartedAt),
+                    "output" to out,
                 ),
             )
-            _sliceStatus.value = "Could not start slicing" + (if (err.isNotBlank()) ": $err" else "")
-            _cloudMessage.value = _sliceStatus.value
-            _screen.value = Screen.Slice
-            return
-        }
-        viewModelScope.launch {
-            while (NativeLib.nativeIsRunning()) delay(250)
-            if (generation != sliceGeneration) return@launch
-            val err = NativeLib.nativeGetError()
-            if (err.isNotEmpty()) {
-                _slicing.value = false
-                _sliceProgress.value = 0f
-                _sliceStatus.value = "Error: $err"
-                EventNotifier.trackError(
-                    "slice_failed",
-                    null,
-                    mapOf(
-                        "stage" to "run",
-                        "error" to err,
-                        "printer" to printer,
-                        "filament" to filament,
-                        "process" to process,
-                        "duration_ms" to (System.currentTimeMillis() - sliceStartedAt),
-                    ),
-                )
-            } else {
-                gcodePath = out
-                viewModelScope.launch(Dispatchers.Default) parse@{
-                    try {
-                        _sliceStatus.value = "Parsing G-code preview 0%"
-                        _sliceProgress.value = 0.80f
-                        val parsed = world.yemyat.slicepilot.model.GcodePreviewParser.parse(File(out)) { p ->
-                            _sliceProgress.value = 0.80f + 0.18f * p
-                            _sliceStatus.value = "Parsing G-code preview ${(p * 100).toInt()}%"
-                        }
-                        if (generation != sliceGeneration) return@parse
-                        _gcodePreview.value = parsed
-                    } catch (_: Exception) {
-                    }
-                    var stats: world.yemyat.slicepilot.model.GcodeStats? = null
-                    try {
-                        _sliceStatus.value = "Parsing G-code stats"
-                        _sliceProgress.value = 0.98f
-                        stats = world.yemyat.slicepilot.model.GcodePreviewParser.parseStats(File(out))
-                        if (generation == sliceGeneration) _gcodeStats.value = stats
-                    } catch (_: Exception) {
-                        if (generation == sliceGeneration) _gcodeStats.value = null
-                    }
-                    if (generation != sliceGeneration) return@parse
-                    EventNotifier.trackEvent(
-                        "slice_completed",
-                        mapOf(
-                            "printer" to printer,
-                            "filament" to filament,
-                            "process" to process,
-                            "output" to out,
-                            "duration_ms" to (System.currentTimeMillis() - sliceStartedAt),
-                            "layer_count" to stats?.layerCount,
-                            "filament_mm" to stats?.filamentMm,
-                            "filament_grams" to stats?.filamentGrams,
-                            "estimated_seconds" to stats?.estimatedSeconds,
-                        ),
-                    )
-                    _slicing.value = false
-                    _sliceProgress.value = 1f
-                    if (autoPrint) {
-                        val p = selectedPrinter
-                        if (p?.cloudPrinter != null && cloud.auth.isLoggedIn) {
-                            sendToPrinter(p.cloudPrinter)
-                        } else {
-                            _cloudMessage.value = "Sliced. Connect a printer to print."
-                        }
-                    }
-                    _screen.value = Screen.Preview
-                }
-            }
         }
     }
 
     private fun abandonSlice() {
         sliceGeneration++
-        NativeLib.nativeCancel()
+        val jobId = SliceForegroundService.state.value.jobId
+        if (jobId != 0L) {
+            SliceForegroundService.cancel(context, jobId)
+        }
         _slicing.value = false
     }
 
@@ -1185,6 +1133,58 @@ class AppViewModel(
             }
             Screen.Preview -> _screen.value = Screen.Slice
             Screen.Printing -> cancelPrint()
+        }
+    }
+
+    fun openPreviewIfReady() {
+        if (gcodePath != null) {
+            _screen.value = Screen.Preview
+        }
+    }
+
+    private fun observeSliceService() {
+        viewModelScope.launch {
+            SliceForegroundService.state.collect { s ->
+                if (s.jobId == 0L) {
+                    _slicing.value = false
+                    _sliceProgress.value = 0f
+                    if (_screen.value == Screen.Slicing) {
+                        _screen.value = Screen.Slice
+                    }
+                    return@collect
+                }
+
+                _sliceProgress.value = s.progress
+                _sliceStatus.value = s.status
+                _slicing.value = s.isRunning
+                s.gcodePath?.let { gcodePath = it }
+                s.preview?.let { _gcodePreview.value = it }
+                s.stats?.let { _gcodeStats.value = it }
+
+                if (!s.isRunning && s.error != null && s.jobId != handledSliceErrorJobId) {
+                    handledSliceErrorJobId = s.jobId
+                    _sliceStatus.value = "Error: ${s.error}"
+                    _cloudMessage.value = _sliceStatus.value
+                    if (_screen.value == Screen.Slicing) {
+                        _screen.value = Screen.Slice
+                    }
+                }
+
+                if (!s.isRunning && s.error == null && s.gcodePath != null && s.jobId != handledSliceJobId) {
+                    handledSliceJobId = s.jobId
+                    if (s.autoPrint) {
+                        val p = selectedPrinter
+                        if (p?.cloudPrinter != null && cloud.auth.isLoggedIn) {
+                            sendToPrinter(p.cloudPrinter)
+                        } else {
+                            _cloudMessage.value = "Sliced. Connect a printer to print."
+                        }
+                    }
+                    if (_screen.value == Screen.Slicing) {
+                        _screen.value = Screen.Preview
+                    }
+                }
+            }
         }
     }
 
