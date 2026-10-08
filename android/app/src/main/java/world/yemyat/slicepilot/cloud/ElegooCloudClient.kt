@@ -1,8 +1,7 @@
 package world.yemyat.slicepilot.cloud
 
 import android.content.Context
-import android.content.SharedPreferences
-import android.util.Base64
+import world.yemyat.slicepilot.cloud.auth.CloudAuthClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -14,14 +13,7 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
-import java.security.KeyFactory
-import java.security.PublicKey
 import java.security.SecureRandom
-import java.security.spec.PKCS8EncodedKeySpec
-import java.security.spec.X509EncodedKeySpec
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
 data class CloudPrinter(
     val id: String,
@@ -37,227 +29,34 @@ sealed class CloudResult<out T> {
     data class Err(val message: String) : CloudResult<Nothing>()
 }
 
-class ElegooCloudClient(context: Context) {
-
-    private val prefs: SharedPreferences =
-        context.getSharedPreferences("elegoo_cloud", Context.MODE_PRIVATE)
-
-    var region: String
-        get() = prefs.getString("region", "global") ?: "global"
-        set(v) = prefs.edit().putString("region", v).apply()
+class ElegooCloudClient(
+    context: Context,
+    val auth: CloudAuthClient = CloudAuthClient(context),
+) {
 
     private val gateway: String
-        get() = if (region == "china")
+        get() = if (auth.region == "china")
             "https://matrix.elegoo.com.cn"
         else
             "https://matrix.elegoo.com"
 
-    private val accountApi = "/api/v1/account-center-server"
     private val deviceApi = "/api/v1/device-management-server"
-    private val clientId = "Graft"
 
-    private companion object {
-        const val FALLBACK_PUBLIC_KEY =
-            "-----BEGIN PUBLIC KEY-----\n" +
-            "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlHGEjbiq1HvWfRUGchLz\n" +
-            "RLjrc6aSPYooXrjPxZIOwf1EbEx16B3cxnjdJnZyUu0gNe55yTzkJMMmjoHnHuow\n" +
-            "Yo1mppXUAV1mLCLKWb4nQzGvjNDM4XjqG1LIv24uxA2E+1dVwlsrfg7vMKPEOZMp\n" +
-            "9B7MQwfPMA62rl6Htsu7QrNu64csXqWGgdLL3sqN4XyQoSVQoJI506hq8iaxkjyz\n" +
-            "uJKcrzIG01cKJDsxQtJsOpLx3IgOzfArFkCndG7JlQgh15CN4OGL5YnaAeAjUvLc\n" +
-            "jbesmzEFjqJeMOxDOIWXDZJV40wqzHBMm43OZiKO70q4L99k6lbGEXlygMiCj/loo\n" +
-            "QIDAQAB\n" +
-            "-----END PUBLIC KEY-----"
-    }
-
-    val loginPageUrl: String
-        get() = if (region == "china")
-            "https://np-intl-accounts.elegoo.com.cn/account/slicer-login"
-        else
-            "https://np-intl-accounts.elegoo.com/account/slicer-login"
-
-    val isLoggedIn: Boolean get() = !accessToken.isNullOrBlank()
-
-    var sessionCookie: String?
-        get() = prefs.getString("session_cookie", null)
-        set(v) = prefs.edit().putString("session_cookie", v).apply()
-
-    var accessToken: String?
-        get() = prefs.getString("access_token", null)
-        private set(v) = prefs.edit().putString("access_token", v).apply()
-
-    var refreshToken: String?
-        get() = prefs.getString("refresh_token", null)
-        private set(v) = prefs.edit().putString("refresh_token", v).apply()
-
-    private var accessTokenExpire: Long
-        get() = prefs.getLong("access_token_expire", 0L)
-        set(v) = prefs.edit().putLong("access_token_expire", v).apply()
-
-    var nickname: String
-        get() = prefs.getString("nickname", "") ?: ""
-        private set(v) = prefs.edit().putString("nickname", v).apply()
-
-    var email: String
-        get() = prefs.getString("email", "") ?: ""
-        private set(v) = prefs.edit().putString("email", v).apply()
-
-    fun saveSession(token: String, refresh: String?, nick: String, mail: String) {
-        accessToken = token
-        refreshToken = refresh
-        nickname = nick
-        email = mail
-    }
-
-    fun logout() {
-        prefs.edit().clear().apply()
-    }
-
-    private suspend fun apiPost(path: String, body: JSONObject, authed: Boolean): JSONObject {
-        return postRaw(gateway + path, body, authed)
-    }
-
-    fun captureWebViewCookie(): String {
-        return try {
-            val cm = android.webkit.CookieManager.getInstance()
-            cm.flush()
-            val domains = listOf(
-                "https://np-intl-accounts.elegoo.com",
-                "https://account.elegoo.com",
-                "https://www.nexprint.com",
-            )
-            val merged = LinkedHashMap<String, String>()
-            for (d in domains) {
-                val c = cm.getCookie(d) ?: continue
-                for (part in c.split(";")) {
-                    val p = part.trim()
-                    val name = p.substringBefore("=")
-                    if (name.isNotEmpty()) merged[name] = p
-                }
-            }
-            merged.values.joinToString("; ")
-        } catch (e: Exception) {
-            ""
-        }
-    }
-
-    suspend fun login(emailAddr: String, password: String): CloudResult<Unit> = withContext(Dispatchers.IO) {
-        try {
-            val pubKeyPem = fetchPublicKeyOrFallback()
-            val publicKey = parseRsaPublicKey(pubKeyPem)
-
-            val rnd = SecureRandom()
-            val keyBytes = ByteArray(32).also { rnd.nextBytes(it) }  // AES-256
-            val ivBytes = ByteArray(16).also { rnd.nextBytes(it) }
-
-            val aes = Cipher.getInstance("AES/CBC/PKCS5Padding")
-            aes.init(Cipher.ENCRYPT_MODE, SecretKeySpec(keyBytes, "AES"), IvParameterSpec(ivBytes))
-            val encEmail = Base64.encodeToString(
-                aes.doFinal(emailAddr.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP,
-            )
-            val encPwd = Base64.encodeToString(
-                aes.doFinal(password.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP,
-            )
-
-            val rsa = Cipher.getInstance("RSA/ECB/PKCS1Padding")
-            rsa.init(Cipher.ENCRYPT_MODE, publicKey)
-            val aesKeyB64 = Base64.encodeToString(rsa.doFinal(keyBytes), Base64.NO_WRAP)
-            val aesIvB64 = Base64.encodeToString(rsa.doFinal(ivBytes), Base64.NO_WRAP)
-
-            val body = JSONObject()
-                .put("clientId", clientId)
-                .put("email", emailAddr)
-                .put("encryptEmail", encEmail)
-                .put("password", encPwd)
-                .put("aesIv", aesIvB64)
-                .put("aesKey", aesKeyB64)
-                .put("reEncode", true)
-
-            val resp = apiPost(
-                accountApi + "/account-auth/login/email/password",
-                body,
-                authed = false,
-            )
-            if (!isSuccess(resp)) {
-                return@withContext CloudResult.Err(resp.optString("msg", "login failed (code ${resp.optInt("code")})"))
-            }
-            val data = resp.optJSONObject("data")
-                ?: return@withContext CloudResult.Err("login: no data in response")
-            val token = data.optString("accessToken", data.optString("token", ""))
-            if (token.isBlank()) return@withContext CloudResult.Err("login: no accessToken")
-            accessToken = token
-            refreshToken = data.optString("refreshToken", "").ifBlank { null }
-            accessTokenExpire = data.optLong("accessTokenExpireTime", 0L)
-            email = emailAddr
-            nickname = data.optString("nickname", data.optString("userName", emailAddr.substringBefore('@')))
-            CloudResult.Ok(Unit)
-        } catch (e: Exception) {
-            CloudResult.Err(e.message ?: "login failed")
-        }
-    }
-
-    private suspend fun fetchPublicKeyOrFallback(): String {
-        return try {
-            val keyJson = apiPost(
-                accountApi + "/account-auth/key",
-                JSONObject().put("clientId", clientId),
-                authed = false,
-            )
-            if (isSuccess(keyJson)) {
-                extractPublicKey(keyJson)?.let { return it }
-            }
-            FALLBACK_PUBLIC_KEY
-        } catch (e: Exception) {
-            FALLBACK_PUBLIC_KEY
-        }
-    }
-
-    suspend fun refreshTokens(): Boolean = withContext(Dispatchers.IO) {
-        val rt = refreshToken ?: return@withContext false
-        try {
-            val resp = apiPost(
-                accountApi + "/account-auth/token/refresh",
-                JSONObject().put("refreshToken", rt).put("clientId", clientId),
-                authed = false,
-            )
-            if (!isSuccess(resp)) return@withContext false
-            val data = resp.optJSONObject("data") ?: return@withContext false
-            val token = data.optString("accessToken", "")
-            if (token.isBlank()) return@withContext false
-            accessToken = token
-            data.optString("refreshToken").takeIf { it.isNotBlank() }?.let { refreshToken = it }
-            accessTokenExpire = data.optLong("accessTokenExpireTime", 0L)
-            true
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    private fun tokenUsable(): Boolean =
-        accessTokenExpire == 0L || System.currentTimeMillis() < accessTokenExpire - 60_000L
-
-    suspend fun checkSession(): CloudResult<CloudUser> = withContext(Dispatchers.IO) {
-        if (accessToken.isNullOrBlank()) {
-            return@withContext CloudResult.Err("not logged in")
-        }
-        if (!tokenUsable() && !refreshTokens()) {
-            return@withContext CloudResult.Err("session expired")
-        }
-        CloudResult.Ok(CloudUser(nickname, email, region))
-    }
+    val isLoggedIn: Boolean get() = auth.isLoggedIn
 
     suspend fun validateSession(): CloudResult<CloudUser> = withContext(Dispatchers.IO) {
-        if (accessToken.isNullOrBlank()) {
+        if (!auth.isLoggedIn) {
             return@withContext CloudResult.Err("not logged in")
         }
-        if (!tokenUsable() && !refreshTokens()) {
-            logout()
+        if (!auth.refreshIfNeeded()) {
+            auth.logout()
             return@withContext CloudResult.Err("session expired")
         }
         when (val r = listPrinters()) {
-            is CloudResult.Ok -> CloudResult.Ok(CloudUser(nickname, email, region))
+            is CloudResult.Ok -> CloudResult.Ok(CloudUser(auth.nickname, auth.email, auth.region))
             is CloudResult.Err -> {
-                if (isAuthFailure(r.message)) {
-                    logout()
+                if (auth.isAuthFailure(r.message)) {
+                    auth.logout()
                     CloudResult.Err("signed out")
                 } else {
                     CloudResult.Err(r.message)
@@ -266,21 +65,12 @@ class ElegooCloudClient(context: Context) {
         }
     }
 
-    fun isAuthFailure(message: String): Boolean {
-        val m = message.lowercase()
-        return m.contains("http 401") ||
-            m.contains("http 403") ||
-            m.contains("code 401") ||
-            m.contains("code 403") ||
-            m.contains("unauthorized") ||
-            m.contains("session expired") ||
-            m.contains("token invalid") ||
-            m.contains("invalid token") ||
-            m.contains("not logged in")
+    private suspend fun apiPost(path: String, body: JSONObject, authed: Boolean): JSONObject {
+        return postRaw(gateway + path, body, authed)
     }
 
     suspend fun listPrinters(): CloudResult<List<CloudPrinter>> = withContext(Dispatchers.IO) {
-        if (!tokenUsable()) refreshTokens()
+        if (!auth.tokenUsable()) auth.refreshTokens()
         try {
             val json = apiPost(
                 deviceApi + "/device/list/query",
@@ -300,7 +90,7 @@ class ElegooCloudClient(context: Context) {
             for (i in 0 until arr.length()) {
                 val dd = arr.getJSONObject(i)
                 val uid = dd.optString("userId", "")
-                if (uid.isNotBlank()) prefs.edit().putString("user_id", uid).apply()
+                if (uid.isNotBlank()) auth.userId = uid
                 printers.add(
                     CloudPrinter(
                         id = firstNonBlank(dd, "serialNo", "pcode", "deviceCode", "id"),
@@ -327,9 +117,9 @@ class ElegooCloudClient(context: Context) {
     )
 
     suspend fun getMqttConfig(): CloudResult<MqttConfig> = withContext(Dispatchers.IO) {
-        if (!tokenUsable()) refreshTokens()
+        if (!auth.tokenUsable()) auth.refreshTokens()
         try {
-            val userId = prefs.getString("user_id", "") ?: ""
+            val userId = auth.userId
             if (userId.isBlank()) return@withContext CloudResult.Err("mqtt: no userId")
             val clientId = "elegooapp$userId-${System.currentTimeMillis()}"
             val json = getRaw(
@@ -369,7 +159,7 @@ class ElegooCloudClient(context: Context) {
     }
 
     suspend fun getFilament(deviceCode: String): FilamentInfo? = withContext(Dispatchers.IO) {
-        if (!tokenUsable()) refreshTokens()
+        if (!auth.tokenUsable()) auth.refreshTokens()
         try {
             val json = getRaw(
                 gateway + deviceApi + "/device/report-data/list?deviceCode=$deviceCode",
@@ -501,60 +291,6 @@ class ElegooCloudClient(context: Context) {
         }
     }
 
-    private fun extractPublicKey(json: JSONObject): String? {
-        return when (val d = json.opt("data")) {
-            is JSONObject -> {
-                for (k in listOf("publicKey", "key", "rsaPublicKey", "public_key")) {
-                    val v = d.optString(k, "")
-                    if (v.isNotBlank()) return v
-                }
-                null
-            }
-            is String -> d.takeIf { it.isNotBlank() }
-            else -> null
-        }
-    }
-
-    private fun parseRsaPublicKey(pem: String): PublicKey {
-        val body = pem
-            .replace("-----BEGIN PUBLIC KEY-----", "")
-            .replace("-----END PUBLIC KEY-----", "")
-            .replace("-----BEGIN RSA PUBLIC KEY-----", "")
-            .replace("\\s".toRegex(), "")
-        val der = Base64.decode(body, Base64.DEFAULT)
-        return try {
-            KeyFactory.getInstance("RSA").generatePublic(X509EncodedKeySpec(der))
-        } catch (e: Exception) {
-            try {
-                KeyFactory.getInstance("RSA").generatePublic(spkiFromPkcs1(der))
-            } catch (e2: Exception) {
-                KeyFactory.getInstance("RSA").generatePublic(PKCS8EncodedKeySpec(der))
-            }
-        }
-    }
-
-    private fun spkiFromPkcs1(pkcs1: ByteArray): X509EncodedKeySpec {
-        val algorithmId = byteArrayOf(
-            0x30, 0x0d,
-            0x06, 0x09, 0x2a, 0x86.toByte(), 0x48, 0x86.toByte(), 0xf7.toByte(), 0x0d, 0x01, 0x01, 0x01,
-            0x05, 0x00,
-        )
-        val bitString = derWrap(0x03, byteArrayOf(0x00) + pkcs1)
-        val seqBody = algorithmId + bitString
-        return X509EncodedKeySpec(derWrap(0x30, seqBody))
-    }
-
-    private fun derWrap(tag: Int, body: ByteArray): ByteArray {
-        val len = body.size
-        val lenBytes: ByteArray = when {
-            len < 128 -> byteArrayOf(len.toByte())
-            len < 256 -> byteArrayOf(0x81.toByte(), len.toByte())
-            len < 65536 -> byteArrayOf(0x82.toByte(), (len shr 8).toByte(), len.toByte())
-            else -> byteArrayOf(0x83.toByte(), (len shr 16).toByte(), (len shr 8).toByte(), len.toByte())
-        }
-        return byteArrayOf(tag.toByte()) + lenBytes + body
-    }
-
     private fun baseHeaders(authed: Boolean): Map<String, String> {
         val h = HashMap<String, String>()
         h["Accept"] = "application/json"
@@ -563,9 +299,9 @@ class ElegooCloudClient(context: Context) {
         h["User-Agent"] =
             "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         if (authed) {
-            accessToken?.let { h["Authorization"] = "Bearer $it" }
+            auth.accessToken?.let { h["Authorization"] = "Bearer $it" }
         }
-        sessionCookie?.let { if (it.isNotBlank()) h["Cookie"] = it }
+        auth.sessionCookie?.let { if (it.isNotBlank()) h["Cookie"] = it }
         return h
     }
 
@@ -624,7 +360,7 @@ class ElegooCloudClient(context: Context) {
     data class OssEntrypoint(val entrypoint: String, val accessUrl: String, val objectName: String)
 
     suspend fun getAgoraCredential(): CloudResult<AgoraCredential> = withContext(Dispatchers.IO) {
-        if (!tokenUsable()) refreshTokens()
+        if (!auth.tokenUsable()) auth.refreshTokens()
         try {
             val json = getRaw(gateway + deviceApi + "/device/list/agora-token?source=slicer", authed = true)
             if (!isSuccess(json)) {
@@ -649,7 +385,7 @@ class ElegooCloudClient(context: Context) {
 
     suspend fun getOssEntrypoint(fileName: String, fileMd5Base64: String): CloudResult<OssEntrypoint> =
         withContext(Dispatchers.IO) {
-            if (!tokenUsable()) refreshTokens()
+            if (!auth.tokenUsable()) auth.refreshTokens()
             try {
                 val path = deviceApi + "/oss/biz-entrypoint?filename=" + URLEncoder.encode(fileName, "UTF-8") +
                     "&bucketAlias=iot-private&module=gcode&fileMd5=" + URLEncoder.encode(fileMd5Base64, "UTF-8")

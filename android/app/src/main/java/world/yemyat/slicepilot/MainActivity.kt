@@ -77,7 +77,7 @@ class MainActivity : ComponentActivity() {
                 .firstNotNullOfOrNull { data.getQueryParameter(it) }
             android.util.Log.i("AuthCallback", "deep-link token=$token")
             if (!token.isNullOrBlank()) {
-                cloud.saveSession(token, intent.getStringExtra("refresh_token"), cloud.nickname, cloud.email)
+                cloud.auth.saveSession(token, intent.getStringExtra("refresh_token"), cloud.auth.nickname, cloud.auth.email)
                 vm.checkSession()
                 return
             }

@@ -7,8 +7,9 @@ This repository intentionally does **not** include prebuilt native dependency bi
 ## Repository Layout
 
 ```text
-android/              Android Gradle project, JNI bridge, native build scripts
+android/              Android Gradle project, app module, cloud-auth module, JNI bridge, native build scripts
 src/libslic3r/        Slicing library sources used by the Android native build
+src/slic3r/           Shared slic3r headers/sources required by libslic3r
 deps_src/             Vendored native dependency sources used by the Android build
 ```
 
@@ -27,6 +28,27 @@ $HOME/Android/Sdk/ndk/27.0.12077973
 ```
 
 Edit `android/native-build/build.sh` if your NDK path is different.
+
+## Cloud Auth Library
+
+The `:cloud-auth` module owns Elegoo cloud sign-in/session state:
+
+```text
+android/cloud-auth/
+```
+
+It provides:
+
+- `CloudAuthClient`
+- `CloudAuthResult`
+- `CloudAuthUser`
+- `CloudLoginWebView`
+
+The app module depends on it with:
+
+```kotlin
+implementation(project(":cloud-auth"))
+```
 
 ## Native Dependencies
 

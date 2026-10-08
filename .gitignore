@@ -13,6 +13,6 @@ build/
 .cxx/
 
 # Native dependency build outputs and downloaded sources
-android/native-build/prefix/
-android/native-build/dl/
-android/native-build/src/
+android/native-build/prefix
+android/native-build/dl
+android/native-build/src

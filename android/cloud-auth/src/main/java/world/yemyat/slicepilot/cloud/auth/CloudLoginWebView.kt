@@ -1,4 +1,4 @@
-package world.yemyat.slicepilot.ui
+package world.yemyat.slicepilot.cloud.auth
 
 import android.annotation.SuppressLint
 import android.net.Uri
@@ -17,26 +17,25 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 
-private const val REDIRECT_SCHEME = "world.yemyat.slicepilot"
-private const val REDIRECT_URI = "$REDIRECT_SCHEME://oauth/callback"
+const val DEFAULT_CLOUD_AUTH_REDIRECT_SCHEME = "world.yemyat.slicepilot"
 
 @SuppressLint("SetJavaScriptEnabled")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CloudLoginWebView(
-    vm: AppViewModel,
-    url: String,
+    loginPageUrl: String,
+    redirectScheme: String = DEFAULT_CLOUD_AUTH_REDIRECT_SCHEME,
+    checkLogin: suspend () -> Boolean,
     onSuccess: () -> Unit,
     onClose: () -> Unit,
 ) {
     var logged by remember { mutableStateOf(false) }
-    var webViewRef by remember { mutableStateOf<WebView?>(null) }
     val state = remember { "st" + System.currentTimeMillis() }
 
-    val authorizeUrl = remember(url, state) {
-        Uri.parse(url).buildUpon()
+    val authorizeUrl = remember(loginPageUrl, state, redirectScheme) {
+        Uri.parse(loginPageUrl).buildUpon()
             .appendQueryParameter("client_id", "6")
-            .appendQueryParameter("redirect_uri", REDIRECT_URI)
+            .appendQueryParameter("redirect_uri", "$redirectScheme://oauth/callback")
             .appendQueryParameter("state", state)
             .appendQueryParameter("response_type", "code")
             .build()
@@ -46,7 +45,7 @@ fun CloudLoginWebView(
     LaunchedEffect(Unit) {
         while (!logged) {
             delay(1500)
-            if (vm.tryLoginWithWebViewCookies()) logged = true
+            if (checkLogin()) logged = true
         }
         onSuccess()
     }
@@ -74,15 +73,15 @@ fun CloudLoginWebView(
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 CookieManager.getInstance().flush()
                             }
+
                             override fun shouldOverrideUrlLoading(
                                 view: WebView?,
                                 request: WebResourceRequest?,
                             ): Boolean {
                                 val u = request?.url?.toString() ?: return false
-                                return u.startsWith(REDIRECT_SCHEME + "://")
+                                return u.startsWith("$redirectScheme://")
                             }
                         }
-                        webViewRef = this
                         loadUrl(authorizeUrl)
                     }
                 },

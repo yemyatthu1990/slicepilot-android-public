@@ -6,6 +6,7 @@ import world.yemyat.slicepilot.NativeLib
 import world.yemyat.slicepilot.cloud.CloudPrinter
 import world.yemyat.slicepilot.cloud.CloudResult
 import world.yemyat.slicepilot.cloud.ElegooCloudClient
+import world.yemyat.slicepilot.cloud.auth.CloudAuthResult
 import world.yemyat.slicepilot.model.GcodePreview
 import world.yemyat.slicepilot.model.MeshData
 import world.yemyat.slicepilot.model.ModelParser
@@ -465,7 +466,7 @@ class AppViewModel(
         val p = printer ?: return
         viewModelScope.launch {
             var info: world.yemyat.slicepilot.cloud.FilamentInfo? = lanPrint.getFilament(p.ip, p.serial)
-            if ((info == null || (!info.present && info.trays.isEmpty())) && cloud.isLoggedIn && p.serial.isNotBlank()) {
+            if ((info == null || (!info.present && info.trays.isEmpty())) && cloud.auth.isLoggedIn && p.serial.isNotBlank()) {
                 info = cloud.getFilament(p.serial)
             }
             if (info != null && (info.present || info.trays.isNotEmpty())) {
@@ -787,15 +788,15 @@ class AppViewModel(
         startSlice(bedType = bedTypeForPlate(_setupPlate.value), autoPrint = true)
     }
 
-    val cloudUser get() = cloud.nickname
-    val cloudLoggedIn get() = cloud.isLoggedIn
-    val loginPageUrl get() = cloud.loginPageUrl
+    val cloudUser get() = cloud.auth.nickname
+    val cloudLoggedIn get() = cloud.auth.isLoggedIn
+    val loginPageUrl get() = cloud.auth.loginPageUrl
     var cloudRegion: String
-        get() = cloud.region
-        set(v) { cloud.region = v }
+        get() = cloud.auth.region
+        set(v) { cloud.auth.region = v }
 
     val savedCloudEmail: String
-        get() = prefs.getString("cloud_email", cloud.email).orEmpty()
+        get() = prefs.getString("cloud_email", cloud.auth.email).orEmpty()
     val savedCloudPassword: String
         get() = if (prefs.getBoolean("cloud_remember_password", false)) {
             prefs.getString("cloud_password", "").orEmpty()
@@ -856,7 +857,7 @@ class AppViewModel(
             }
         }
         recomputeAvailablePrinters()
-        if (cloud.isLoggedIn) refreshPrinters()
+        if (cloud.auth.isLoggedIn) refreshPrinters()
     }
 
     fun onModelPicked(path: String) {
@@ -1144,7 +1145,7 @@ class AppViewModel(
                     _sliceProgress.value = 1f
                     if (autoPrint) {
                         val p = selectedPrinter
-                        if (p?.cloudPrinter != null && cloud.isLoggedIn) {
+                        if (p?.cloudPrinter != null && cloud.auth.isLoggedIn) {
                             sendToPrinter(p.cloudPrinter)
                         } else {
                             _cloudMessage.value = "Sliced. Connect a printer to print."
@@ -1193,14 +1194,14 @@ class AppViewModel(
 
     fun nativeLogin(email: String, password: String, done: (Boolean) -> Unit = {}) {
         viewModelScope.launch {
-            when (val r = cloud.login(email, password)) {
-                is CloudResult.Ok -> {
-                    EventNotifier.trackEvent("cloud_login_success", mapOf("user" to cloud.nickname))
-                    _cloudMessage.value = "Signed in as ${cloud.nickname}"
+            when (val r = cloud.auth.login(email, password)) {
+                is CloudAuthResult.Ok -> {
+                    EventNotifier.trackEvent("cloud_login_success", mapOf("user" to cloud.auth.nickname))
+                    _cloudMessage.value = "Signed in as ${cloud.auth.nickname}"
                     refreshPrinters()
                     done(true)
                 }
-                is CloudResult.Err -> {
+                is CloudAuthResult.Err -> {
                     EventNotifier.trackError("cloud_login_failed", null, mapOf("message" to r.message))
                     _cloudMessage.value = r.message
                     done(false)
@@ -1210,7 +1211,7 @@ class AppViewModel(
     }
 
     fun checkSession() {
-        val wasLoggedIn = cloud.isLoggedIn
+        val wasLoggedIn = cloud.auth.isLoggedIn
         viewModelScope.launch {
             when (val r = cloud.validateSession()) {
                 is CloudResult.Ok -> {
@@ -1218,11 +1219,16 @@ class AppViewModel(
                         "cloud_session_validated",
                         mapOf("user" to r.value.email.orEmpty()),
                     )
-                    cloud.saveSession(cloud.accessToken ?: "", cloud.refreshToken, r.value.nickname, r.value.email)
+                    cloud.auth.saveSession(
+                        cloud.auth.accessToken ?: "",
+                        cloud.auth.refreshToken,
+                        r.value.nickname,
+                        r.value.email,
+                    )
                     refreshPrinters()
                 }
                 is CloudResult.Err -> {
-                    if (cloud.isAuthFailure(r.message)) {
+                    if (cloud.auth.isAuthFailure(r.message)) {
                         EventNotifier.trackEvent(
                             "cloud_session_expired",
                             mapOf("was_logged_in" to wasLoggedIn, "message" to r.message),
@@ -1240,7 +1246,7 @@ class AppViewModel(
 
     private fun handleCloudSignedOut(message: String? = null) {
         val wasCloudSelected = _selectedPrinter.value?.isLocal == false
-        val hadCloudState = wasCloudSelected || _printers.value.isNotEmpty() || cloud.isLoggedIn
+        val hadCloudState = wasCloudSelected || _printers.value.isNotEmpty() || cloud.auth.isLoggedIn
         if (!hadCloudState && message.isNullOrBlank()) return
 
         EventNotifier.trackEvent(
@@ -1248,7 +1254,7 @@ class AppViewModel(
             mapOf("message" to message.orEmpty(), "was_cloud_selected" to wasCloudSelected),
         )
         mqtt.stop()
-        cloud.logout()
+        cloud.auth.logout()
         _printers.value = emptyList()
         if (wasCloudSelected) {
             _selectedPrinter.value = null
@@ -1263,17 +1269,22 @@ class AppViewModel(
     }
 
     suspend fun tryLoginWithWebViewCookies(): Boolean {
-        val cookie = cloud.captureWebViewCookie()
+        val cookie = cloud.auth.captureWebViewCookie()
         if (cookie.isBlank()) return false
-        cloud.sessionCookie = cookie
-        return when (val r = cloud.checkSession()) {
-            is CloudResult.Ok -> {
-                cloud.saveSession(cloud.accessToken ?: "", cloud.refreshToken, r.value.nickname, r.value.email)
-                cloud.sessionCookie = cookie
+        cloud.auth.sessionCookie = cookie
+        return when (val r = cloud.auth.checkSession()) {
+            is CloudAuthResult.Ok -> {
+                cloud.auth.saveSession(
+                    cloud.auth.accessToken ?: "",
+                    cloud.auth.refreshToken,
+                    r.value.nickname,
+                    r.value.email,
+                )
+                cloud.auth.sessionCookie = cookie
                 refreshPrinters()
                 true
             }
-            is CloudResult.Err -> {
+            is CloudAuthResult.Err -> {
                 android.util.Log.i("CloudClient", "tryLogin not yet: ${r.message}")
                 false
             }
@@ -1308,7 +1319,7 @@ class AppViewModel(
     }
 
     fun refreshPrinters() {
-        val wasLoggedIn = cloud.isLoggedIn
+        val wasLoggedIn = cloud.auth.isLoggedIn
         viewModelScope.launch {
             when (val r = cloud.listPrinters()) {
                 is CloudResult.Ok -> {
@@ -1333,7 +1344,7 @@ class AppViewModel(
                     refreshFilaments(r.value)
                 }
                 is CloudResult.Err -> {
-                    if (cloud.isAuthFailure(r.message)) {
+                    if (cloud.auth.isAuthFailure(r.message)) {
                         handleCloudSignedOut(
                             if (wasLoggedIn) "Signed out on another device" else null,
                         )
