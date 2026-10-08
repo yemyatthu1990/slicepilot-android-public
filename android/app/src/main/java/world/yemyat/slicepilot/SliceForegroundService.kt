@@ -301,6 +301,10 @@ class SliceForegroundService : Service() {
                 error = error,
             )
         }
+        try {
+            NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID)
+        } catch (_: Exception) {
+        }
         showResultNotification(
             title = "Slice failed",
             text = error.ifBlank { "Unknown error" },
@@ -382,6 +386,10 @@ class SliceForegroundService : Service() {
                 error = null,
             )
         }
+        try {
+            NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID)
+        } catch (_: Exception) {
+        }
         showResultNotification(
             title = "Slice complete",
             text = completeNotificationText(outPath, stats),
@@ -445,6 +453,7 @@ class SliceForegroundService : Service() {
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setAutoCancel(true)
+            .setOngoing(false)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setContentIntent(openAppPendingIntent(openPreview))
             .setGroup(GROUP_SLICE)
