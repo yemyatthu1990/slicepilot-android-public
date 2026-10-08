@@ -37,7 +37,6 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import world.yemyat.slicepilot.preview.ModelPreviewView
 import world.yemyat.slicepilot.model.MeshData
-import world.yemyat.slicepilot.ui.components.SpiritedCharacterScene
 import world.yemyat.slicepilot.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -79,12 +78,6 @@ fun HomeScreen(
                 "A cute little slicer for your next 3D print.",
                 fontSize = 17.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
-            SpiritedCharacterScene(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(132.dp),
             )
 
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
