@@ -7,7 +7,7 @@ import kotlin.math.sqrt
 
 enum class GcodePart { PERIMETER, INFILL, TOP_SHELL, BOTTOM_SHELL, SUPPORT, SUPPORT_INTERFACE, TRAVEL, OTHER }
 
-class PartGeometry(val part: GcodePart, val vertices: FloatArray, val normals: FloatArray)
+class PartGeometry(val part: GcodePart, val vertices: FloatArray)
 
 class GcodeLayer(
     val index: Int,
@@ -107,8 +107,7 @@ object GcodePreviewParser {
 
     fun parse(file: File, defaultWidth: Float = 0.45f, progress: ((Float) -> Unit)? = null): GcodePreview {
         val total = if (file.exists()) file.length().coerceAtLeast(1) else 1
-        val layerVerts = HashMap<GcodePart, ArrayList<Float>>()
-        val layerNormals = HashMap<GcodePart, ArrayList<Float>>()
+        val layerVerts = HashMap<GcodePart, FloatBuf>()
         val layers = ArrayList<GcodeLayer>()
         var x = 0f; var y = 0f; var z = 0f; var e = 0f
         var width = defaultWidth
@@ -122,16 +121,25 @@ object GcodePreviewParser {
         var read = 0L
 
         fun flushLayer() {
-            if (layerVerts.isNotEmpty()) {
-                val parts = layerVerts.filter { it.value.isNotEmpty() }
-                    .map { PartGeometry(it.key, it.value.toFloatArray(), layerNormals[it.key]?.toFloatArray() ?: FloatArray(0)) }
-                if (parts.isNotEmpty()) {
-                    layers.add(GcodeLayer(layerIndex, z, parts))
-                    layerIndex++
+            var hasData = false
+            for (buf in layerVerts.values) {
+                if (buf.size > 0) {
+                    hasData = true
+                    break
                 }
-                layerVerts.values.forEach { it.clear() }
-                layerNormals.values.forEach { it.clear() }
             }
+            if (!hasData) return
+
+            val parts = ArrayList<PartGeometry>(layerVerts.size)
+            for ((gcodePart, verts) in layerVerts) {
+                if (verts.size == 0) continue
+                parts.add(PartGeometry(gcodePart, verts.toFloatArray()))
+            }
+            if (parts.isNotEmpty()) {
+                layers.add(GcodeLayer(layerIndex, z, parts))
+                layerIndex++
+            }
+            layerVerts.values.forEach { it.clear() }
         }
 
         file.bufferedReader().useLines { lines ->
@@ -193,15 +201,12 @@ object GcodePreviewParser {
                 if (op == "G1" && extruding) {
                     val dx = nx - x; val dy = ny - y
                     val len = sqrt(dx * dx + dy * dy)
-                    val verts = layerVerts.getOrPut(part) { ArrayList() }
-                    val norms = layerNormals.getOrPut(part) { ArrayList() }
+                    val verts = layerVerts.getOrPut(part) { FloatBuf() }
                     if (len > 1e-4f && verts.size / 18 < MAX_SEGMENTS_PER_LAYER) {
                         val ux = dx / len; val uy = dy / len
                         val px = -uy * width * 0.5f; val py = ux * width * 0.5f
                         val zz = nz
                         val zb = zz - thickness
-                        val spx = -uy; val spy = ux
-                        val snx = uy; val sny = -ux
                         // top face (normal +z)
                         verts.add(x + px); verts.add(y + py); verts.add(zz)
                         verts.add(x - px); verts.add(y - py); verts.add(zz)
@@ -209,7 +214,7 @@ object GcodePreviewParser {
                         verts.add(x - px); verts.add(y - py); verts.add(zz)
                         verts.add(nx - px); verts.add(ny - py); verts.add(zz)
                         verts.add(nx + px); verts.add(ny + py); verts.add(zz)
-                        for (i in 0 until 6) { norms.add(0f); norms.add(0f); norms.add(1f) }
+
                         // +p side
                         verts.add(x + px); verts.add(y + py); verts.add(zz)
                         verts.add(nx + px); verts.add(ny + py); verts.add(zz)
@@ -217,7 +222,7 @@ object GcodePreviewParser {
                         verts.add(x + px); verts.add(y + py); verts.add(zz)
                         verts.add(nx + px); verts.add(ny + py); verts.add(zb)
                         verts.add(x + px); verts.add(y + py); verts.add(zb)
-                        for (i in 0 until 6) { norms.add(spx); norms.add(spy); norms.add(0f) }
+
                         // -p side
                         verts.add(x - px); verts.add(y - py); verts.add(zz)
                         verts.add(nx - px); verts.add(ny - py); verts.add(zb)
@@ -225,7 +230,7 @@ object GcodePreviewParser {
                         verts.add(x - px); verts.add(y - py); verts.add(zz)
                         verts.add(x - px); verts.add(y - py); verts.add(zb)
                         verts.add(nx - px); verts.add(ny - py); verts.add(zb)
-                        for (i in 0 until 6) { norms.add(snx); norms.add(sny); norms.add(0f) }
+
                         minX = min(minX, min(x, nx) - width); maxX = max(maxX, max(x, nx) + width)
                         minY = min(minY, min(y, ny) - width); maxY = max(maxY, max(y, ny) + width)
                         maxZ = max(maxZ, zz)
@@ -239,6 +244,42 @@ object GcodePreviewParser {
         flushLayer()
         if (minX > maxX) { minX = 0f; maxX = 1f; minY = 0f; maxY = 1f }
         return GcodePreview(layers, minX, minY, maxX, maxY, maxZ)
+    }
+
+    private class FloatBuf(initialCapacity: Int = 4096) {
+        private var data = FloatArray(initialCapacity)
+        var size = 0
+            private set
+
+        fun add(value: Float) {
+            ensureCapacity(1)
+            data[size++] = value
+        }
+
+        fun addTriple(x: Float, y: Float, z: Float, count: Int) {
+            ensureCapacity(count * 3)
+            var i = 0
+            while (i < count) {
+                data[size++] = x
+                data[size++] = y
+                data[size++] = z
+                i++
+            }
+        }
+
+        fun clear() {
+            size = 0
+        }
+
+        fun toFloatArray(): FloatArray = data.copyOf(size)
+
+        private fun ensureCapacity(extra: Int) {
+            val required = size + extra
+            if (required <= data.size) return
+            var newCapacity = data.size * 2
+            if (newCapacity < required) newCapacity = required
+            data = data.copyOf(newCapacity)
+        }
     }
 
     fun colorFor(part: GcodePart): FloatArray = when (part) {

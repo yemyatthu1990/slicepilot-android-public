@@ -186,7 +186,7 @@ class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer 
             val n = layers.coerceIn(0, part.layerCount)
             val count = part.cumulativeVertices[n]
             if (count <= 0 || gpu.vbo == 0) continue
-            bindVertexLayout(gpu.vbo)
+            bindPositionOnlyLayout(gpu.vbo)
             setColor(part.color)
             GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, count)
         }
@@ -204,6 +204,14 @@ class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer 
         GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, STRIDE_BYTES, 0)
         GLES30.glEnableVertexAttribArray(1)
         GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, STRIDE_BYTES, NORMAL_OFFSET_BYTES)
+    }
+
+    private fun bindPositionOnlyLayout(vbo: Int) {
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vbo)
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, POSITION_STRIDE_BYTES, 0)
+        GLES30.glDisableVertexAttribArray(1)
+        GLES30.glVertexAttrib3f(1, 0f, 0f, 1f)
     }
 
     private fun setColor(color: FloatArray) {
@@ -299,6 +307,7 @@ class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer 
         private const val FIELD_OF_VIEW_DEGREES = 40f
         private const val FIT_MARGIN = 1.25f
         private const val STRIDE_BYTES = 24
+        private const val POSITION_STRIDE_BYTES = 12
         private const val NORMAL_OFFSET_BYTES = 12
         private const val NO_CLIP = 1.0e9f
         private const val PLATE_ALPHA = 0.5f

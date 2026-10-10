@@ -204,6 +204,7 @@ class ElegooCloudClient(
                     for (ci in 0 until arr.length()) {
                         val c = arr.getJSONObject(ci)
                         if (c.optInt("connected", 0) != 1) continue
+                        val canvasId = c.optInt("canvas_id", c.optInt("canvasId", ci))
                         val tl = c.optJSONArray("tray_list") ?: continue
                         for (ti in 0 until tl.length()) {
                             val t = tl.getJSONObject(ti)
@@ -214,6 +215,7 @@ class ElegooCloudClient(
                                     name = t.optString("filament_name", ""),
                                     type = t.optString("filament_type", ""),
                                     colorHex = normColor(t.optString("filament_color", "")),
+                                    canvasId = canvasId,
                                 )
                             )
                         }

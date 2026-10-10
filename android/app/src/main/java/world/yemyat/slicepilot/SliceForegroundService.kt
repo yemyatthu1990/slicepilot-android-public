@@ -272,7 +272,7 @@ class SliceForegroundService : Service() {
                 return@launch
             }
 
-            handleSuccess(jobId, outPath, startedAt, printer, filament, process)
+            handleSuccess(jobId, outPath, startedAt, printer, filament, process, modelPath)
         }
     }
 
@@ -369,6 +369,7 @@ class SliceForegroundService : Service() {
         printer: String,
         filament: String,
         process: String,
+        modelPath: String,
     ) {
         _state.update {
             it.copy(
@@ -428,6 +429,8 @@ class SliceForegroundService : Service() {
             text = completeNotificationText(outPath, stats),
             openPreview = true,
             error = false,
+            gcodePath = outPath,
+            modelPath = modelPath,
         )
         EventNotifier.trackEvent(
             "slice_completed",
@@ -477,6 +480,8 @@ class SliceForegroundService : Service() {
         text: String,
         openPreview: Boolean,
         error: Boolean,
+        gcodePath: String? = null,
+        modelPath: String? = null,
     ) {
         val notification = NotificationCompat.Builder(this, CHANNEL_RESULT)
             .setSmallIcon(if (error) android.R.drawable.stat_notify_error else android.R.drawable.stat_sys_download_done)
@@ -486,7 +491,7 @@ class SliceForegroundService : Service() {
             .setAutoCancel(true)
             .setOngoing(false)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
-            .setContentIntent(openAppPendingIntent(openPreview))
+            .setContentIntent(openAppPendingIntent(openPreview, gcodePath, modelPath))
             .setGroup(GROUP_SLICE)
             .build()
         try {
@@ -528,10 +533,16 @@ class SliceForegroundService : Service() {
         return if (details.isBlank()) fileName else "$details · $fileName"
     }
 
-    private fun openAppPendingIntent(openPreview: Boolean): PendingIntent {
+    private fun openAppPendingIntent(
+        openPreview: Boolean,
+        gcodePath: String? = null,
+        modelPath: String? = null,
+    ): PendingIntent {
         val intent = Intent(this, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             putExtra("open_preview", openPreview)
+            if (!gcodePath.isNullOrBlank()) putExtra("gcode_path", gcodePath)
+            if (!modelPath.isNullOrBlank()) putExtra("model_path", modelPath)
         }
         return PendingIntent.getActivity(
             this,

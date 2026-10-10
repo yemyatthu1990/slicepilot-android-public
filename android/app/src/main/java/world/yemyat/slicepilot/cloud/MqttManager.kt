@@ -16,6 +16,13 @@ data class LoadedTray(
     val name: String,
     val type: String,
     val colorHex: String?,
+    val canvasId: Int = 0,
+)
+
+data class PrintSlot(
+    val t: Int,
+    val canvasId: Int,
+    val trayId: Int,
 )
 
 data class FilamentInfo(

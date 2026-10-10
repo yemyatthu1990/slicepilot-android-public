@@ -28,10 +28,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -47,6 +53,9 @@ private data class PrinterBrand(
 private val supportedPrinterBrands = listOf(
     PrinterBrand("elegoo", "Elegoo"),
 )
+
+private const val ELEGOO_TERMS_URL = "https://www.elegoo.com/pages/terms-of-service"
+private const val ELEGOO_PRIVACY_URL = "https://www.elegoo.com/pages/privacy-policy"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -455,14 +464,17 @@ private fun CloudSection(
     selectedPrinter: ConnectedPrinter?,
     onDismiss: () -> Unit,
 ) {
+    val demoMode by vm.demoModeState.collectAsState()
     if (!vm.cloudLoggedIn) {
         var email by rememberSaveable { mutableStateOf(vm.savedCloudEmail) }
         var password by rememberSaveable { mutableStateOf(vm.savedCloudPassword) }
         var rememberPassword by rememberSaveable { mutableStateOf(vm.rememberCloudPassword) }
+        var agreedToElegooTerms by rememberSaveable { mutableStateOf(false) }
         var busy by remember { mutableStateOf(false) }
+        val uriHandler = LocalUriHandler.current
 
         fun doSignIn() {
-            if (busy || email.isBlank() || password.isBlank()) return
+            if (busy || email.isBlank() || password.isBlank() || !agreedToElegooTerms) return
             busy = true
             vm.nativeLogin(email, password) { ok ->
                 busy = false
@@ -506,9 +518,51 @@ private fun CloudSection(
             Spacer(Modifier.width(8.dp))
             Text("Remember password", fontSize = 14.sp)
         }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { agreedToElegooTerms = !agreedToElegooTerms },
+        ) {
+            Checkbox(
+                checked = agreedToElegooTerms,
+                onCheckedChange = { agreedToElegooTerms = it },
+            )
+            Spacer(Modifier.width(8.dp))
+            val linkStyle = SpanStyle(
+                color = LanternGold,
+                textDecoration = TextDecoration.Underline,
+            )
+            val termsText = buildAnnotatedString {
+                withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
+                    append("I agree to the ")
+                }
+                pushStringAnnotation(tag = "URL", annotation = ELEGOO_TERMS_URL)
+                withStyle(linkStyle) { append("ELEGOO Terms of Service") }
+                pop()
+                withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
+                    append(" and ")
+                }
+                pushStringAnnotation(tag = "URL", annotation = ELEGOO_PRIVACY_URL)
+                withStyle(linkStyle) { append("Privacy Policy") }
+                pop()
+                withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
+                    append(".")
+                }
+            }
+            ClickableText(
+                text = termsText,
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                onClick = { offset ->
+                    termsText.getStringAnnotations(tag = "URL", start = offset, end = offset)
+                        .firstOrNull()
+                        ?.let { uriHandler.openUri(it.item) }
+                },
+            )
+        }
         Button(
             onClick = { doSignIn() },
-            enabled = !busy && email.isNotBlank() && password.isNotBlank(),
+            enabled = !busy && email.isNotBlank() && password.isNotBlank() && agreedToElegooTerms,
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier.fillMaxWidth().height(56.dp),
         ) {
@@ -522,7 +576,11 @@ private fun CloudSection(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(vm.cloudUser.ifEmpty { "Signed in" }, fontWeight = FontWeight.Bold, fontSize = 17.sp)
-                Text(vm.loginPageUrl, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    if (demoMode) "Demo mode — printing is simulated" else vm.loginPageUrl,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             IconButton(onClick = { vm.refreshPrinters() }) {
                 Icon(Icons.Filled.Refresh, "Refresh")
@@ -552,7 +610,7 @@ private fun CloudSection(
             TextButton(onClick = { vm.signOut() }) {
                 Icon(Icons.Filled.CloudOff, null)
                 Spacer(Modifier.width(6.dp))
-                Text("Sign out")
+                Text(if (demoMode) "Exit demo" else "Sign out")
             }
             if (selectedPrinter?.isLocal == false) {
                 Button(

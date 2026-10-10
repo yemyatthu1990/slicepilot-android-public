@@ -184,4 +184,7 @@ if (EXISTS "${NATIVE_PREFIX}/lib/libTKernel.a")
     target_link_libraries(slice_core PRIVATE ${OCCT_LIBS})
 endif ()
 
-target_link_options(slice_core PRIVATE "-Wl,--build-id=sha1")
+target_link_options(slice_core PRIVATE
+    "-Wl,--build-id=sha1"
+    "-Wl,-z,max-page-size=16384"
+)

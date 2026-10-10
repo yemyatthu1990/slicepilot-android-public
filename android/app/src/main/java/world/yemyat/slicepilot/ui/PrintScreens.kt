@@ -302,7 +302,7 @@ fun PrintingScreen(vm: AppViewModel, onBack: () -> Unit) {
             if (sim.complete) {
                 BrandButton(
                     text = "Done",
-                    onClick = onBack,
+                    onClick = { vm.finishPrintToHome() },
                     modifier = Modifier.fillMaxWidth(),
                     height = 56.dp,
                 )

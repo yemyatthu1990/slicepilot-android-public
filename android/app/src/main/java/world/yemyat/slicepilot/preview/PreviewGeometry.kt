@@ -84,28 +84,16 @@ object PreviewGeometry {
             }
         }
         val posArrays = HashMap<GcodePart, FloatArray>()
-        val normArrays = HashMap<GcodePart, FloatArray>()
         for ((part, size) in byType) {
             posArrays[part] = FloatArray(size)
-            normArrays[part] = FloatArray(size)
         }
         val writeOffsets = HashMap<GcodePart, Int>()
         for (layer in preview.layers) {
             for (pg in layer.parts) {
                 if (pg.vertices.isEmpty()) continue
                 val pos = posArrays.getValue(pg.part)
-                val nrm = normArrays.getValue(pg.part)
                 val o = writeOffsets[pg.part] ?: 0
                 System.arraycopy(pg.vertices, 0, pos, o, pg.vertices.size)
-                if (pg.normals.size == pg.vertices.size) {
-                    System.arraycopy(pg.normals, 0, nrm, o, pg.normals.size)
-                } else {
-                    var k = o + 2
-                    while (k < o + pg.vertices.size) {
-                        nrm[k] = 1f
-                        k += 3
-                    }
-                }
                 writeOffsets[pg.part] = o + pg.vertices.size
                 val layerIndex = (layer.index + 1).coerceIn(0, layerCount)
                 countsByType.getValue(pg.part)[layerIndex] = pg.vertices.size / 3
@@ -119,7 +107,7 @@ object PreviewGeometry {
             out.add(
                 GcodePartGeometry(
                     part = part,
-                    vertices = interleave(posArrays.getValue(part), normArrays.getValue(part)),
+                    vertices = posArrays.getValue(part),
                     cumulativeVertices = cumulative,
                     layerCount = layerCount,
                     color = colorFor(part, defaultColor),

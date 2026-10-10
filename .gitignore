@@ -16,3 +16,7 @@ build/
 android/native-build/prefix
 android/native-build/dl
 android/native-build/src
+
+# Local secrets and tooling
+secrets/
+.venv-play/

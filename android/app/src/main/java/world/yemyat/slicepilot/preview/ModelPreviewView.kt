@@ -165,9 +165,14 @@ class ModelPreviewView(context: Context) : GLSurfaceView(context) {
         scene.clearGeometry()
         baseMesh = null
         val modelColor = PreviewGeometry.parseColor(modelColorHex) ?: PreviewGeometry.GCODE_DEFAULT_COLOR
-        scene.gcode = PreviewGeometry.gcodeParts(preview, modelColor)
-        scene.plate = PreviewGeometry.plate(bedHalfX, bedHalfY, -0.5f, bedHalfX, bedHalfY)
-        scene.plateColor = PreviewGeometry.DEFAULT_PLATE_COLOR
+        try {
+            scene.plate = PreviewGeometry.plate(bedHalfX, bedHalfY, -0.5f, bedHalfX, bedHalfY)
+            scene.plateColor = PreviewGeometry.DEFAULT_PLATE_COLOR
+            scene.gcode = PreviewGeometry.gcodeParts(preview, modelColor)
+        } catch (_: OutOfMemoryError) {
+            scene.clearGeometry()
+            return
+        }
         scene.visibleLayers = preview.layers.size
         camera.frame(
             preview.centerX,

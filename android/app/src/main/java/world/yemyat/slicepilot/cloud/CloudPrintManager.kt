@@ -95,7 +95,12 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
         }
     }
 
-    suspend fun print(printer: CloudPrinter, gcode: File, onStatus: (String) -> Unit): CloudResult<Unit> =
+    suspend fun print(
+        printer: CloudPrinter,
+        gcode: File,
+        slot: PrintSlot? = null,
+        onStatus: (String) -> Unit,
+    ): CloudResult<Unit> =
         withContext(Dispatchers.IO) {
             try {
                 Log.i(TAG, "print start: printer=${printer.name} file=${gcode.name} size=${gcode.length()}")
@@ -164,7 +169,7 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
                                 .put("printer_check", false)
                                 .put("print_layout", "A")
                                 .put("bedlevel_force", false)
-                                .put("slot_map", JSONArray()),
+                                .put("slot_map", slotMapJson(slot)),
                         ),
                     20_000,
                 )
@@ -176,6 +181,16 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
                 CloudResult.Err(e.message ?: "print failed")
             }
         }
+
+    private fun slotMapJson(slot: PrintSlot?): JSONArray {
+        if (slot == null) return JSONArray()
+        return JSONArray().put(
+            JSONObject()
+                .put("t", slot.t)
+                .put("canvas_id", slot.canvasId)
+                .put("tray_id", slot.trayId),
+        )
+    }
 
     private fun send(channel: String, method: Int, params: JSONObject, timeoutMs: Long): Res {
         val c = client ?: return Res(false, "RTM not connected")

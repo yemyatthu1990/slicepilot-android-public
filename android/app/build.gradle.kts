@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,17 +7,33 @@ plugins {
     id("com.google.firebase.crashlytics")
 }
 
+val uploadKeystoreProps = Properties().apply {
+    val f = file("../../secrets/upload-keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
 android {
     namespace = "world.yemyat.slicepilot"
-    compileSdk = 34
+    compileSdk = 36
     ndkVersion = "27.0.12077973"
+
+    signingConfigs {
+        create("release") {
+            if (uploadKeystoreProps.isNotEmpty()) {
+                storeFile = file(uploadKeystoreProps.getProperty("storeFile"))
+                storePassword = uploadKeystoreProps.getProperty("storePassword")
+                keyAlias = uploadKeystoreProps.getProperty("keyAlias")
+                keyPassword = uploadKeystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
 
     defaultConfig {
         applicationId = "world.yemyat.slicepilot"
         minSdk = 28
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.5.3-android"
+        targetSdk = 36
+        versionCode = 11
+        versionName = "1.5.8-android"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -24,6 +42,7 @@ android {
             cmake {
                 arguments("-DANDROID_STL=c++_static",
                         "-DANDROID_PLATFORM=android-28",
+                        "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
                         "-DCMAKE_POLICY_VERSION_MINIMUM=3.5")
                 cppFlags("-std=c++17", "-DNDEBUG")
             }
@@ -39,8 +58,17 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            signingConfig = if (uploadKeystoreProps.isNotEmpty()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 
@@ -83,6 +111,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.activity:activity-compose:1.9.0")
+    implementation("androidx.fragment:fragment-ktx:1.6.2")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.2")

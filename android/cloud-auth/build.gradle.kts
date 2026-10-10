@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "world.yemyat.slicepilot.cloud.auth"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         minSdk = 28

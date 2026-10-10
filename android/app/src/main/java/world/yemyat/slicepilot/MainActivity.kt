@@ -48,8 +48,22 @@ class MainActivity : ComponentActivity() {
         val existing = activeInstance?.get()?.takeIf { !it.isFinishing && it !== this }
         if (existing != null) {
             existing.handleExternalIntent(intent)
-            val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            am.moveTaskToFront(existing.taskId, 0)
+            try {
+                if (checkSelfPermission(Manifest.permission.REORDER_TASKS) == PackageManager.PERMISSION_GRANTED) {
+                    val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                    am.moveTaskToFront(existing.taskId, 0)
+                } else {
+                    startActivity(
+                        android.content.Intent(this, MainActivity::class.java)
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    )
+                }
+            } catch (_: SecurityException) {
+                startActivity(
+                    android.content.Intent(this, MainActivity::class.java)
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                )
+            }
             finish()
             return
         }
@@ -59,15 +73,15 @@ class MainActivity : ComponentActivity() {
         EventNotifier.trackEvent("app_opened")
         requestNotificationPermissionIfNeeded()
         cloud = ElegooCloudClient(this)
+        val openPreview = intent?.getBooleanExtra("open_preview", false) == true
         vm = AppViewModel(
             cloud = cloud,
             cacheDir = cacheDir,
             prefs = getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE),
             context = this,
+            initialOpenPreviewGcodePath = if (openPreview) intent?.getStringExtra("gcode_path") else null,
+            initialOpenPreviewModelPath = if (openPreview) intent?.getStringExtra("model_path") else null,
         )
-        if (intent?.getBooleanExtra("open_preview", false) == true) {
-            vm.openPreviewIfReady()
-        }
         handleIncomingModel(intent)
         maybeRunHeadlessSlice()
         setContent {
@@ -86,7 +100,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (intent.getBooleanExtra("open_preview", false)) {
-            vm.openPreviewIfReady()
+            vm.openPreviewFromPaths(intent.getStringExtra("gcode_path"), intent.getStringExtra("model_path"))
         }
         val data = intent.data
         android.util.Log.i("AuthCallback", "onNewIntent scheme=${intent.scheme} data=$data extras=${intent.extras?.keySet()?.joinToString()}")
@@ -130,7 +144,12 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIncomingModel(intent: android.content.Intent?) {
         if (intent == null) return
-        val path = intent.getStringExtra("model_path") ?: intent.getStringExtra("model")
+        val openPreview = intent.getBooleanExtra("open_preview", false)
+        val path = if (openPreview) {
+            null
+        } else {
+            intent.getStringExtra("model_path") ?: intent.getStringExtra("model")
+        }
         if (path != null) {
             val f = File(path)
             if (f.exists()) {
@@ -169,7 +188,7 @@ class MainActivity : ComponentActivity() {
     fun handleExternalIntent(intent: android.content.Intent?) {
         setIntent(intent)
         if (intent?.getBooleanExtra("open_preview", false) == true) {
-            vm.openPreviewIfReady()
+            vm.openPreviewFromPaths(intent.getStringExtra("gcode_path"), intent.getStringExtra("model_path"))
         }
         handleIncomingModel(intent)
     }
@@ -255,16 +274,7 @@ class MainActivity : ComponentActivity() {
                 is Screen.Home -> HomeScreen(
                     vm = vm,
                     onPickModel = {
-                        modelPicker.launch(
-                            arrayOf(
-                                "model/stl",
-                                "model/3mf",
-                                "application/vnd.ms-pki.stl",
-                                "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
-                                "application/x-3mf",
-                                "application/sla",
-                            )
-                        )
+                        modelPicker.launch(arrayOf("*/*"))
                     },
                     onFullscreen = { fullscreen = true },
                     onOpenConnect = { showConnect = true },

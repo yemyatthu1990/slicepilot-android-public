@@ -46,6 +46,7 @@ class LanPrintManager {
         context: Context,
         gcode: File,
         target: DiscoveredPrinter? = null,
+        slot: PrintSlot? = null,
         onStatus: (String) -> Unit,
     ): CloudResult<Unit> =
         withContext(Dispatchers.IO) {
@@ -113,7 +114,7 @@ class LanPrintManager {
                     "file" to gcode.name,
                 ),
             )
-            return@withContext startPrintCc2(printer.ip, printer.serial, gcode.name)
+            return@withContext startPrintCc2(printer.ip, printer.serial, gcode.name, slot)
         }
 
     // ---------------- Discovery ----------------
@@ -281,7 +282,7 @@ class LanPrintManager {
             // CC2 puts canvas/AMS data under result.canvas_info.
             val canvas: JSONObject = result.optJSONObject("canvas_info") ?: result
 
-            fun trayFrom(obj: JSONObject, idx: Int): LoadedTray? {
+            fun trayFrom(obj: JSONObject, idx: Int, canvasId: Int): LoadedTray? {
                 val trayId = obj.optInt("tray_id", obj.optInt("trayId", idx))
                 val fType = obj.optString("filament_type", "").ifBlank { obj.optString("filamentType", "") }
                 val fName = obj.optString("filament_name", "").ifBlank { obj.optString("filamentName", "") }
@@ -290,23 +291,24 @@ class LanPrintManager {
                 if (status == 0 && fType.isBlank() && fName.isBlank() && fColor.isBlank()) return null
                 val name = fName.ifBlank { fType }.ifBlank { "Filament ${trayId + 1}" }
                 val type = fType.ifBlank { fName }.ifBlank { "PLA" }
-                return LoadedTray(trayId, name, type, normalizeColorHex(fColor))
+                return LoadedTray(trayId, name, type, normalizeColorHex(fColor), canvasId)
             }
 
             val trays = mutableListOf<LoadedTray>()
             canvas.optJSONArray("canvas_list")?.let { canvasList ->
                 for (i in 0 until canvasList.length()) {
                     val cv = canvasList.optJSONObject(i) ?: continue
+                    val canvasId = cv.optInt("canvas_id", cv.optInt("canvasId", i))
                     val trayList = cv.optJSONArray("tray_list") ?: continue
                     for (j in 0 until trayList.length()) {
-                        trayFrom(trayList.optJSONObject(j) ?: continue, j)?.let { trays.add(it) }
+                        trayFrom(trayList.optJSONObject(j) ?: continue, j, canvasId)?.let { trays.add(it) }
                     }
                 }
             }
             if (trays.isEmpty()) {
                 canvas.optJSONArray("tray_list")?.let { trayList ->
                     for (j in 0 until trayList.length()) {
-                        trayFrom(trayList.optJSONObject(j) ?: continue, j)?.let { trays.add(it) }
+                        trayFrom(trayList.optJSONObject(j) ?: continue, j, 0)?.let { trays.add(it) }
                     }
                 }
             }
@@ -326,7 +328,7 @@ class LanPrintManager {
                 ?: canvas.optJSONArray("mono_filament_info")?.optJSONObject(0)
                 ?: result.optJSONArray("mono_filament_info")?.optJSONObject(0)
             if (mono != null) {
-                trayFrom(mono, 0)?.let { t ->
+                trayFrom(mono, 0, 0)?.let { t ->
                     return FilamentInfo(present = true, name = t.type, colorHex = t.colorHex, trays = listOf(t))
                 }
             }
@@ -423,7 +425,17 @@ class LanPrintManager {
 
     // ---------------- CC2 start print (LAN MQTT) ----------------
 
-    private fun startPrintCc2(ip: String, serial: String, fileName: String): CloudResult<Unit> {
+    private fun slotMapJson(slot: PrintSlot?): org.json.JSONArray {
+        if (slot == null) return org.json.JSONArray()
+        return org.json.JSONArray().put(
+            JSONObject()
+                .put("t", slot.t)
+                .put("canvas_id", slot.canvasId)
+                .put("tray_id", slot.trayId),
+        )
+    }
+
+    private fun startPrintCc2(ip: String, serial: String, fileName: String, slot: PrintSlot?): CloudResult<Unit> {
         val clientId = "1_PC_" + (100000..999999).random()
         val requestId = clientId + "_req"
         val responses = ConcurrentLinkedQueue<String>()
@@ -485,7 +497,7 @@ class LanPrintManager {
                         .put("printer_check", false)
                         .put("print_layout", "A")
                         .put("bedlevel_force", false)
-                        .put("slot_map", org.json.JSONArray()),
+                        .put("slot_map", slotMapJson(slot)),
                 )
             val message = JSONObject()
                 .put("id", requestIdNum)
