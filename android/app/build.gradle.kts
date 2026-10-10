@@ -32,8 +32,8 @@ android {
         applicationId = "world.yemyat.slicepilot"
         minSdk = 28
         targetSdk = 36
-        versionCode = 11
-        versionName = "1.5.8-android"
+        versionCode = 12
+        versionName = "1.5.9-android"
 
         ndk {
             abiFilters += "arm64-v8a"

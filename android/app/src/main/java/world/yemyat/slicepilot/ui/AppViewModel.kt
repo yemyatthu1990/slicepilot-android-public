@@ -1337,6 +1337,42 @@ class AppViewModel(
         return true
     }
 
+    private suspend fun injectGcodeThumbnail(path: String) {
+        val mesh = _mesh.value ?: return
+        try {
+            withContext(Dispatchers.IO) {
+                val file = File(path)
+                if (!file.exists() || file.length() == 0L) return@withContext
+                if (world.yemyat.slicepilot.model.GcodeThumbnail.hasThumbnail(file)) return@withContext
+                val t = _modelTransform.value
+                val previewTransform = world.yemyat.slicepilot.preview.ModelTransform(
+                    rotX = t.rotX,
+                    rotY = t.rotY,
+                    rotZ = t.rotZ,
+                    mirrorX = t.mirrorX,
+                    mirrorY = t.mirrorY,
+                    mirrorZ = t.mirrorZ,
+                    offsetX = t.offsetX,
+                    offsetY = t.offsetY,
+                )
+                val bmp = world.yemyat.slicepilot.preview.ThumbnailRenderer.render(
+                    mesh,
+                    144,
+                    transform = previewTransform,
+                    modelColorHex = _config.value.filamentColor,
+                ) ?: return@withContext
+                val png = java.io.ByteArrayOutputStream().use { out ->
+                    bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                    out.toByteArray()
+                }
+                world.yemyat.slicepilot.model.GcodeThumbnail.inject(file, png, bmp.width, bmp.height)
+                bmp.recycle()
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("AppViewModel", "gcode thumbnail failed", t)
+        }
+    }
+
     private fun persistSliceResult(gcodePath: String?, modelPath: String?) {
         prefs.edit()
             .putString("last_gcode_path", gcodePath)
@@ -1375,6 +1411,7 @@ class AppViewModel(
 
                 if (!s.isRunning && s.error == null && s.gcodePath != null && s.jobId != handledSliceJobId) {
                     handledSliceJobId = s.jobId
+                    injectGcodeThumbnail(s.gcodePath)
                     persistSliceResult(s.gcodePath, modelPath)
                     if (s.autoPrint) {
                         val p = selectedPrinter
