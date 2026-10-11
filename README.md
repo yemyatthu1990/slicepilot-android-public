@@ -127,10 +127,13 @@ AGORA_APP_ID                                       Agora App ID for RTM
 
 ### CI (GitHub Actions)
 
-`.github/workflows/android.yml` runs on demand and materializes these
-repository secrets into `secrets/` before building: `BUILD_PROPERTIES`
-(contents of `secrets/build.properties`), `GOOGLE_SERVICES_JSON`,
-`KEYSTORE_PROPERTIES`, and `UPLOAD_KEYSTORE_BASE64`.
+`.github/workflows/android.yml` runs on `v*` tags (and manually). It writes
+the repository secrets into `secrets/`, builds the native dependencies
+(cached), then `assembleRelease` + `bundleRelease`, and publishes a GitHub
+Release with `app-release.apk` (direct install) and `app-release.aab` (the
+format submitted to Google Play). Repository secrets required:
+`BUILD_PROPERTIES`, `GOOGLE_SERVICES_JSON`, `KEYSTORE_PROPERTIES`,
+`UPLOAD_KEYSTORE_BASE64`.
 
 ## Firebase
 
