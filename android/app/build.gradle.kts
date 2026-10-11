@@ -41,6 +41,10 @@ tasks.matching { it.name.endsWith("GoogleServices") }.configureEach {
 tasks.matching { it.name.startsWith("generate") && it.name.endsWith("Resources") }.configureEach {
     dependsOn(copyFirebaseConfig)
 }
+tasks.matching { it.name.startsWith("merge") }.configureEach {
+    dependsOn(copyFirebaseConfig)
+}
+tasks.named("preBuild").configure { dependsOn(copyFirebaseConfig) }
 
 android {
     namespace = "world.yemyat.slicepilot"
