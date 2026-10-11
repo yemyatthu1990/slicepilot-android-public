@@ -1,5 +1,9 @@
 # SlicePilot Android
 
+[<img src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png" alt="Get it on Google Play" width="240">](https://play.google.com/store/apps/details?id=world.yemyat.slicepilot)
+
+Download on Google Play: <https://play.google.com/store/apps/details?id=world.yemyat.slicepilot>
+
 Standalone Android app for SlicePilot, including the Android UI, JNI bridge, `libslic3r`, and vendored native sources required by the Android native build.
 
 This repository intentionally does **not** include prebuilt native dependency binaries or downloaded third-party native source trees. Those are expected to be built locally or provided separately.
