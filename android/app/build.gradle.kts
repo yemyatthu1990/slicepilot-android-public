@@ -66,8 +66,8 @@ android {
         applicationId = "world.yemyat.slicepilot"
         minSdk = 28
         targetSdk = 36
-        versionCode = 12
-        versionName = "1.5.9-android"
+        versionCode = 13
+        versionName = "1.6.0-android"
 
         buildConfigField("String", "CLOUD_GATEWAY_GLOBAL", ktLiteral(secret("CLOUD_GATEWAY_GLOBAL")))
         buildConfigField("String", "CLOUD_GATEWAY_CHINA", ktLiteral(secret("CLOUD_GATEWAY_CHINA")))
