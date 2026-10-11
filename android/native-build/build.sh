@@ -110,7 +110,12 @@ build_openssl() {
   rm -rf "$PREFIX/ssl"
   ./Configure android-arm64 -D__ANDROID_API__=$API no-shared no-tests no-engine \
     --prefix="$PREFIX" --openssldir="$PREFIX/ssl" 1>/dev/null
-  make -j$JOBS install_sw 1>/dev/null
+  # OpenSSL 3.1's Makefile races on .dep file generation when -j make runs
+  # build_libs/build_programs in parallel sub-makes ("mv: cannot stat
+  # *.d.tmp"). Compile in parallel, then install with a serial no-op rebuild.
+  make -j$JOBS build_libs 1>/dev/null
+  make -j$JOBS build_apps 1>/dev/null
+  make -j1 install_sw 1>/dev/null
   cd "$HERE"
 }
 
