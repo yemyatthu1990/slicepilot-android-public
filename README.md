@@ -92,8 +92,23 @@ Install on a connected device:
 ./gradlew :app:installDebug
 ```
 
+## Secrets (not in the repo)
+
+Sensitive files are kept out of git in a local `secrets/` directory at the repo root:
+
+```text
+secrets/
+  google-services.json         Firebase config (copied to android/app/ at build time)
+  upload-keystore.properties   store/key passwords for the release signing config
+  slicepilot-upload.jks        upload signing keystore
+  slicepilot-upload-cert.pem   upload certificate
+  play-service-account.json    Google Play service account key (used by scripts/upload_play_internal.py)
+```
+
+To set up a fresh clone, create `secrets/` and provide these files. See `secrets.example/` for the expected layout and a template for `upload-keystore.properties`. Without the keystore, release builds fall back to the debug signing config; without `google-services.json`, the Google Services plugin fails the build (see Firebase section below).
+
 ## Firebase
 
-The repository includes `android/app/google-services.json` for the SlicePilot Firebase project.
+`android/app/google-services.json` is **not** committed. Place the Firebase config file at `secrets/google-services.json` and the Gradle build copies it into `android/app/` automatically (task `copyFirebaseConfig`).
 
 Firebase Analytics and Crashlytics are enabled. Caught errors are sent to both Analytics and Crashlytics.

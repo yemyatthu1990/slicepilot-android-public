@@ -12,6 +12,16 @@ val uploadKeystoreProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 
+// google-services.json is kept out of the repo (in secrets/). Copy it into the
+// module directory where the google-services plugin expects it.
+val copyFirebaseConfig = tasks.register<Copy>("copyFirebaseConfig") {
+    from(rootDir.resolve("../secrets/google-services.json"))
+    into(layout.projectDirectory)
+}
+tasks.matching { it.name.endsWith("GoogleServices") }.configureEach {
+    dependsOn(copyFirebaseConfig)
+}
+
 android {
     namespace = "world.yemyat.slicepilot"
     compileSdk = 36

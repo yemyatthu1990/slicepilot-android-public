@@ -17,6 +17,7 @@ android/native-build/prefix
 android/native-build/dl
 android/native-build/src
 
-# Local secrets and tooling
+# Local secrets and tooling (see secrets/README.md)
 secrets/
+android/app/google-services.json
 .venv-play/
