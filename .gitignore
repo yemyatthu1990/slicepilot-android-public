@@ -1,0 +1,23 @@
+.DS_Store
+*.log
+*.tmp
+
+# Android / Gradle
+android/.gradle/
+android/app/build/
+android/app/.cxx/
+android/core/build/
+android/core/build-test/
+android/local.properties
+build/
+.cxx/
+
+# Native dependency build outputs and downloaded sources
+android/native-build/prefix
+android/native-build/dl
+android/native-build/src
+
+# Local secrets and tooling (see secrets/README.md)
+secrets/
+android/app/google-services.json
+.venv-play/
