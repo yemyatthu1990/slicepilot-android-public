@@ -180,13 +180,13 @@ build_occt() {
 build_blosc() {
   echo ">>> blosc"
   cd "$SRC"
-  [ -d c-blosc-1.17.0-tm ] || { curl -sSL -o blosc.zip https://github.com/tamasmeszaros/c-blosc/archive/refs/heads/v1.17.0_tm.zip && unzip -q blosc.zip && mv c-blosc-v1.17.0_tm c-blosc-1.17.0-tm; }
+  [ -d c-blosc-1.17.0-tm ] || { curl -sSL -o blosc.zip https://github.com/tamasmeszaros/c-blosc/archive/refs/heads/v1.17.0_tm.zip && unzip -q blosc.zip && mv c-blosc-1.17.0_tm c-blosc-1.17.0-tm; }
   cd "$HERE"
   rm -rf "$SRC/c-blosc-1.17.0-tm/build" && mkdir -p "$SRC/c-blosc-1.17.0-tm/build"
   common_cmake -S "$SRC/c-blosc-1.17.0-tm" -B "$SRC/c-blosc-1.17.0-tm/build" \
     -DBUILD_SHARED=OFF -DBUILD_STATIC=ON -DBUILD_TESTS=OFF -DBUILD_BENCHMARKS=OFF \
     -DDEPRECATE_HARD=OFF -DCMAKE_C_STANDARD=11 \
-    -DCMAKE_C_FLAGS="-D_GNU_SOURCE"
+    -DCMAKE_C_FLAGS="-D_GNU_SOURCE -Wno-implicit-function-declaration -Wno-int-conversion -Wno-implicit-int"
   cmake --build "$SRC/c-blosc-1.17.0-tm/build" -j$JOBS && cmake --install "$SRC/c-blosc-1.17.0-tm/build"
 }
 
@@ -223,7 +223,7 @@ case "$target" in
   blosc) build_blosc ;;
   jpeg) build_jpeg ;;
   quick) build_header_only; build_expat; build_libpng; build_jpeg; build_qhull; build_nlopt; build_libnoise ;;
-  all) build_header_only; build_expat; build_libpng; build_jpeg; build_qhull; build_nlopt; build_libnoise; build_tbb; build_openssl; build_boost; build_freetype; build_occt; build_openvdb ;;
+  all) build_header_only; build_expat; build_libpng; build_jpeg; build_qhull; build_nlopt; build_libnoise; build_tbb; build_openssl; build_boost; build_freetype; build_blosc; build_occt; build_openvdb ;;
   *) echo "usage: $0 {boost|openssl|tbb|openvdb|quick|all}"; exit 1 ;;
 esac
 echo ">>> $target OK"
