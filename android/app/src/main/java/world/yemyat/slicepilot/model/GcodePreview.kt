@@ -55,6 +55,13 @@ class GcodeStats(
 object GcodePreviewParser {
     private const val MAX_SEGMENTS_PER_LAYER = 60000
 
+    // Global cap (~48MB of heap) on the preview geometry kept for all layers.
+    // Past the budget the parser degrades gracefully: first it drops infill /
+    // support geometry for later layers, then keeps only perimeters, and
+    // finally keeps perimeters on every other layer. This bounds memory so
+    // tall prints cannot OOM the app (256MB heap).
+    private const val MAX_TOTAL_FLOATS = 12L * 1024 * 1024
+
     fun parseStats(file: File): GcodeStats {
         var est: Long? = null
         var mm: Float? = null
@@ -119,6 +126,7 @@ object GcodePreviewParser {
         var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
         var maxZ = 0f
         var read = 0L
+        var totalFloats = 0L
 
         fun flushLayer() {
             var hasData = false
@@ -133,13 +141,14 @@ object GcodePreviewParser {
             val parts = ArrayList<PartGeometry>(layerVerts.size)
             for ((gcodePart, verts) in layerVerts) {
                 if (verts.size == 0) continue
-                parts.add(PartGeometry(gcodePart, verts.toFloatArray()))
+                val arr = verts.takeArray()
+                totalFloats += arr.size
+                parts.add(PartGeometry(gcodePart, arr))
             }
             if (parts.isNotEmpty()) {
                 layers.add(GcodeLayer(layerIndex, z, parts))
                 layerIndex++
             }
-            layerVerts.values.forEach { it.clear() }
         }
 
         file.bufferedReader().useLines { lines ->
@@ -198,7 +207,20 @@ object GcodePreviewParser {
                     }
                 }
                 val extruding = hasE && if (relativeExtrusion) ne > 1e-6f else ne > e + 1e-6f
-                if (op == "G1" && extruding) {
+                val overBudget = when {
+                    totalFloats < MAX_TOTAL_FLOATS -> 0
+                    totalFloats < MAX_TOTAL_FLOATS * 3 / 2 -> 1
+                    totalFloats < MAX_TOTAL_FLOATS * 2 -> 2
+                    else -> 3
+                }
+                val keepPart = when (overBudget) {
+                    0 -> true
+                    1 -> part == GcodePart.PERIMETER || part == GcodePart.TOP_SHELL ||
+                        part == GcodePart.BOTTOM_SHELL
+                    2 -> part == GcodePart.PERIMETER
+                    else -> part == GcodePart.PERIMETER && layerIndex % 2 == 0
+                }
+                if (op == "G1" && extruding && keepPart) {
                     val dx = nx - x; val dy = ny - y
                     val len = sqrt(dx * dx + dy * dy)
                     val verts = layerVerts.getOrPut(part) { FloatBuf() }
@@ -246,7 +268,7 @@ object GcodePreviewParser {
         return GcodePreview(layers, minX, minY, maxX, maxY, maxZ)
     }
 
-    private class FloatBuf(initialCapacity: Int = 4096) {
+    private class FloatBuf(private val initialCapacity: Int = 4096) {
         private var data = FloatArray(initialCapacity)
         var size = 0
             private set
@@ -267,11 +289,17 @@ object GcodePreviewParser {
             }
         }
 
-        fun clear() {
+        /**
+         * Returns the buffered values and resets the buffer. If the internal
+         * array is an exact fit it is adopted (no copy), keeping the memory
+         * peak of a layer flush at one array instead of two.
+         */
+        fun takeArray(): FloatArray {
+            val out = if (size == data.size) data else data.copyOf(size)
+            data = FloatArray(initialCapacity)
             size = 0
+            return out
         }
-
-        fun toFloatArray(): FloatArray = data.copyOf(size)
 
         private fun ensureCapacity(extra: Int) {
             val required = size + extra
