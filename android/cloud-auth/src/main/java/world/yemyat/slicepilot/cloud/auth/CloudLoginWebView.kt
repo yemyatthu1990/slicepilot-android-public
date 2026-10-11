@@ -34,7 +34,7 @@ fun CloudLoginWebView(
 
     val authorizeUrl = remember(loginPageUrl, state, redirectScheme) {
         Uri.parse(loginPageUrl).buildUpon()
-            .appendQueryParameter("client_id", "6")
+            .appendQueryParameter("client_id", BuildConfig.CLOUD_OAUTH_CLIENT_ID)
             .appendQueryParameter("redirect_uri", "$redirectScheme://oauth/callback")
             .appendQueryParameter("state", state)
             .appendQueryParameter("response_type", "code")

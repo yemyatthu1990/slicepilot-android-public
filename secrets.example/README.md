@@ -5,6 +5,8 @@ Copy this directory to `secrets/` at the repo root and fill in the real files.
 
 ```text
 secrets/
+  build.properties             Cloud endpoints, client ids, RSA public key,
+                               Agora App ID (injected into BuildConfig at build time).
   google-services.json         Firebase project config for the SlicePilot app.
                                Gradle copies it to android/app/ at build time.
   upload-keystore.properties   Signing config for release builds (see template).
@@ -18,3 +20,5 @@ secrets/
 Without `upload-keystore.properties`, release builds sign with the debug key.
 Without `google-services.json`, the build fails with a "google-services.json
 is missing" error from the Google Services Gradle plugin.
+Without `build.properties` (or `-P<KEY>=` / env vars), the build fails with a
+"Missing build secret" error naming the key.

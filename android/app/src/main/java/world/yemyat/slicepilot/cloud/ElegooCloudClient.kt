@@ -14,6 +14,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.security.SecureRandom
+import world.yemyat.slicepilot.BuildConfig
 
 data class CloudPrinter(
     val id: String,
@@ -36,9 +37,9 @@ class ElegooCloudClient(
 
     private val gateway: String
         get() = if (auth.region == "china")
-            "https://matrix.elegoo.com.cn"
+            BuildConfig.CLOUD_GATEWAY_CHINA
         else
-            "https://matrix.elegoo.com"
+            BuildConfig.CLOUD_GATEWAY_GLOBAL
 
     private val deviceApi = "/api/v1/device-management-server"
 

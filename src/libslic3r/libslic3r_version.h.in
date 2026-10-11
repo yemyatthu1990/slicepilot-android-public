@@ -18,7 +18,9 @@
 #define ELEGOO_ENABLE_DEBUG_OUTPUT @ELEGOO_ENABLE_DEBUG_OUTPUT@
 
 
-#if ELEGOO_INTERNAL_TESTING
+// Endpoint URLs are supplied by the build system via configure_file
+// placeholders (Android: android/core/CMakeLists.txt, fed from build
+// secrets). Nothing sensitive is committed.
 #define ELEGOO_CHINA_IOT_URL "@ELEGOO_CHINA_IOT_URL@"
 #define ELEGOO_GLOBAL_IOT_URL "@ELEGOO_GLOBAL_IOT_URL@"
 #define ELEGOO_CHINA_UPDATE_URL "@ELEGOO_CHINA_UPDATE_URL@"
@@ -33,24 +35,6 @@
 #define ELEGOO_GLOBAL_PROFILE_UPDATE_URL "@ELEGOO_GLOBAL_PROFILE_UPDATE_URL@"
 #define ELEGOO_CHINA_TELEMETRY_URL "@ELEGOO_CHINA_TELEMETRY_URL@"
 #define ELEGOO_GLOBAL_TELEMETRY_URL "@ELEGOO_GLOBAL_TELEMETRY_URL@"
-
-#else
-// for production use
-#define ELEGOO_CHINA_IOT_URL "https://matrix.elegoo.com.cn"
-#define ELEGOO_GLOBAL_IOT_URL "https://matrix.elegoo.com"
-#define ELEGOO_CHINA_UPDATE_URL "https://device.elegoo.com.cn/device-api/v1/device-server/software/fdmSlicer/released"
-#define ELEGOO_GLOBAL_UPDATE_URL "https://eu-device.elegoo.com/device-api/v1/device-server/software/fdmSlicer/released"
-#define ELEGOO_CHINA_LOGIN_URL "https://www.nexprint.cn/account/slicer-login"
-#define ELEGOO_GLOBAL_LOGIN_URL "https://www.nexprint.com/account/slicer-login"
-#define ELEGOO_CHINA_ONLINE_MODEL_URL "https://www.nexprint.cn/elegooSlicer"
-#define ELEGOO_GLOBAL_ONLINE_MODEL_URL "https://www.nexprint.com/elegooSlicer"
-#define ELEGOO_CHINA_PLUGIN_UPDATE_URL ""
-#define ELEGOO_GLOBAL_PLUGIN_UPDATE_URL ""
-#define ELEGOO_CHINA_PROFILE_UPDATE_URL "https://device.elegoo.com.cn/device-api/v1/device-server/software/slicerParam/released/history"
-#define ELEGOO_GLOBAL_PROFILE_UPDATE_URL "https://eu-device.elegoo.com/device-api/v1/device-server/software/slicerParam/released/history"
-#define ELEGOO_CHINA_TELEMETRY_URL "https://www.nexprint.cn/gateway"
-#define ELEGOO_GLOBAL_TELEMETRY_URL "https://www.nexprint.com/gateway"
-#endif
 
 #define SENTRY_DSN_WIN "@SENTRY_DSN_WIN@"
 #define SENTRY_DSN_MAC "@SENTRY_DSN_MAC@"

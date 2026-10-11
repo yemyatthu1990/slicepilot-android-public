@@ -12,6 +12,23 @@ val uploadKeystoreProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 
+// Build configuration secrets (cloud endpoints, client ids, keys). Values are
+// never committed: they come from secrets/build.properties locally, from
+// -P<KEY>= / environment in CI, where GitHub repository secrets are exposed.
+val buildSecrets = Properties().apply {
+    val f = file("../../secrets/build.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
+fun secret(key: String): String =
+    providers.gradleProperty(key).orNull
+        ?: System.getenv(key)
+        ?: buildSecrets.getProperty(key)
+        ?: error("Missing build secret '$key'. Provide it via secrets/build.properties, -P$key, or env $key.")
+
+fun ktLiteral(v: String): String =
+    "\"" + v.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\""
+
 // google-services.json is kept out of the repo (in secrets/). Copy it into the
 // module directory where the google-services plugin expects it.
 val copyFirebaseConfig = tasks.register<Copy>("copyFirebaseConfig") {
@@ -19,6 +36,9 @@ val copyFirebaseConfig = tasks.register<Copy>("copyFirebaseConfig") {
     into(layout.projectDirectory)
 }
 tasks.matching { it.name.endsWith("GoogleServices") }.configureEach {
+    dependsOn(copyFirebaseConfig)
+}
+tasks.matching { it.name.startsWith("generate") && it.name.endsWith("Resources") }.configureEach {
     dependsOn(copyFirebaseConfig)
 }
 
@@ -45,6 +65,14 @@ android {
         versionCode = 12
         versionName = "1.5.9-android"
 
+        buildConfigField("String", "CLOUD_GATEWAY_GLOBAL", ktLiteral(secret("CLOUD_GATEWAY_GLOBAL")))
+        buildConfigField("String", "CLOUD_GATEWAY_CHINA", ktLiteral(secret("CLOUD_GATEWAY_CHINA")))
+        buildConfigField("String", "CLOUD_LOGIN_URL_GLOBAL", ktLiteral(secret("CLOUD_LOGIN_URL_GLOBAL")))
+        buildConfigField("String", "CLOUD_LOGIN_URL_CHINA", ktLiteral(secret("CLOUD_LOGIN_URL_CHINA")))
+        buildConfigField("String", "CLOUD_COOKIE_DOMAINS", ktLiteral(secret("CLOUD_COOKIE_DOMAINS")))
+        buildConfigField("String", "CLOUD_OAUTH_CLIENT_ID", ktLiteral(secret("CLOUD_OAUTH_CLIENT_ID")))
+        buildConfigField("String", "AGORA_APP_ID", ktLiteral(secret("AGORA_APP_ID")))
+
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -53,7 +81,11 @@ android {
                 arguments("-DANDROID_STL=c++_static",
                         "-DANDROID_PLATFORM=android-28",
                         "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
-                        "-DCMAKE_POLICY_VERSION_MINIMUM=3.5")
+                        "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+                        "-DELEGOO_GLOBAL_IOT_URL=${secret("CLOUD_GATEWAY_GLOBAL")}",
+                        "-DELEGOO_CHINA_IOT_URL=${secret("CLOUD_GATEWAY_CHINA")}",
+                        "-DELEGOO_GLOBAL_LOGIN_URL=${secret("CLOUD_LOGIN_URL_GLOBAL")}",
+                        "-DELEGOO_CHINA_LOGIN_URL=${secret("CLOUD_LOGIN_URL_CHINA")}")
                 cppFlags("-std=c++17", "-DNDEBUG")
             }
         }

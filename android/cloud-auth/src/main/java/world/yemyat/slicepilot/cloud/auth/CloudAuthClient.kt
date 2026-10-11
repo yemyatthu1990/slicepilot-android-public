@@ -30,31 +30,22 @@ class CloudAuthClient(context: Context) {
 
     private val gateway: String
         get() = if (region == "china")
-            "https://matrix.elegoo.com.cn"
+            BuildConfig.CLOUD_GATEWAY_CHINA
         else
-            "https://matrix.elegoo.com"
+            BuildConfig.CLOUD_GATEWAY_GLOBAL
 
     private val accountApi = "/api/v1/account-center-server"
-    private val clientId = "Graft"
+    private val clientId = BuildConfig.CLOUD_CLIENT_ID
 
     private companion object {
-        const val FALLBACK_PUBLIC_KEY =
-            "-----BEGIN PUBLIC KEY-----\n" +
-            "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlHGEjbiq1HvWfRUGchLz\n" +
-            "RLjrc6aSPYooXrjPxZIOwf1EbEx16B3cxnjdJnZyUu0gNe55yTzkJMMmjoHnHuow\n" +
-            "Yo1mppXUAV1mLCLKWb4nQzGvjNDM4XjqG1LIv24uxA2E+1dVwlsrfg7vMKPEOZMp\n" +
-            "9B7MQwfPMA62rl6Htsu7QrNu64csXqWGgdLL3sqN4XyQoSVQoJI506hq8iaxkjyz\n" +
-            "uJKcrzIG01cKJDsxQtJsOpLx3IgOzfArFkCndG7JlQgh15CN4OGL5YnaAeAjUvLc\n" +
-            "jbesmzEFjqJeMOxDOIWXDZJV40wqzHBMm43OZiKO70q4L99k6lbGEXlygMiCj/loo\n" +
-            "QIDAQAB\n" +
-            "-----END PUBLIC KEY-----"
+        val FALLBACK_PUBLIC_KEY = BuildConfig.CLOUD_RSA_PUBLIC_KEY
     }
 
     val loginPageUrl: String
         get() = if (region == "china")
-            "https://np-intl-accounts.elegoo.com.cn/account/slicer-login"
+            BuildConfig.CLOUD_LOGIN_URL_CHINA
         else
-            "https://np-intl-accounts.elegoo.com/account/slicer-login"
+            BuildConfig.CLOUD_LOGIN_URL_GLOBAL
 
     val isLoggedIn: Boolean get() = !accessToken.isNullOrBlank()
 
@@ -207,11 +198,7 @@ class CloudAuthClient(context: Context) {
         return try {
             val cm = android.webkit.CookieManager.getInstance()
             cm.flush()
-            val domains = listOf(
-                "https://np-intl-accounts.elegoo.com",
-                "https://account.elegoo.com",
-                "https://www.nexprint.com",
-            )
+            val domains = BuildConfig.CLOUD_COOKIE_DOMAINS.split(",")
             val merged = LinkedHashMap<String, String>()
             for (d in domains) {
                 val c = cm.getCookie(d) ?: continue

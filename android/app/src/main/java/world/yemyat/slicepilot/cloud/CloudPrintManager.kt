@@ -21,6 +21,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import world.yemyat.slicepilot.BuildConfig
 
 /**
  * Cloud printing via Elegoo's matrix cloud:
@@ -348,7 +349,7 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
     }
 
     private companion object {
-        const val AGORA_APP_ID = "d035320941e34cd5bc4ec106eff05580"
+        val AGORA_APP_ID = BuildConfig.AGORA_APP_ID
         const val TAG = "CloudPrint"
     }
 }

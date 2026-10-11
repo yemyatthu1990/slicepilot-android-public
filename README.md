@@ -98,14 +98,39 @@ Sensitive files are kept out of git in a local `secrets/` directory at the repo 
 
 ```text
 secrets/
+  build.properties             Cloud endpoints, client ids, RSA public key,
+                               Agora App ID (injected into BuildConfig at build time)
   google-services.json         Firebase config (copied to android/app/ at build time)
   upload-keystore.properties   store/key passwords for the release signing config
   slicepilot-upload.jks        upload signing keystore
   slicepilot-upload-cert.pem   upload certificate
-  play-service-account.json    Google Play service account key (used by scripts/upload_play_internal.py)
+  play-service-account.json    Google Cloud service account key (used by scripts/upload_play_internal.py)
 ```
 
-To set up a fresh clone, create `secrets/` and provide these files. See `secrets.example/` for the expected layout and a template for `upload-keystore.properties`. Without the keystore, release builds fall back to the debug signing config; without `google-services.json`, the Google Services plugin fails the build (see Firebase section below).
+To set up a fresh clone, create `secrets/` and provide these files. See `secrets.example/` for the expected layout and templates. Without the keystore, release builds fall back to the debug signing config; without `google-services.json` or `build.properties`, the build fails with a clear error.
+
+### Build configuration (`secrets/build.properties`)
+
+The app and `:cloud-auth` modules read cloud endpoints, OAuth client ids, the
+Elegoo RSA public key, and the Agora App ID from `secrets/build.properties`
+(local builds) or environment variables / Gradle `-P` properties, and inject
+them as `BuildConfig` fields. Nothing is hardcoded in the sources. Keys:
+
+```text
+CLOUD_GATEWAY_GLOBAL, CLOUD_GATEWAY_CHINA          Elegoo cloud API gateways
+CLOUD_LOGIN_URL_GLOBAL, CLOUD_LOGIN_URL_CHINA      web login pages
+CLOUD_COOKIE_DOMAINS                               comma-separated cookie domains
+CLOUD_CLIENT_ID, CLOUD_OAUTH_CLIENT_ID             OAuth client identifiers
+CLOUD_RSA_PUBLIC_KEY                               password-encryption public key (PEM, \n-escaped)
+AGORA_APP_ID                                       Agora App ID for RTM
+```
+
+### CI (GitHub Actions)
+
+`.github/workflows/android.yml` runs on demand and materializes these
+repository secrets into `secrets/` before building: `BUILD_PROPERTIES`
+(contents of `secrets/build.properties`), `GOOGLE_SERVICES_JSON`,
+`KEYSTORE_PROPERTIES`, and `UPLOAD_KEYSTORE_BASE64`.
 
 ## Firebase
 
