@@ -35,6 +35,7 @@ get https://github.com/USCiLab/cereal/archive/refs/tags/v1.3.0.zip cereal-1.3.0
 get https://gitlab.com/libeigen/eigen/-/archive/5.0.1/eigen-5.0.1.tar.gz eigen-5.0.1
 get https://github.com/CGAL/cgal/releases/download/v5.6.3/CGAL-5.6.3.tar.xz CGAL-5.6.3
 get https://github.com/libexpat/libexpat/releases/download/R_2_5_0/expat-2.5.0.tar.gz expat-2.5.0
+get https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.35.tar.gz libpng-1.6.35
 get https://github.com/qhull/qhull/archive/refs/tags/v8.0.2.zip qhull-8.0.2
 get https://github.com/stevengj/nlopt/archive/refs/tags/v2.5.0.tar.gz nlopt-2.5.0
 get https://github.com/SoftFever/Orca-deps-libnoise/archive/refs/heads/master.zip Orca-deps-libnoise-1.0
