@@ -41,7 +41,10 @@ fun SliceScreen(vm: AppViewModel) {
 
     var custom by remember { mutableStateOf(
         config.layerHeight != null || config.wallLoops != null || config.topShellLayers != null ||
-            config.bottomShellLayers != null || config.infillDensity != null || config.infillPattern != null
+            config.bottomShellLayers != null || config.infillDensity != null || config.infillPattern != null ||
+            config.brimWidth != null || config.supportThresholdAngle != null || config.supportZDistance != null ||
+            config.wallSpeed != null || config.infillSpeed != null || config.travelSpeed != null ||
+            config.ironing || config.supportOnPlateOnly || config.seamPosition != "aligned"
     ) }
     var advancedOpen by remember { mutableStateOf(custom) }
 
@@ -99,6 +102,11 @@ fun SliceScreen(vm: AppViewModel) {
                                 label = { Text("Grid") },
                             )
                             FilterChip(
+                                selected = config.supportStyle == "snug",
+                                onClick = { vm.setSupportStyle("snug") },
+                                label = { Text("Snug") },
+                            )
+                            FilterChip(
                                 selected = config.supportStyle == "trees",
                                 onClick = { vm.setSupportStyle("trees") },
                                 label = { Text("Trees") },
@@ -127,6 +135,37 @@ fun SliceScreen(vm: AppViewModel) {
                                     )
                                 },
                             )
+                        }
+                        if (custom && config.supportEnabled) {
+                            val angle = config.supportThresholdAngle ?: 30
+                            SliderField(
+                                label = "Support threshold angle",
+                                value = angle.toFloat(),
+                                valueRange = 10f..80f,
+                                steps = 13,
+                                valueLabel = "$angle°",
+                                onValue = { vm.setSupportThresholdAngle(it.roundToInt()) },
+                            )
+                            val z = config.supportZDistance ?: 0.2f
+                            SliderField(
+                                label = "Support Z distance",
+                                value = z,
+                                valueRange = 0.05f..0.4f,
+                                steps = 6,
+                                valueLabel = String.format("%.2f mm", z),
+                                onValue = { vm.setSupportZDistance((it * 20).roundToInt() / 20f) },
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "Support on build plate only",
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Switch(
+                                    checked = config.supportOnPlateOnly,
+                                    onCheckedChange = { vm.setSupportOnPlateOnly(it) },
+                                )
+                            }
                         }
                     }
                 }
@@ -228,7 +267,81 @@ fun SliceScreen(vm: AppViewModel) {
                                     )
                                 }
                             }
+                            if (config.adhesion == "brim") {
+                                val bw = config.brimWidth ?: 5
+                                SliderField(
+                                    label = "Brim width",
+                                    value = bw.toFloat(),
+                                    valueRange = 2f..15f,
+                                    steps = 12,
+                                    valueLabel = "$bw mm",
+                                    onValue = { vm.setBrimWidth(it.roundToInt()) },
+                                )
+                            }
+                            Text("Seam position", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            SliceDropdown(
+                                options = seamPositionLabels.keys.toList(),
+                                selected = seamPositionLabels[config.seamPosition] ?: "Aligned",
+                                onSelect = { label ->
+                                    vm.setSeamPosition(seamPositionLabels.entries.first { it.value == label }.key)
+                                },
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "Ironing (smoother top surface)",
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Switch(checked = config.ironing, onCheckedChange = { vm.setIroning(it) })
+                            }
                         }
+                    }
+                }
+            }
+
+            // ---- Speed ----
+            SectionLabel("Speed")
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (custom) {
+                        val wall = config.wallSpeed ?: 120
+                        SliderField(
+                            label = "Wall speed",
+                            value = wall.toFloat(),
+                            valueRange = 20f..300f,
+                            steps = 13,
+                            valueLabel = "$wall mm/s",
+                            onValue = { vm.setWallSpeed(it.roundToInt()) },
+                        )
+                        val infillSpeed = config.infillSpeed ?: 150
+                        SliderField(
+                            label = "Infill speed",
+                            value = infillSpeed.toFloat(),
+                            valueRange = 20f..400f,
+                            steps = 18,
+                            valueLabel = "$infillSpeed mm/s",
+                            onValue = { vm.setInfillSpeed(it.roundToInt()) },
+                        )
+                        val travel = config.travelSpeed ?: 300
+                        SliderField(
+                            label = "Travel speed",
+                            value = travel.toFloat(),
+                            valueRange = 50f..600f,
+                            steps = 10,
+                            valueLabel = "$travel mm/s",
+                            onValue = { vm.setTravelSpeed(it.roundToInt()) },
+                        )
+                    } else {
+                        Text(
+                            "Speeds follow the quality preset. Turn on custom slice settings above to override them.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
@@ -294,6 +407,14 @@ private fun SliderField(
         )
     }
 }
+
+private val seamPositionLabels = linkedMapOf(
+    "aligned" to "Aligned",
+    "aligned_back" to "Aligned back",
+    "back" to "Back",
+    "nearest" to "Nearest",
+    "random" to "Random",
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

@@ -52,6 +52,15 @@ data class SliceConfig(
     val infillDensity: Int? = null,
     val infillPattern: String? = null,
     val adhesion: String = "auto",
+    val brimWidth: Int? = null,
+    val seamPosition: String = "aligned",
+    val ironing: Boolean = false,
+    val supportOnPlateOnly: Boolean = false,
+    val supportThresholdAngle: Int? = null,
+    val supportZDistance: Float? = null,
+    val wallSpeed: Int? = null,
+    val infillSpeed: Int? = null,
+    val travelSpeed: Int? = null,
 )
 
 data class MaterialOption(
@@ -246,6 +255,15 @@ class AppViewModel(
             infillDensity = if (prefs.contains("cfg_infill_density")) prefs.getInt("cfg_infill_density", 15) else null,
             infillPattern = prefs.getString("cfg_infill_pattern", null),
             adhesion = prefs.getString("cfg_adhesion", "auto") ?: "auto",
+            brimWidth = if (prefs.contains("cfg_brim_width")) prefs.getInt("cfg_brim_width", 5) else null,
+            seamPosition = prefs.getString("cfg_seam_position", "aligned") ?: "aligned",
+            ironing = prefs.getBoolean("cfg_ironing", false),
+            supportOnPlateOnly = prefs.getBoolean("cfg_support_plate_only", false),
+            supportThresholdAngle = if (prefs.contains("cfg_support_angle")) prefs.getInt("cfg_support_angle", 30) else null,
+            supportZDistance = if (prefs.contains("cfg_support_z_distance")) prefs.getFloat("cfg_support_z_distance", 0.2f) else null,
+            wallSpeed = if (prefs.contains("cfg_wall_speed")) prefs.getInt("cfg_wall_speed", 120) else null,
+            infillSpeed = if (prefs.contains("cfg_infill_speed")) prefs.getInt("cfg_infill_speed", 150) else null,
+            travelSpeed = if (prefs.contains("cfg_travel_speed")) prefs.getInt("cfg_travel_speed", 300) else null,
         )
     )
     val config: StateFlow<SliceConfig> = _config.asStateFlow()
@@ -887,6 +905,15 @@ class AppViewModel(
     fun setInfillDensity(v: Int?) { updateConfig(_config.value.copy(infillDensity = v)) }
     fun setInfillPattern(v: String?) { updateConfig(_config.value.copy(infillPattern = v)) }
     fun setAdhesion(v: String) { updateConfig(_config.value.copy(adhesion = v)) }
+    fun setBrimWidth(v: Int?) { updateConfig(_config.value.copy(brimWidth = v)) }
+    fun setSeamPosition(v: String) { updateConfig(_config.value.copy(seamPosition = v)) }
+    fun setIroning(v: Boolean) { updateConfig(_config.value.copy(ironing = v)) }
+    fun setSupportOnPlateOnly(v: Boolean) { updateConfig(_config.value.copy(supportOnPlateOnly = v)) }
+    fun setSupportThresholdAngle(v: Int?) { updateConfig(_config.value.copy(supportThresholdAngle = v)) }
+    fun setSupportZDistance(v: Float?) { updateConfig(_config.value.copy(supportZDistance = v)) }
+    fun setWallSpeed(v: Int?) { updateConfig(_config.value.copy(wallSpeed = v)) }
+    fun setInfillSpeed(v: Int?) { updateConfig(_config.value.copy(infillSpeed = v)) }
+    fun setTravelSpeed(v: Int?) { updateConfig(_config.value.copy(travelSpeed = v)) }
 
     fun printSetupSliceAndPrint() {
         val opts = printSetupMaterials()
@@ -1113,6 +1140,15 @@ class AppViewModel(
             infillDensity = ps.infillDensity,
             infillPattern = ps.infillPattern,
             adhesion = ps.adhesion ?: "auto",
+            brimWidth = ps.brimWidth?.toInt(),
+            seamPosition = ps.seamPosition ?: "aligned",
+            ironing = ps.ironing ?: false,
+            supportOnPlateOnly = ps.supportOnPlateOnly ?: false,
+            supportThresholdAngle = ps.supportThresholdAngle,
+            supportZDistance = ps.supportZDistance,
+            wallSpeed = ps.wallSpeed,
+            infillSpeed = ps.infillSpeed,
+            travelSpeed = ps.travelSpeed,
         )
         ps.bedType?.let { raw ->
             val plate = when {
@@ -1146,6 +1182,15 @@ class AppViewModel(
         newConfig.filamentCanvasId?.let { e.putInt("cfg_filament_canvas", it) } ?: e.remove("cfg_filament_canvas")
         e.putString("cfg_infill_pattern", newConfig.infillPattern)
         e.putString("cfg_adhesion", newConfig.adhesion)
+        newConfig.brimWidth?.let { e.putInt("cfg_brim_width", it) } ?: e.remove("cfg_brim_width")
+        e.putString("cfg_seam_position", newConfig.seamPosition)
+        e.putBoolean("cfg_ironing", newConfig.ironing)
+        e.putBoolean("cfg_support_plate_only", newConfig.supportOnPlateOnly)
+        newConfig.supportThresholdAngle?.let { e.putInt("cfg_support_angle", it) } ?: e.remove("cfg_support_angle")
+        newConfig.supportZDistance?.let { e.putFloat("cfg_support_z_distance", it) } ?: e.remove("cfg_support_z_distance")
+        newConfig.wallSpeed?.let { e.putInt("cfg_wall_speed", it) } ?: e.remove("cfg_wall_speed")
+        newConfig.infillSpeed?.let { e.putInt("cfg_infill_speed", it) } ?: e.remove("cfg_infill_speed")
+        newConfig.travelSpeed?.let { e.putInt("cfg_travel_speed", it) } ?: e.remove("cfg_travel_speed")
         e.apply()
     }
 
@@ -1195,8 +1240,15 @@ class AppViewModel(
                     appendLine("support_style=organic")
                 } else {
                     appendLine("support_type=normal(auto)")
+                    if (cfg.supportStyle == "snug") appendLine("support_style=snug")
                 }
                 if (cfg.supportFilament != null) appendLine("support_filament=${cfg.supportFilament}")
+                cfg.supportThresholdAngle?.let { appendLine("support_threshold_angle=$it") }
+                cfg.supportZDistance?.let {
+                    appendLine("support_top_z_distance=$it")
+                    appendLine("support_bottom_z_distance=$it")
+                }
+                if (cfg.supportOnPlateOnly) appendLine("support_on_build_plate_only=1")
             } else {
                 appendLine("enable_support=0")
             }
@@ -1214,9 +1266,17 @@ class AppViewModel(
             when (cfg.adhesion) {
                 "none" -> { appendLine("brim_width=0"); appendLine("raft_layers=0"); appendLine("skirt_height=0") }
                 "skirt" -> { appendLine("brim_width=0"); appendLine("raft_layers=0"); appendLine("skirt_height=2") }
-                "brim" -> { appendLine("brim_width=5"); appendLine("raft_layers=0") }
+                "brim" -> { appendLine("brim_width=${cfg.brimWidth ?: 5}"); appendLine("raft_layers=0") }
                 "raft" -> { appendLine("raft_layers=2") }
             }
+            appendLine("seam_position=${cfg.seamPosition}")
+            appendLine("ironing_type=${if (cfg.ironing) "top" else "no ironing"}")
+            cfg.wallSpeed?.let {
+                appendLine("outer_wall_speed=$it")
+                appendLine("inner_wall_speed=$it")
+            }
+            cfg.infillSpeed?.let { appendLine("sparse_infill_speed=$it") }
+            cfg.travelSpeed?.let { appendLine("travel_speed=$it") }
             if (bedType != null) appendLine("curr_bed_type=$bedType")
         }
         val t = _modelTransform.value

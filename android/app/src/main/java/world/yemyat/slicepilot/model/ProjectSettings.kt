@@ -15,6 +15,15 @@ data class ProjectPrintSettings(
     val infillPattern: String? = null,
     val adhesion: String? = null,
     val bedType: String? = null,
+    val brimWidth: Float? = null,
+    val seamPosition: String? = null,
+    val ironing: Boolean? = null,
+    val supportOnPlateOnly: Boolean? = null,
+    val supportThresholdAngle: Int? = null,
+    val supportZDistance: Float? = null,
+    val wallSpeed: Int? = null,
+    val infillSpeed: Int? = null,
+    val travelSpeed: Int? = null,
 )
 
 object ProjectSettingsReader {
@@ -65,6 +74,7 @@ object ProjectSettingsReader {
             supportType.contains("tree", ignoreCase = true) ||
                 supportStyleRaw.contains("organic", ignoreCase = true) ||
                 supportStyleRaw.contains("tree", ignoreCase = true) -> "trees"
+            supportStyleRaw.contains("snug", ignoreCase = true) -> "snug"
             supportType.isNotEmpty() || supportStyleRaw.isNotEmpty() -> "grid"
             else -> null
         }
@@ -93,6 +103,17 @@ object ProjectSettingsReader {
             infillPattern = str("sparse_infill_pattern", "infill_pattern"),
             adhesion = adhesion,
             bedType = str("curr_bed_type"),
+            brimWidth = float("brim_width"),
+            seamPosition = str("seam_position")?.lowercase()?.takeIf {
+                it in setOf("aligned", "aligned_back", "nearest", "back", "random")
+            },
+            ironing = str("ironing_type")?.let { it != "no ironing" },
+            supportOnPlateOnly = bool("support_on_build_plate_only"),
+            supportThresholdAngle = int("support_threshold_angle"),
+            supportZDistance = float("support_top_z_distance"),
+            wallSpeed = int("outer_wall_speed", "inner_wall_speed"),
+            infillSpeed = int("sparse_infill_speed"),
+            travelSpeed = int("travel_speed"),
         )
     }
 }

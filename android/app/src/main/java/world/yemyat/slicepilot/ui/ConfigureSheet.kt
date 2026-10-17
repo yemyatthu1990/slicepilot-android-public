@@ -52,7 +52,7 @@ fun ConfigureSheet(vm: AppViewModel, onDismiss: () -> Unit) {
     fun persist() {
         val filamentColor = if (filament == current.filament) current.filamentColor else null
         vm.updateConfig(
-            SliceConfig(
+            current.copy(
                 printer = printer,
                 process = process,
                 filament = filament,
@@ -96,7 +96,7 @@ fun ConfigureSheet(vm: AppViewModel, onDismiss: () -> Unit) {
             if (support) {
                 PickerDropdown(
                     "Support style",
-                    listOf("grid", "trees"),
+                    listOf("grid", "snug", "trees"),
                     supportStyle,
                     enabled = true,
                 ) { supportStyle = it; persist() }
