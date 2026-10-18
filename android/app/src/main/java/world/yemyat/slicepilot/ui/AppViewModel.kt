@@ -13,6 +13,7 @@ import world.yemyat.slicepilot.cloud.auth.CloudAuthResult
 import world.yemyat.slicepilot.model.GcodePreview
 import world.yemyat.slicepilot.model.GcodePreviewParser
 import world.yemyat.slicepilot.model.MeshData
+import world.yemyat.slicepilot.model.MeshDecimator
 import world.yemyat.slicepilot.model.ModelParser
 import world.yemyat.slicepilot.model.ProjectPrintSettings
 import world.yemyat.slicepilot.model.ProjectSettingsReader
@@ -143,6 +144,10 @@ class AppViewModel(
 
     private val _modelLoading = MutableStateFlow(false)
     val modelLoading: StateFlow<Boolean> = _modelLoading.asStateFlow()
+
+    /** 0..100 parse progress for the current model load, null before the first update. */
+    private val _modelLoadProgress = MutableStateFlow<Int?>(null)
+    val modelLoadProgress: StateFlow<Int?> = _modelLoadProgress.asStateFlow()
 
     data class ModelError(val code: String, val message: String)
     private val _modelError = MutableStateFlow<ModelError?>(null)
@@ -1020,7 +1025,11 @@ class AppViewModel(
             }
         }
         recomputeAvailablePrinters()
-        if (cloudLoggedIn) refreshPrinters()
+        if (cloudLoggedIn) {
+            refreshPrinters()
+        } else {
+            tryAutoLogin()
+        }
     }
 
     fun requestLoadModel(path: String) {
@@ -1082,8 +1091,22 @@ class AppViewModel(
         modelPath = file.absolutePath
         viewModelScope.launch {
             _modelLoading.value = true
+            _modelLoadProgress.value = null
             try {
-                val m = withContext(Dispatchers.Default) { ModelParser.parse(file) }
+                val t0 = android.os.SystemClock.elapsedRealtime()
+                val m = withContext(Dispatchers.Default) {
+                    // Native libslic3r readers + quadric decimation; Kotlin fallback.
+                    NativeLib.parsePreviewMesh(
+                        file.absolutePath,
+                        MeshDecimator.MAX_PREVIEW_TRIANGLES,
+                        onProgress = { _modelLoadProgress.value = it },
+                    ) ?: ModelParser.parse(file)
+                }
+                android.util.Log.i(
+                    "ModelPreview",
+                    "parse ${file.name}: ${android.os.SystemClock.elapsedRealtime() - t0}ms " +
+                        "tris=${m.indices.size / 3} verts=${m.positions.size / 3}",
+                )
                 if (m.positions.isEmpty() || !m.maxX.isFinite() || m.maxX < m.minX) {
                     reportUnsupportedFormat(file.name)
                 } else {
@@ -1105,6 +1128,7 @@ class AppViewModel(
                 reportModelLoadError("parse", t)
             }
             _modelLoading.value = false
+            _modelLoadProgress.value = null
         }
     }
 
@@ -1538,8 +1562,41 @@ class AppViewModel(
         }
     }
 
+    private var autoLoginJob: Job? = null
+
+    /**
+     * Silently signs back in at app start when the user checked "Remember password".
+     * The Elegoo cloud only allows one session per account, so being signed out on
+     * another device leaves the saved tokens dead; a fresh login restores the session.
+     */
+    private fun tryAutoLogin() {
+        if (_demoMode.value) return
+        if (autoLoginJob?.isActive == true) return
+        val email = savedCloudEmail
+        val password = savedCloudPassword // non-blank only when "Remember password" is set
+        if (email.isBlank() || password.isBlank()) return
+        autoLoginJob = viewModelScope.launch {
+            when (val r = cloud.auth.login(email, password)) {
+                is CloudAuthResult.Ok -> {
+                    android.util.Log.i("AppViewModel", "auto-login succeeded for $email")
+                    EventNotifier.trackEvent("cloud_auto_login", mapOf("user" to cloud.auth.nickname))
+                    refreshPrinters()
+                }
+                is CloudAuthResult.Err -> {
+                    android.util.Log.w("AppViewModel", "auto-login failed: ${r.message}")
+                    EventNotifier.trackEvent("cloud_auto_login_failed", mapOf("message" to r.message))
+                }
+            }
+        }
+    }
+
     fun checkSession() {
         if (_demoMode.value) return
+        if (!cloud.auth.isLoggedIn) {
+            // A sign-in may be in flight from app start; don't clobber its new tokens.
+            tryAutoLogin()
+            return
+        }
         val wasLoggedIn = cloud.auth.isLoggedIn
         viewModelScope.launch {
             when (val r = cloud.validateSession()) {
@@ -1557,6 +1614,7 @@ class AppViewModel(
                     refreshPrinters()
                 }
                 is CloudResult.Err -> {
+                    android.util.Log.w("AppViewModel", "checkSession failed: ${r.message}")
                     if (cloud.auth.isAuthFailure(r.message)) {
                         EventNotifier.trackEvent(
                             "cloud_session_expired",
@@ -1706,6 +1764,7 @@ class AppViewModel(
                     refreshFilaments(r.value)
                 }
                 is CloudResult.Err -> {
+                    android.util.Log.w("AppViewModel", "refreshPrinters failed: ${r.message}")
                     if (cloud.auth.isAuthFailure(r.message)) {
                         handleCloudSignedOut(
                             if (wasLoggedIn) "Signed out on another device" else null,

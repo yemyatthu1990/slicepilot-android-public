@@ -206,7 +206,17 @@ class CloudAuthClient(context: Context) {
             m.contains("session expired") ||
             m.contains("token invalid") ||
             m.contains("invalid token") ||
-            m.contains("not logged in")
+            m.contains("not logged in") ||
+            // The Elegoo cloud (China region) answers with Chinese messages, e.g.
+            // "账号未登录" when the session was dropped (one login per account).
+            m.contains("未登录") ||
+            m.contains("登录失效") ||
+            m.contains("登录已失效") ||
+            m.contains("登录已过期") ||
+            m.contains("登录状态已失效") ||
+            m.contains("登录超时") ||
+            m.contains("请重新登录") ||
+            m.contains("身份验证失败")
     }
 
     fun captureWebViewCookie(): String {

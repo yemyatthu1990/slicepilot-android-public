@@ -1,5 +1,6 @@
 package world.yemyat.slicepilot.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,6 +16,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -33,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -58,37 +61,12 @@ import java.net.URL
 fun BrowseScreen(vm: AppViewModel, browser: ModelBrowser) {
     val st by browser.state.collectAsState()
     var expandedSource by remember { mutableStateOf<ModelSource?>(null) }
+    val focusManager = LocalFocusManager.current
 
-    val detail = st.detail
-    androidx.activity.compose.BackHandler(enabled = detail != null || st.loadingDetail) {
-        browser.closeDetail()
-    }
-    if (st.loadingDetail) {
-        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator()
-        }
-        return
-    }
-    if (detail != null) {
-        ModelDetailScreen(
-            detail = detail,
-            downloadingFile = st.downloadingFile,
-            progress = st.downloadProgress,
-            bambuSignedIn = st.bambuSignedIn,
-            bambuSigningIn = st.bambuSigningIn,
-            bambuNeedsCode = st.bambuNeedsCode,
-            onBack = { browser.closeDetail() },
-            onDownload = { file ->
-                browser.download(file) { path ->
-                    browser.closeDetail()
-                    vm.requestLoadModel(path)
-                }
-            },
-            onBambuSignIn = { email, pass -> browser.bambuLogin(email, pass, onDone = {}) },
-            onBambuVerify = { code -> browser.bambuVerify(code, onDone = {}) },
-        )
-        return
-    }
+    // Empty search bar shows each site's popular models.
+    LaunchedEffect(Unit) { browser.loadHome() }
+
+    if (ModelDetailHost(vm, browser)) return
 
     // "See more" full list for one source.
     expandedSource?.let { src ->
@@ -133,6 +111,12 @@ fun BrowseScreen(vm: AppViewModel, browser: ModelBrowser) {
                     singleLine = true,
                     shape = RoundedCornerShape(14.dp),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(
+                        onSearch = {
+                            focusManager.clearFocus()
+                            browser.search()
+                        },
+                    ),
                     leadingIcon = { Icon(Icons.Filled.Search, null) },
                 )
                 FilledIconButton(
@@ -155,8 +139,11 @@ fun BrowseScreen(vm: AppViewModel, browser: ModelBrowser) {
             if (st.sections.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        if (!st.hasSearched) "Search Printables, Thingiverse, Nexprint and MakerWorld without leaving the app."
-                        else "No results.",
+                        when {
+                            st.hasSearched -> "No results."
+                            st.isHomeFeed -> "Couldn't load popular models. Search above."
+                            else -> "Search Printables, Thingiverse, Nexprint and MakerWorld without leaving the app."
+                        },
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -169,6 +156,7 @@ fun BrowseScreen(vm: AppViewModel, browser: ModelBrowser) {
                     items(st.sections, key = { it.source.id }) { section ->
                         SourceSectionBlock(
                             section = section,
+                            popular = st.isHomeFeed,
                             onOpen = { browser.openDetail(it) },
                             onSeeMore = { expandedSource = section.source },
                         )
@@ -179,15 +167,60 @@ fun BrowseScreen(vm: AppViewModel, browser: ModelBrowser) {
     }
 }
 
+/**
+ * Full-screen model detail overlay driven by [ModelBrowser] state.
+ * Draws itself when a detail is open (or loading) and handles the back gesture.
+ * Returns true when it is showing, so hosts can skip their own content.
+ */
+@Composable
+fun ModelDetailHost(vm: AppViewModel, browser: ModelBrowser): Boolean {
+    val st by browser.state.collectAsState()
+    val detail = st.detail
+    val active = detail != null || st.loadingDetail
+    BackHandler(enabled = active) { browser.closeDetail() }
+    if (st.loadingDetail) {
+        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+        return true
+    }
+    if (detail != null) {
+        ModelDetailScreen(
+            detail = detail,
+            downloadingFile = st.downloadingFile,
+            progress = st.downloadProgress,
+            bambuSignedIn = st.bambuSignedIn,
+            bambuSigningIn = st.bambuSigningIn,
+            bambuNeedsCode = st.bambuNeedsCode,
+            onBack = { browser.closeDetail() },
+            onDownload = { file ->
+                browser.download(file) { path ->
+                    browser.closeDetail()
+                    vm.requestLoadModel(path)
+                }
+            },
+            onBambuSignIn = { email, pass -> browser.bambuLogin(email, pass, onDone = {}) },
+            onBambuVerify = { code -> browser.bambuVerify(code, onDone = {}) },
+        )
+        return true
+    }
+    return false
+}
+
 @Composable
 private fun SourceSectionBlock(
     section: SourceSection,
+    popular: Boolean,
     onOpen: (ModelListing) -> Unit,
     onSeeMore: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(section.source.label, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Text(
+                if (popular) "Popular on ${section.source.label}" else section.source.label,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Bold,
+            )
             Spacer(Modifier.weight(1f))
             if (!section.loading && section.results.size > 4) {
                 TextButton(onClick = onSeeMore) { Text("See more") }
@@ -200,7 +233,11 @@ private fun SourceSectionBlock(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 18.dp),
             ) {
                 CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                Text("Searching ${section.source.label}…", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    if (popular) "Loading ${section.source.label}…" else "Searching ${section.source.label}…",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         } else {
             section.results.take(4).chunked(2).forEach { rowItems ->
@@ -222,6 +259,7 @@ private fun SourceListScreen(
     onBack: () -> Unit,
     onOpen: (ModelListing) -> Unit,
 ) {
+    BackHandler(onBack = onBack)
     Scaffold(
         topBar = {
             TopAppBar(
@@ -285,7 +323,7 @@ private fun ThingiverseTokenField(browser: ModelBrowser) {
 }
 
 @Composable
-private fun ModelCard(item: ModelListing, modifier: Modifier = Modifier, onClick: () -> Unit) {
+internal fun ModelCard(item: ModelListing, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Card(
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -299,15 +337,22 @@ private fun ModelCard(item: ModelListing, modifier: Modifier = Modifier, onClick
                     item.name,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
+                    minLines = 2,
                     maxLines = 2,
                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 )
-                item.author?.let {
-                    Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                }
-                item.downloads?.let {
-                    Text("⬇ $it", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+                // Always render author/downloads rows (empty when absent) so cards stay equal height.
+                Text(
+                    item.author?.takeIf { it.isNotBlank() } ?: " ",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+                Text(
+                    item.downloads?.let { "⬇ $it" } ?: " ",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -361,7 +406,7 @@ private fun ModelDetailScreen(
                         .height(260.dp)
                         .clip(RoundedCornerShape(20.dp)),
                 ) { page ->
-                    RemoteThumbnail(detail.images[page], Modifier.fillMaxSize())
+                    RemoteThumbnail(detail.images[page], Modifier.fillMaxSize(), maxDimPx = 1200)
                 }
                 if (detail.images.size > 1) {
                     Row(
@@ -540,7 +585,7 @@ private fun ModelDetailScreen(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(Modifier.weight(1f)) {
-                                Text(file.name, fontSize = 14.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                Text(file.name, fontSize = 14.sp)
                                 file.sizeBytes?.let {
                                     Text(
                                         String.format("%.1f MB", it / 1024.0 / 1024.0),
@@ -577,10 +622,21 @@ private fun ModelDetailScreen(
 
 // --- Tiny remote-image loader with an in-memory cache (no external deps) ---
 
-private val thumbnailCache = android.util.LruCache<String, ImageBitmap>(24)
+/** Throttle image fetch/decode so fast scrolling doesn't flood the IO pool. */
+private val imageDispatcher = Dispatchers.IO.limitedParallelism(4)
 
-private fun loadBitmap(url: String): ImageBitmap? {
-    thumbnailCache.get(url)?.let { return it }
+/** Memory-bounded bitmap cache (quarter of the app heap), keyed by decode size + url. */
+private val thumbnailCache = object : android.util.LruCache<String, ImageBitmap>(
+    (Runtime.getRuntime().maxMemory() / 4).toInt(),
+) {
+    override fun sizeOf(key: String, value: ImageBitmap): Int =
+        (value as? android.graphics.Bitmap)?.byteCount ?: 0
+}
+
+/** Fetches and decodes an image, downsampled so its larger side is around [maxDim] pixels. */
+private fun loadBitmap(url: String, maxDim: Int): ImageBitmap? {
+    val key = "$maxDim|$url"
+    thumbnailCache.get(key)?.let { return it }
     return try {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 10_000
@@ -589,8 +645,17 @@ private fun loadBitmap(url: String): ImageBitmap? {
         conn.setRequestProperty("User-Agent", "Mozilla/5.0 SlicePilot/1.0")
         try {
             if (conn.responseCode !in 200..299) return null
-            val bmp = conn.inputStream.use { android.graphics.BitmapFactory.decodeStream(it) } ?: return null
-            thumbnailCache.put(url, bmp.asImageBitmap())
+            val bytes = conn.inputStream.use { it.readBytes() }
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            var sample = 1
+            while (bounds.outWidth / (sample * 2) >= maxDim && bounds.outHeight / (sample * 2) >= maxDim) {
+                sample *= 2
+            }
+            val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+            val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                ?: return null
+            thumbnailCache.put(key, bmp.asImageBitmap())
             bmp.asImageBitmap()
         } finally {
             conn.disconnect()
@@ -605,10 +670,11 @@ private fun RemoteThumbnail(
     url: String?,
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,
+    maxDimPx: Int = 512,
 ) {
     var image by remember(url) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(url) {
-        image = url?.let { withContext(Dispatchers.IO) { loadBitmap(it) } }
+    LaunchedEffect(url, maxDimPx) {
+        image = url?.let { withContext(imageDispatcher) { loadBitmap(it, maxDimPx) } }
     }
     Box(modifier.background(MaterialTheme.colorScheme.surfaceVariant)) {
         image?.let {

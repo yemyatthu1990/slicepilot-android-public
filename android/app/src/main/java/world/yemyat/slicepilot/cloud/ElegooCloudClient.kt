@@ -56,6 +56,7 @@ class ElegooCloudClient(
         when (val r = listPrinters()) {
             is CloudResult.Ok -> CloudResult.Ok(CloudUser(auth.nickname, auth.email, auth.region))
             is CloudResult.Err -> {
+                android.util.Log.w("ElegooCloud", "validateSession failed: ${r.message}")
                 if (auth.isAuthFailure(r.message)) {
                     auth.logout()
                     CloudResult.Err("signed out")

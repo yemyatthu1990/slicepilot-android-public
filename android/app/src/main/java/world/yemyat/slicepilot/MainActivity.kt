@@ -203,6 +203,7 @@ class MainActivity : ComponentActivity() {
         var showConnect by remember { mutableStateOf(false) }
         var showConfigure by remember { mutableStateOf(false) }
         var fullscreen by remember { mutableStateOf(false) }
+        var showModelSource by remember { mutableStateOf(false) }
         val browser = remember {
             world.yemyat.slicepilot.repo.ModelBrowser(
                 prefs = getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE),
@@ -281,13 +282,12 @@ class MainActivity : ComponentActivity() {
             when (screen) {
                 is Screen.Home -> HomeScreen(
                     vm = vm,
-                    onPickModel = {
-                        modelPicker.launch(arrayOf("*/*"))
-                    },
+                    onPickModel = { showModelSource = true },
                     onFullscreen = { fullscreen = true },
                     onOpenConnect = { showConnect = true },
                     onOpenConfigure = { showConfigure = true },
                     onBrowse = { vm.openBrowse() },
+                    browser = browser,
                 )
                 is Screen.PrintSetup -> PrintSetupScreen(vm)
                 is Screen.Browse -> BrowseScreen(vm, browser)
@@ -311,6 +311,26 @@ class MainActivity : ComponentActivity() {
                     onBack = { vm.cancelPrint() },
                 )
             }
+        }
+
+        if (showModelSource) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { showModelSource = false },
+                title = { androidx.compose.material3.Text("Add a model") },
+                text = { androidx.compose.material3.Text("Find a model online, or choose a file from this device.") },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = {
+                        showModelSource = false
+                        vm.openBrowse()
+                    }) { androidx.compose.material3.Text("Find models online") }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = {
+                        showModelSource = false
+                        modelPicker.launch(arrayOf("*/*"))
+                    }) { androidx.compose.material3.Text("Choose a file") }
+                },
+            )
         }
 
         if (pendingModelPath != null) {

@@ -54,8 +54,10 @@ data class SourceSection(
 
 data class BrowseState(
     val query: String = "",
-    /** Sections in display order: cached ones first, then completed searches (first come, first served). */
+    /** Sections always in the fixed display order of [ModelSource]. */
     val sections: List<SourceSection> = emptyList(),
+    /** True while the sections show each site's popular models (empty search bar). */
+    val isHomeFeed: Boolean = false,
     val hasSearched: Boolean = false,
     val error: String? = null,
     val detail: ModelDetail? = null,
@@ -68,11 +70,12 @@ data class BrowseState(
     val bambuPendingEmail: String = "",
 )
 
+/** Declaration order is the fixed section display order. */
 enum class ModelSource(val id: String, val label: String) {
+    MAKERWORLD("makerworld", "MakerWorld"),
     PRINTABLES("printables", "Printables"),
     THINGIVERSE("thingiverse", "Thingiverse"),
-    NEXPRINT("nexprint", "Nexprint"),
-    MAKERWORLD("makerworld", "MakerWorld");
+    NEXPRINT("nexprint", "Nexprint");
 
     companion object {
         fun from(id: String): ModelSource = entries.firstOrNull { it.id == id } ?: PRINTABLES
@@ -96,6 +99,10 @@ class ModelBrowser(
     // Results cache keyed by "source|query", so re-visiting a tab is instant.
     private val resultsCache = HashMap<String, List<ModelListing>>()
     private var searchGeneration = 0
+    private var homeLoaded = false
+
+    /** Cache key for each source's popular-models (home feed) list. */
+    private fun homeKey(source: ModelSource) = "${source.id}|@home"
 
     val bambuToken: String
         get() = prefs.getString("bambu_token", "").orEmpty()
@@ -104,6 +111,8 @@ class ModelBrowser(
         if (bambuToken.isNotBlank()) {
             _state.value = _state.value.copy(bambuSignedIn = true)
         }
+        // Debug aid: `touch cache/dump-html` to capture scraped MakerWorld pages.
+        MakerworldApi.dumpDir = File(cacheDir, "dump").takeIf { File(cacheDir, "dump-html").exists() }
     }
 
     fun bambuLogin(email: String, password: String, onDone: () -> Unit) {
@@ -158,6 +167,8 @@ class ModelBrowser(
 
     fun setQuery(q: String) {
         _state.value = _state.value.copy(query = q)
+        // Clearing the search bar goes back to the popular-models home feed.
+        if (q.isBlank() && _state.value.hasSearched) loadHome()
     }
 
     private fun searchSource(source: ModelSource, q: String): List<ModelListing> =
@@ -168,6 +179,58 @@ class ModelBrowser(
             ModelSource.NEXPRINT -> NexprintApi.search(q)
             ModelSource.MAKERWORLD -> MakerworldApi.search(q)
         }
+
+    private fun popularSource(source: ModelSource): List<ModelListing> =
+        when (source) {
+            ModelSource.PRINTABLES -> PrintablesApi.popular()
+            ModelSource.THINGIVERSE ->
+                if (thingiverseToken.isBlank()) emptyList() else ThingiverseApi.popular(thingiverseToken)
+            ModelSource.NEXPRINT -> NexprintApi.popular()
+            ModelSource.MAKERWORLD -> MakerworldApi.popular()
+        }
+
+    /**
+     * Shows each source's popular models (the home feed shown with an empty search bar).
+     * Sources that fail or return nothing are hidden, same as empty searches.
+     */
+    fun loadHome() {
+        val st = _state.value
+        if (st.query.isNotBlank()) return
+        val cached = ModelSource.entries.mapNotNull { src ->
+            resultsCache[homeKey(src)]?.let { SourceSection(src, results = it) }
+        }
+        if (cached.isNotEmpty()) {
+            _state.value = st.copy(sections = cached, isHomeFeed = true, hasSearched = false, error = null)
+            return
+        }
+        if (homeLoaded) return
+        homeLoaded = true
+        val generation = ++searchGeneration
+        _state.value = st.copy(sections = emptyList(), isHomeFeed = true, hasSearched = false, error = null)
+        for (src in ModelSource.entries) {
+            if (src == ModelSource.THINGIVERSE && thingiverseToken.isBlank()) continue
+            updateSection(src) { SourceSection(src, loading = true) }
+            scope.launch {
+                val outcome: Result<List<ModelListing>> = try {
+                    Result.success(withContext(Dispatchers.IO) { popularSource(src) })
+                } catch (e: Exception) {
+                    Result.failure(e)
+                }
+                if (generation != searchGeneration) return@launch
+                outcome.onSuccess { results ->
+                    if (results.isEmpty()) {
+                        updateSection(src) { null }
+                    } else {
+                        resultsCache[homeKey(src)] = results
+                        updateSection(src) { SourceSection(src, results = results) }
+                    }
+                }.onFailure {
+                    android.util.Log.w("ModelBrowser", "${src.id} popular failed", it)
+                    updateSection(src) { null }
+                }
+            }
+        }
+    }
 
     /** Searches every source in parallel; each completes into its own section. */
     fun search() {
@@ -180,7 +243,7 @@ class ModelBrowser(
         val cached = ModelSource.entries.mapNotNull { src ->
             resultsCache["${src.id}|$q"]?.let { SourceSection(src, results = it) }
         }
-        _state.value = st.copy(sections = cached, hasSearched = true, error = null)
+        _state.value = st.copy(sections = cached, hasSearched = true, isHomeFeed = false, error = null)
         for (src in ModelSource.entries) {
             if (src == ModelSource.THINGIVERSE && thingiverseToken.isBlank()) continue
             if (cached.any { it.source == src }) continue
@@ -207,13 +270,14 @@ class ModelBrowser(
         }
     }
 
-    /** Replaces, appends (order of arrival) or removes (transform → null) a section. */
+    /** Replaces, inserts (in fixed [ModelSource] order) or removes (transform → null) a section. */
     private fun updateSection(source: ModelSource, transform: (SourceSection?) -> SourceSection?) {
         val current = _state.value.sections.toMutableList()
         val idx = current.indexOfFirst { it.source == source }
         val updated = transform(current.getOrNull(idx))
         if (idx >= 0) current.removeAt(idx)
         if (updated != null) current.add(updated)
+        current.sortBy { it.source.ordinal }
         _state.value = _state.value.copy(sections = current)
     }
 
@@ -480,10 +544,15 @@ private object PrintablesApi {
         }
     }
 
-    fun search(q: String): List<ModelListing> {
+    fun search(q: String): List<ModelListing> = querySearch(q, "best_match")
+
+    /** Popular prints (empty query + popularity ordering), used for the home feed. */
+    fun popular(): List<ModelListing> = querySearch("", "popular")
+
+    private fun querySearch(q: String, ordering: String): List<ModelListing> {
         val query = """
             query SearchModels(${'$'}q: String!) {
-              result: searchPrints2(query: ${'$'}q, printType: print, limit: 30, ordering: best_match) {
+              result: searchPrints2(query: ${'$'}q, printType: print, limit: 30, ordering: $ordering) {
                 items {
                   id name slug downloadCount
                   user { publicUsername }
@@ -614,6 +683,18 @@ private object ThingiverseApi {
             ?.takeIf { it.isNotBlank() && it != "null" && it.startsWith("http") }
     }
 
+    private fun listing(o: JSONObject): ModelListing? {
+        if (!o.has("id")) return null
+        return ModelListing(
+            source = ModelSource.THINGIVERSE.id,
+            id = o.getString("id"),
+            name = o.optString("name", "Untitled"),
+            author = o.optJSONObject("creator")?.optString("name", "")?.takeIf { it.isNotBlank() },
+            thumbnailUrl = thumbnail(o),
+            downloads = if (o.has("download_count")) o.optInt("download_count") else null,
+        )
+    }
+
     fun search(q: String, token: String): List<ModelListing> {
         // NOTE: /search?q=... is accepted but ignored (always returns the same generic list);
         // the term must go in the path.
@@ -623,18 +704,18 @@ private object ThingiverseApi {
         val hits = json.optJSONArray("hits") ?: return emptyList()
         val out = ArrayList<ModelListing>(hits.length())
         for (i in 0 until hits.length()) {
-            val o = hits.getJSONObject(i)
-            if (!o.has("id")) continue
-            out.add(
-                ModelListing(
-                    source = ModelSource.THINGIVERSE.id,
-                    id = o.getString("id"),
-                    name = o.optString("name", "Untitled"),
-                    author = o.optJSONObject("creator")?.optString("name", "")?.takeIf { it.isNotBlank() },
-                    thumbnailUrl = thumbnail(o),
-                    downloads = if (o.has("download_count")) o.optInt("download_count") else null,
-                )
-            )
+            listing(hits.getJSONObject(i))?.let { out.add(it) }
+        }
+        return out
+    }
+
+    /** Popular things (the site's home feed). */
+    fun popular(token: String): List<ModelListing> {
+        val url = "$BASE/popular?per_page=30&access_token=" + URLEncoder.encode(token, "UTF-8")
+        val arr = getJsonArray(url, auth(token))
+        val out = ArrayList<ModelListing>(arr.length())
+        for (i in 0 until arr.length()) {
+            listing(arr.getJSONObject(i))?.let { out.add(it) }
         }
         return out
     }
@@ -738,7 +819,17 @@ private object NexprintApi {
     fun search(q: String): List<ModelListing> {
         val url = "$BASE/model-base-info/search?keyword=" + URLEncoder.encode(q, "UTF-8") +
             "&pageNum=1&pageSize=30"
-        val list = getData(url).getJSONObject("pageResult").getJSONArray("list")
+        return parseList(getData(url))
+    }
+
+    /** Empty keyword returns the site's front-page (popular) model list. */
+    fun popular(): List<ModelListing> {
+        val url = "$BASE/model-base-info/search?keyword=&pageNum=1&pageSize=30"
+        return parseList(getData(url))
+    }
+
+    private fun parseList(data: JSONObject): List<ModelListing> {
+        val list = data.getJSONObject("pageResult").getJSONArray("list")
         val out = ArrayList<ModelListing>(list.length())
         for (i in 0 until list.length()) {
             val o = list.getJSONObject(i)
@@ -841,6 +932,9 @@ private object NexprintApi {
 
     @Volatile private var cookieHeader: String? = null
 
+    /** When set (debug), scrape() writes the last fetched page into this directory. */
+    @Volatile var dumpDir: File? = null
+
     /** Visits makerworld.com to pass the Cloudflare check and collect session cookies. */
     private fun refreshSession() {
         val conn = URL("$SITE/en").openConnection() as HttpURLConnection
@@ -873,9 +967,22 @@ private object NexprintApi {
      * Cloudflare/signed-request gates, but the Next.js HTML response embeds the
      * full result list in its flight payload.
      */
-    fun search(q: String): List<ModelListing> {
+    fun search(q: String): List<ModelListing> =
+        scrape("$SITE/en/search/models?keyword=" + URLEncoder.encode(q, "UTF-8") + "&page=1", SEARCH_ENTRY)
+
+    /** Popular models: the "For You" design feed embedded in the home page's SSR payload. */
+    fun popular(): List<ModelListing> = scrape("$SITE/en/", FORYOU_ENTRY)
+
+    /** Design entry as embedded in the search results flight payload. */
+    private val SEARCH_ENTRY =
+        Regex(""""id":(\d+),"title":"([^"]*)","slug":"[^"]*","titleTranslated":"[^"]*","cover":"([^"]*)"""")
+
+    /** Design entry nested under "design" in the home page's foryouData payload. */
+    private val FORYOU_ENTRY =
+        Regex(""""design":\{"id":(\d+),"designType":\d+,"title":"([^"]*)","slug":"[^"]*","titleTranslated":"[^"]*","cover":"([^"]*)"""")
+
+    private fun scrape(url: String, entry: Regex): List<ModelListing> {
         if (cookieHeader == null) refreshSession()
-        val url = "$SITE/en/search/models?keyword=" + URLEncoder.encode(q, "UTF-8") + "&page=1"
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.requestMethod = "GET"
         conn.connectTimeout = 15_000
@@ -894,8 +1001,14 @@ private object NexprintApi {
         if (html.contains("Just a moment")) {
             throw IOException("MakerWorld is blocking this network (Cloudflare check).")
         }
+        dumpDir?.let { dir ->
+            runCatching {
+                dir.mkdirs()
+                val name = "mw_" + url.substringAfter("/en/").substringBefore("?").replace('/', '_') + ".html"
+                java.io.File(dir, name).writeText(html)
+            }
+        }
         val out = ArrayList<ModelListing>()
-        val entry = Regex(""""id":(\d+),"title":"([^"]*)","slug":"[^"]*","titleTranslated":"[^"]*","cover":"([^"]*)"""")
         android.util.Log.i("MakerWorld", "scrape len=${html.length} marker=${html.indexOf("\"title\":\"")} matches=${entry.findAll(html).count()}")
         for (m in entry.findAll(html)) {
             if (out.size >= 30) break

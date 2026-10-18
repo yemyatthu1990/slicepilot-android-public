@@ -19,6 +19,13 @@
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/AppConfig.hpp"
 
+#include "preview_parse.h"
+
+#include <chrono>
+#include <cfloat>
+#include <functional>
+#include <vector>
+
 #define LOG_TAG "SliceCore"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
@@ -547,6 +554,73 @@ Java_world_yemyat_slicepilot_NativeLib_nativeGetError(JNIEnv *env, jclass) {
 JNIEXPORT jstring JNICALL
 Java_world_yemyat_slicepilot_NativeLib_nativeGetVersion(JNIEnv *env, jclass) {
     return env->NewStringUTF(SLIC3R_APP_NAME " " SLIC3R_VERSION);
+}
+
+// Parses STL/3MF with the fast streaming preview parser (reads at most ~target
+// triangles) and returns {positions, normals, indices, bbox[6]}, or null on failure.
+JNIEXPORT jobjectArray JNICALL
+Java_world_yemyat_slicepilot_NativeLib_nativeParsePreview(
+    JNIEnv *env, jclass, jstring jpath, jint target_tris, jobject callback)
+{
+    const std::string path = jstring_to_string(env, jpath);
+    try {
+        // Optional progress callback: NativeLib.PreviewCallback.onProgress(int).
+        jmethodID progress_mid = nullptr;
+        if (callback) {
+            jclass cb_cls = env->FindClass("world/yemyat/slicepilot/NativeLib$PreviewCallback");
+            if (cb_cls) progress_mid = env->GetMethodID(cb_cls, "onProgress", "(I)V");
+            env->DeleteLocalRef(cb_cls);
+        }
+        std::function<void(int)> progress;
+        if (progress_mid)
+            progress = [env, callback, progress_mid](int pct) {
+                env->CallVoidMethod(callback, progress_mid, (jint) pct);
+            };
+
+        const auto t0 = std::chrono::steady_clock::now();
+        preview::Preview pv;
+        std::string err;
+        if (!preview::parse_preview(path, (int) target_tris, pv, err, progress)) {
+            LOGE("nativeParsePreview failed: %s", err.c_str());
+            return nullptr;
+        }
+        const size_t vc = pv.positions.size() / 3;
+        const size_t tc = pv.indices.size() / 3;
+        if (vc == 0 || tc == 0) return nullptr;
+
+        // Bounding box of the preview mesh.
+        float mn[3] = {FLT_MAX, FLT_MAX, FLT_MAX};
+        float mx[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+        for (size_t v = 0; v < vc; ++v)
+            for (int k = 0; k < 3; ++k) {
+                const float f = pv.positions[v * 3 + k];
+                if (f < mn[k]) mn[k] = f;
+                if (f > mx[k]) mx[k] = f;
+            }
+
+        jfloatArray pos = env->NewFloatArray((jsize) pv.positions.size());
+        env->SetFloatArrayRegion(pos, 0, (jsize) pv.positions.size(), pv.positions.data());
+        jfloatArray nrm = env->NewFloatArray((jsize) pv.normals.size());
+        env->SetFloatArrayRegion(nrm, 0, (jsize) pv.normals.size(), pv.normals.data());
+        jintArray idx = env->NewIntArray((jsize) pv.indices.size());
+        env->SetIntArrayRegion(idx, 0, (jsize) pv.indices.size(), pv.indices.data());
+        jfloatArray bbox = env->NewFloatArray(6);
+        const float bb[6] = {mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]};
+        env->SetFloatArrayRegion(bbox, 0, 6, bb);
+
+        jobjectArray out = env->NewObjectArray(4, env->FindClass("java/lang/Object"), nullptr);
+        env->SetObjectArrayElement(out, 0, pos);
+        env->SetObjectArrayElement(out, 1, nrm);
+        env->SetObjectArrayElement(out, 2, idx);
+        env->SetObjectArrayElement(out, 3, bbox);
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        LOGI("nativeParsePreview: %zu tris, %zu verts in %lld ms", tc, vc, (long long) ms);
+        return out;
+    } catch (const std::exception &e) {
+        LOGE("nativeParsePreview crashed: %s", e.what());
+        return nullptr;
+    }
 }
 
 } // extern "C"

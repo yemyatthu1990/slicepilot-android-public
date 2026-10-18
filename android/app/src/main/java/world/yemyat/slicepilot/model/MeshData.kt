@@ -67,7 +67,7 @@ object StlParser {
             val triCount = leInt(head, 80)
             val positions = FloatArray(triCount * 9)
             val faceNormals = FloatArray(triCount * 3)
-            var seen: HashSet<Long>? = HashSet(triCount + (triCount shr 1))
+            var seen: LongIntMap? = LongIntMap(triCount)
             var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE; var minZ = Float.MAX_VALUE
             var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE; var maxZ = -Float.MAX_VALUE
             var p = 0
@@ -95,7 +95,7 @@ object StlParser {
             }
             seen = null
             val fnArr = if (f == faceNormals.size) faceNormals else faceNormals.copyOf(f)
-            val vertMap = HashMap<Long, Int>(p)
+            val vertMap = LongIntMap(p / 3 * 2)
             val wpos = FloatArray(p)
             val widx = IntArray(p / 3)
             var uv = 0
@@ -105,21 +105,32 @@ object StlParser {
                 for (k in 0 until 3) {
                     val x = positions[i + k * 3]; val y = positions[i + k * 3 + 1]; val z = positions[i + k * 3 + 2]
                     val h = vertHash(x, y, z)
-                    val existing = vertMap[h]
-                    if (existing != null) {
+                    val existing = vertMap.get(h)
+                    if (existing >= 0) {
                         widx[ii++] = existing
                     } else {
                         wpos[uv * 3] = x; wpos[uv * 3 + 1] = y; wpos[uv * 3 + 2] = z
-                        vertMap[h] = uv
+                        vertMap.put(h, uv)
                         widx[ii++] = uv
                         uv++
                     }
                 }
                 i += 9
             }
-            val posArr = if (uv * 3 == wpos.size) wpos else wpos.copyOf(uv * 3)
-            val idxArr = if (ii == widx.size) widx else widx.copyOf(ii)
-            val normals = smoothNormals(posArr, idxArr, fnArr)
+            var posArr = if (uv * 3 == wpos.size) wpos else wpos.copyOf(uv * 3)
+            var idxArr = if (ii == widx.size) widx else widx.copyOf(ii)
+            var fn = fnArr
+            // Simplify before smooth normals; slicing re-reads the original file natively.
+            val reduced = MeshDecimator.decimateRaw(
+                posArr, idxArr, minX, minY, minZ, maxX, maxY, maxZ,
+                MeshDecimator.MAX_PREVIEW_TRIANGLES,
+            )
+            if (reduced != null) {
+                posArr = reduced.first
+                idxArr = reduced.second
+                fn = MeshDecimator.faceNormals(posArr, idxArr)
+            }
+            val normals = smoothNormals(posArr, idxArr, fn)
             return MeshData(posArr, normals, idxArr, minX, minY, minZ, maxX, maxY, maxZ)
         }
     }
@@ -256,5 +267,72 @@ object StlParser {
             }
         }
         return acc
+    }
+}
+
+/** Open-addressing long→int map; avoids the Long/Int boxing of HashMap<Long, Int>. */
+private class LongIntMap(capacityHint: Int) {
+    private var keys: LongArray
+    private var vals: IntArray
+    private var used: BooleanArray
+    private var mask: Int
+    private var size = 0
+
+    init {
+        var cap = 16
+        while (cap < capacityHint * 2) cap = cap shl 1
+        keys = LongArray(cap)
+        vals = IntArray(cap)
+        used = BooleanArray(cap)
+        mask = cap - 1
+    }
+
+    /** Returns the stored value, or -1 when absent. */
+    fun get(key: Long): Int {
+        val keys = this.keys; val used = this.used
+        var i = mix(key).toInt() and mask
+        while (used[i]) {
+            if (keys[i] == key) return vals[i]
+            i = (i + 1) and mask
+        }
+        return -1
+    }
+
+    fun put(key: Long, value: Int) {
+        if ((size + 1) * 4 > (mask + 1) * 3) rehash()
+        var i = mix(key).toInt() and mask
+        while (used[i]) {
+            if (keys[i] == key) { vals[i] = value; return }
+            i = (i + 1) and mask
+        }
+        used[i] = true
+        keys[i] = key
+        vals[i] = value
+        size++
+    }
+
+    /** Adds the key if new; true when newly added, false when already present. */
+    fun add(key: Long): Boolean {
+        if (get(key) >= 0) return false
+        put(key, 0)
+        return true
+    }
+
+    private fun rehash() {
+        val oldKeys = keys; val oldVals = vals; val oldUsed = used
+        val cap = (mask + 1) shl 1
+        keys = LongArray(cap); vals = IntArray(cap); used = BooleanArray(cap)
+        mask = cap - 1
+        size = 0
+        for (i in oldKeys.indices) {
+            if (oldUsed[i]) put(oldKeys[i], oldVals[i])
+        }
+    }
+
+    private fun mix(h0: Long): Long {
+        var x = h0
+        x = (x xor (x ushr 30)) * -4658895280553007687L
+        x = (x xor (x ushr 27)) * -7723592293110705685L
+        return x xor (x ushr 31)
     }
 }

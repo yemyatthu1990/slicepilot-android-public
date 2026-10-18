@@ -18,8 +18,9 @@ internal class MFComponent(
 internal class MFObject(
     val id: Int,
 ) {
-    val verts = ArrayList<FloatArray>()
-    val tris = ArrayList<IntArray>()
+    /** Flat xyz triples; primitive lists avoid per-vertex FloatArray/IntArray boxing. */
+    val verts = FloatList()
+    val tris = IntList()
     val comps = ArrayList<MFComponent>()
 }
 
@@ -115,10 +116,9 @@ object ThreeMFParser {
 
                 val base = vOff
                 val verts = obj.verts
-                val vertCount = verts.size
+                val vertCount = verts.size / 3
                 for (i in 0 until vertCount) {
-                    val v = verts[i]
-                    val x = v[0]; val y = v[1]; val z = v[2]
+                    val x = verts[i * 3]; val y = verts[i * 3 + 1]; val z = verts[i * 3 + 2]
                     if (transform != null) {
                         val nx = transform[0] * x + transform[3] * y + transform[6] * z + transform[9]
                         val ny = transform[1] * x + transform[4] * y + transform[7] * z + transform[10]
@@ -131,13 +131,13 @@ object ThreeMFParser {
                 vOff += vertCount
 
                 val tris = obj.tris
-                val triCount = tris.size
+                val triCount = tris.size / 3
                 for (i in 0 until triCount) {
-                    val tr = tris[i]
-                    if (tr[0] in 0 until vertCount && tr[1] in 0 until vertCount && tr[2] in 0 until vertCount) {
-                        indices.add(base + tr[0])
-                        indices.add(base + tr[1])
-                        indices.add(base + tr[2])
+                    val t1 = tris[i * 3]; val t2 = tris[i * 3 + 1]; val t3 = tris[i * 3 + 2]
+                    if (t1 in 0 until vertCount && t2 in 0 until vertCount && t3 in 0 until vertCount) {
+                        indices.add(base + t1)
+                        indices.add(base + t2)
+                        indices.add(base + t3)
                     }
                 }
 
@@ -189,15 +189,23 @@ object ThreeMFParser {
 
             if (positions.isEmpty()) throw RuntimeException("3MF contains no vertices in ${file.name}")
 
-            val posArr = positions.toTrimmedArray()
-            val idxArr = indices.toTrimmedArray()
+            val posArr0 = positions.toTrimmedArray()
+            val idxArr0 = indices.toTrimmedArray()
             var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE; var minZ = Float.MAX_VALUE
             var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE; var maxZ = -Float.MAX_VALUE
-            for (i in posArr.indices step 3) {
-                val x = posArr[i]; val y = posArr[i + 1]; val z = posArr[i + 2]
+            for (i in posArr0.indices step 3) {
+                val x = posArr0[i]; val y = posArr0[i + 1]; val z = posArr0[i + 2]
                 if (x < minX) minX = x; if (y < minY) minY = y; if (z < minZ) minZ = z
                 if (x > maxX) maxX = x; if (y > maxY) maxY = y; if (z > maxZ) maxZ = z
             }
+            // Simplify before the normal pass: previews never need millions of triangles,
+            // and slicing re-reads the original file in native code.
+            val reduced = MeshDecimator.decimateRaw(
+                posArr0, idxArr0, minX, minY, minZ, maxX, maxY, maxZ,
+                MeshDecimator.MAX_PREVIEW_TRIANGLES,
+            )
+            val posArr = reduced?.first ?: posArr0
+            val idxArr = reduced?.second ?: idxArr0
             val faceNormals = FloatArray(idxArr.size)
             val normals = StlParser.smoothNormalsPublic(posArr, idxArr, faceNormals)
             return MeshData(posArr, normals, idxArr, minX, minY, minZ, maxX, maxY, maxZ)
@@ -286,7 +294,8 @@ object ThreeMFParser {
                                 val x = (getAttr(p, "x")?.toFloatOrNull() ?: 0f) * unitFactor
                                 val y = (getAttr(p, "y")?.toFloatOrNull() ?: 0f) * unitFactor
                                 val z = (getAttr(p, "z")?.toFloatOrNull() ?: 0f) * unitFactor
-                                objects[currentId]?.verts?.add(floatArrayOf(x, y, z))
+                                val o = objects[currentId]
+                                o?.verts?.add(x); o?.verts?.add(y); o?.verts?.add(z)
                             }
                         }
                         "triangle" -> {
@@ -294,7 +303,8 @@ object ThreeMFParser {
                                 val v1 = getAttr(p, "v1")?.toIntOrNull() ?: 0
                                 val v2 = getAttr(p, "v2")?.toIntOrNull() ?: 0
                                 val v3 = getAttr(p, "v3")?.toIntOrNull() ?: 0
-                                objects[currentId]?.tris?.add(intArrayOf(v1, v2, v3))
+                                val o = objects[currentId]
+                                o?.tris?.add(v1); o?.tris?.add(v2); o?.tris?.add(v3)
                             }
                         }
                         "component" -> {
@@ -374,10 +384,12 @@ object ThreeMFParser {
 }
 
 /** Growable primitive float array; avoids Float boxing of ArrayList<Float>. */
-private class FloatList(initialCapacity: Int = 4096) {
+internal class FloatList(initialCapacity: Int = 4096) {
     private var data = FloatArray(initialCapacity)
     var size = 0
         private set
+
+    operator fun get(i: Int): Float = data[i]
 
     fun add(value: Float) {
         if (size == data.size) grow(1)
@@ -385,6 +397,8 @@ private class FloatList(initialCapacity: Int = 4096) {
     }
 
     fun isEmpty() = size == 0
+
+    fun isNotEmpty() = size > 0
 
     fun toTrimmedArray(): FloatArray = data.copyOf(size)
 
@@ -396,10 +410,12 @@ private class FloatList(initialCapacity: Int = 4096) {
 }
 
 /** Growable primitive int array; avoids Int boxing of ArrayList<Int>. */
-private class IntList(initialCapacity: Int = 4096) {
+internal class IntList(initialCapacity: Int = 4096) {
     private var data = IntArray(initialCapacity)
     var size = 0
         private set
+
+    operator fun get(i: Int): Int = data[i]
 
     fun add(value: Int) {
         if (size == data.size) grow(1)

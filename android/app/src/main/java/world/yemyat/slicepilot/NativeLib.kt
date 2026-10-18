@@ -8,6 +8,11 @@ object NativeLib {
         fun onProgress(step: Int, text: String, percent: Int)
     }
 
+    /** Receives 0..100 progress updates while [parsePreviewMesh] runs. */
+    interface PreviewCallback {
+        fun onProgress(percent: Int)
+    }
+
     @Volatile
     private var initialized = false
 
@@ -112,4 +117,41 @@ object NativeLib {
     external fun nativeIsRunning(): Boolean
     external fun nativeGetError(): String
     external fun nativeGetVersion(): String
+
+    private external fun nativeParsePreview(
+        path: String, targetTris: Int, callback: PreviewCallback?
+    ): Array<Any>?
+
+    /**
+     * Parses a model with the native libslic3r readers and simplifies it for the
+     * preview (slicing always re-reads the full-resolution file). Null when the
+     * native path is unavailable; callers fall back to the Kotlin parser.
+     * [onProgress] receives 0..100 percentages while the parse runs.
+     */
+    fun parsePreviewMesh(
+        path: String,
+        targetTris: Int,
+        onProgress: (Int) -> Unit = {},
+    ): world.yemyat.slicepilot.model.MeshData? {
+        if (!isLoaded) return null
+        val callback = object : PreviewCallback {
+            override fun onProgress(percent: Int) = onProgress(percent)
+        }
+        val parts = try {
+            nativeParsePreview(path, targetTris, callback)
+        } catch (t: Throwable) {
+            android.util.Log.w("NativeLib", "nativeParsePreview failed", t)
+            null
+        } ?: return null
+        return try {
+            val pos = parts[0] as FloatArray
+            val nrm = parts[1] as FloatArray
+            val idx = parts[2] as IntArray
+            val bb = parts[3] as FloatArray
+            world.yemyat.slicepilot.model.MeshData(pos, nrm, idx, bb[0], bb[1], bb[2], bb[3], bb[4], bb[5])
+        } catch (t: Throwable) {
+            android.util.Log.e("NativeLib", "nativeParsePreview result decode failed", t)
+            null
+        }
+    }
 }

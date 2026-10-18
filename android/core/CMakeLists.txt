@@ -130,6 +130,7 @@ target_link_libraries(libslic3r_cgal PUBLIC admesh libigl ${BOOST_LIBS})
 add_library(slice_core SHARED
     ${SLIC3R_SOURCES}
     "${CMAKE_CURRENT_SOURCE_DIR}/jni/slice_jni.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/jni/preview_parse.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/stubs/android_stubs.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/stubs/nanosvg_impl.cpp"
 )

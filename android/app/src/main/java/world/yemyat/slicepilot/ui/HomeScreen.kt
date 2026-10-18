@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -40,6 +42,8 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import world.yemyat.slicepilot.NativeLib
 import world.yemyat.slicepilot.preview.ModelPreviewView
 import world.yemyat.slicepilot.model.MeshData
+import world.yemyat.slicepilot.repo.ModelBrowser
+import world.yemyat.slicepilot.repo.ModelSource
 import world.yemyat.slicepilot.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -51,6 +55,7 @@ fun HomeScreen(
     onOpenConnect: () -> Unit,
     onOpenConfigure: () -> Unit,
     onBrowse: () -> Unit,
+    browser: ModelBrowser,
 ) {
     val mesh by vm.mesh.collectAsState()
     val modelLoading by vm.modelLoading.collectAsState()
@@ -59,297 +64,442 @@ fun HomeScreen(
     val printers by vm.printers.collectAsState()
     val selectedPrinter by vm.selectedPrinterState.collectAsState()
     val availablePrinters by vm.availablePrinters.collectAsState()
+    val browse by browser.state.collectAsState()
 
-    Scaffold(containerColor = Color.Transparent) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
-        ) {
-            Spacer(Modifier.height(8.dp))
-            BrandWordmark()
-            Spacer(Modifier.height(18.dp))
-            Text(
-                "Slice with a little magic.",
-                fontSize = 38.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = (-0.8).sp,
-            )
-            Text(
-                "A little slicer for your next 3D print.",
-                fontSize = 17.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+    // Popular-models strip (empty search-bar feed) for the "no model yet" state.
+    LaunchedEffect(Unit) { browser.loadHome() }
 
-            if (!NativeLib.isLoaded) {
-                val ctx = LocalContext.current
-                BigCard(
-                    icon = {
-                        Icon(Icons.Filled.Warning, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(30.dp))
-                    },
-                    iconBg = MaterialTheme.colorScheme.errorContainer,
-                    title = "Slicing engine missing",
-                    subtitle = "The native library failed to load. Reinstall SlicePilot from Google Play.",
-                    onClick = {
-                        val uri = android.net.Uri.parse("market://details?id=${ctx.packageName}")
-                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
-                        runCatching { ctx.startActivity(intent) }
-                            .onFailure {
-                                ctx.startActivity(
-                                    android.content.Intent(
-                                        android.content.Intent.ACTION_VIEW,
-                                        android.net.Uri.parse("https://play.google.com/store/apps/details?id=${ctx.packageName}"),
-                                    )
-                                )
-                            }
-                    },
+    val hasModel = vm.modelPath != null
+    val printerReady = selectedPrinter != null
+
+    Box(Modifier.fillMaxSize()) {
+        Scaffold(
+            containerColor = Color.Transparent,
+            bottomBar = {
+                HomeCta(
+                    hasModel = hasModel,
+                    printerReady = printerReady,
+                    onFindModel = onBrowse,
+                    onConnect = onOpenConnect,
+                    onPrintSetup = { vm.openPrintSetup() },
                 )
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                BigCard(
-                    modifier = Modifier.weight(1f),
-                    icon = {
-                        if (mErr != null) {
-                            Icon(Icons.Filled.Warning, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(30.dp))
-                        } else {
-                            Icon(Icons.Filled.FolderOpen, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(30.dp))
-                        }
-                    },
-                    iconBg = if (mErr != null) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
-                    title = when {
-                        mErr != null -> "Model failed to load"
-                        vm.modelPath != null -> "Model loaded"
-                        else -> "Choose a model"
-                    },
-                    subtitle = when {
-                        mErr != null -> mErr.code
-                        vm.modelPath != null -> {
-                            val f = java.io.File(vm.modelPath!!)
-                            "${f.name} · ${(f.length() / 1024 / 1024.0).let { mb -> String.format("%.1f MB", mb) }}"
-                        }
-                        else -> "STL or 3MF from your phone"
-                    },
-                    onClick = onPickModel,
-                )
-                val isPrinterConnected = selectedPrinter != null || vm.cloudLoggedIn
-                BigCard(
-                    modifier = Modifier.weight(1f),
-                    icon = {
-                        Icon(
-                            if (isPrinterConnected) {
-                                if (selectedPrinter?.isLocal == true) Icons.Filled.Wifi else Icons.Filled.CloudDone
-                            } else {
-                                Icons.Filled.CloudOff
-                            },
-                            null,
-                            tint = if (isPrinterConnected) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(30.dp),
-                        )
-                    },
-                    iconBg = if (isPrinterConnected) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                    title = if (isPrinterConnected) "Connected" else "Connect printer",
-                    subtitle = when {
-                        selectedPrinter != null -> {
-                            if (selectedPrinter!!.isLocal) {
-                                "${selectedPrinter!!.name} · Local Wi-Fi"
-                            } else {
-                                "${selectedPrinter!!.name} · Cloud"
-                            }
-                        }
-                        vm.cloudLoggedIn -> {
-                            if (printers.isNotEmpty()) "${printers.size} printer${if (printers.size > 1) "s" else ""} · ${vm.cloudUser}"
-                            else "Signed in as ${vm.cloudUser}"
-                        }
-                        else -> "Wi-Fi or Cloud"
-                    },
-                    onClick = onOpenConnect,
-                )
-            }
-
-            BigCard(
-                modifier = Modifier.fillMaxWidth(),
-                icon = {
-                    Icon(Icons.Filled.TravelExplore, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(30.dp))
-                },
-                iconBg = MaterialTheme.colorScheme.secondaryContainer,
-                title = "Find models online",
-                subtitle = "Search Printables, Thingiverse, Nexprint & MakerWorld",
-                onClick = onBrowse,
-            )
-
-            val nozzleSizes = remember(selectedPrinter?.model) { vm.nozzleSizesFor(selectedPrinter?.model ?: "") }
-            val selectedNozzle by vm.selectedNozzle.collectAsState()
-            Surface(
-                shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 2.dp,
-                shadowElevation = 4.dp,
-                modifier = Modifier.fillMaxWidth(),
+            },
+        ) { padding ->
+            Column(
+                modifier = Modifier
+                    .padding(padding)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp),
             ) {
-                Column(
-                    modifier = Modifier.padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Text("Printer", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    var printerMenu by remember { mutableStateOf(false) }
-                    ExposedDropdownMenuBox(
-                        expanded = printerMenu,
-                        onExpandedChange = { if (availablePrinters.isNotEmpty()) printerMenu = it }
-                    ) {
-                        OutlinedTextField(
-                            value = selectedPrinter?.let {
-                                "${it.name} · ${it.model}${if (it.isLocal) " (Local)" else ""}"
-                            } ?: "Select a printer",
-                            onValueChange = {},
-                            readOnly = true,
-                            enabled = availablePrinters.isNotEmpty(),
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(printerMenu) },
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier.menuAnchor().fillMaxWidth(),
-                        )
-                        ExposedDropdownMenu(expanded = printerMenu, onDismissRequest = { printerMenu = false }) {
-                            availablePrinters.forEach { p ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            if (p.isLocal) "${p.name} · ${p.model} (Local ${p.ip ?: ""})"
-                                            else "${p.name} · ${p.model}${if (p.online) "" else " (offline)"}"
+                Spacer(Modifier.height(8.dp))
+
+                // Compact header: wordmark + printer status chip.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    BrandWordmark(Modifier.weight(1f))
+                    PrinterStatusChip(
+                        name = selectedPrinter?.name ?: if (vm.cloudLoggedIn) "Cloud" else null,
+                        isLocal = selectedPrinter?.isLocal == true,
+                        onClick = onOpenConnect,
+                    )
+                }
+                Text(
+                    "Slice with a little magic.",
+                    fontSize = 15.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                if (!NativeLib.isLoaded) {
+                    val ctx = LocalContext.current
+                    BigCard(
+                        icon = {
+                            Icon(Icons.Filled.Warning, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(30.dp))
+                        },
+                        iconBg = MaterialTheme.colorScheme.errorContainer,
+                        title = "Slicing engine missing",
+                        subtitle = "The native library failed to load. Reinstall SlicePilot from Google Play.",
+                        onClick = {
+                            val uri = android.net.Uri.parse("market://details?id=${ctx.packageName}")
+                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+                            runCatching { ctx.startActivity(intent) }
+                                .onFailure {
+                                    ctx.startActivity(
+                                        android.content.Intent(
+                                            android.content.Intent.ACTION_VIEW,
+                                            android.net.Uri.parse("https://play.google.com/store/apps/details?id=${ctx.packageName}"),
                                         )
-                                    },
-                                    onClick = { vm.selectPrinter(p); printerMenu = false },
-                                )
-                            }
-                        }
+                                    )
+                                }
+                        },
+                    )
+                }
+
+                if (!hasModel) {
+                    // State A: start a project — find a model online or pick a file.
+                    Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        BigCard(
+                            modifier = Modifier.weight(1f),
+                            icon = {
+                                Icon(Icons.Filled.TravelExplore, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(30.dp))
+                            },
+                            iconBg = MaterialTheme.colorScheme.secondaryContainer,
+                            title = "Find models",
+                            subtitle = "MakerWorld, Printables & more",
+                            onClick = onBrowse,
+                        )
+                        BigCard(
+                            modifier = Modifier.weight(1f),
+                            icon = {
+                                if (mErr != null) {
+                                    Icon(Icons.Filled.Warning, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(30.dp))
+                                } else {
+                                    Icon(Icons.Filled.FolderOpen, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(30.dp))
+                                }
+                            },
+                            iconBg = if (mErr != null) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
+                            title = if (mErr != null) "Model failed" else "Choose a file",
+                            subtitle = if (mErr != null) mErr.code else "STL or 3MF from your phone",
+                            onClick = onPickModel,
+                        )
                     }
-                    if (selectedPrinter != null) {
-                        Text("Nozzle size", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            nozzleSizes.forEach { size ->
-                                FilterChip(
-                                    selected = size == selectedNozzle,
-                                    onClick = { vm.selectNozzle(size) },
-                                    label = { Text("$size mm", maxLines = 1) },
-                                )
-                            }
-                        }
-                    }
-                    val curPrinter = selectedPrinter
-                    val curFilament = curPrinter?.let {
-                        vm.filamentFor(it.id)
-                            ?: it.serial?.let { s -> vm.filamentFor(s) }
-                            ?: it.ip?.let { ip -> vm.filamentFor(ip) }
-                    }
-                    if (curFilament != null && curFilament.present) {
-                        Text("Loaded filament", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
+                    PopularModelStrip(browser = browser, onOpen = { browser.openDetail(it) }, onBrowseAll = onBrowse)
+                } else {
+                    // States B/C: the loaded model is the hero — preview first.
+                    if (mesh != null && !modelLoading) {
+                        Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                .fillMaxWidth()
+                                .height(320.dp)
+                                .clip(RoundedCornerShape(24.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
                         ) {
-                            val trays = curFilament.trays.ifEmpty {
-                                listOf(world.yemyat.slicepilot.cloud.LoadedTray(0, curFilament.name, curFilament.name, curFilament.colorHex))
+                            ModelPreviewCanvas(mesh = mesh, onError = { vm.reportModelLoadError("render", it) })
+                            FilledIconButton(
+                                onClick = onFullscreen,
+                                colors = IconButtonDefaults.filledIconButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                                    contentColor = MaterialTheme.colorScheme.onSurface,
+                                ),
+                                modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
+                            ) {
+                                Icon(Icons.Filled.Fullscreen, "Fullscreen")
                             }
-                            trays.forEachIndexed { idx, tray ->
-                                if (idx > 0) Spacer(Modifier.width(14.dp))
-                                val swatchColor = remember(tray.colorHex) {
-                                    tray.colorHex?.let {
-                                        try { android.graphics.Color.parseColor(it) } catch (_: Exception) { null }
-                                    }
-                                }
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Box(
-                                        Modifier
-                                            .size(16.dp)
-                                            .background(
-                                                swatchColor?.let { Color(it) } ?: MaterialTheme.colorScheme.outline,
-                                                CircleShape,
+                        }
+                    } else if (modelLoading) {
+                        val progress by vm.modelLoadProgress.collectAsState()
+                        val loadStart = remember { android.os.SystemClock.elapsedRealtime() }
+                        Box(
+                            Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(24.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                val p = progress
+                                if (p != null && p > 0) {
+                                    CircularProgressIndicator(
+                                        progress = { p / 100f },
+                                        modifier = Modifier.size(48.dp),
+                                    )
+                                    Spacer(Modifier.height(12.dp))
+                                    Text("Loading model… $p%", fontSize = 13.sp)
+                                    val elapsed =
+                                        (android.os.SystemClock.elapsedRealtime() - loadStart) / 1000.0
+                                    if (p >= 5) {
+                                        val remaining = elapsed * (100 - p) / p
+                                        if (remaining > 2)
+                                            Text(
+                                                "~${remaining.toInt()} s left",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             )
-                                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
-                                    )
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(
-                                        tray.type.ifBlank { tray.name }.ifBlank { "Filament" },
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Medium,
-                                    )
+                                    }
+                                } else {
+                                    CircularProgressIndicator(modifier = Modifier.size(48.dp))
                                 }
                             }
                         }
+                    }
+                    val modelFile = vm.modelPath?.let { java.io.File(it) }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            modelFile?.let {
+                                Text(it.name, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                Text(
+                                    "%.1f MB".format(it.length() / 1024.0 / 1024.0),
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        TextButton(onClick = onPickModel) { Text("Replace") }
+                    }
+                    // State B: model loaded but no printer — connect is the next step.
+                    if (!printerReady) {
+                        BigCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            icon = {
+                                Icon(Icons.Filled.CloudOff, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(30.dp))
+                            },
+                            iconBg = MaterialTheme.colorScheme.surfaceVariant,
+                            title = "Connect your printer",
+                            subtitle = "Wi-Fi or Cloud",
+                            onClick = onOpenConnect,
+                        )
                     }
                 }
-            }
 
-            if (mErr != null) {
+                val nozzleSizes = remember(selectedPrinter?.model) { vm.nozzleSizesFor(selectedPrinter?.model ?: "") }
+                val selectedNozzle by vm.selectedNozzle.collectAsState()
                 Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.errorContainer,
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 2.dp,
+                    shadowElevation = 4.dp,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Icon(Icons.Filled.Warning, null, tint = MaterialTheme.colorScheme.onErrorContainer)
-                        Column(Modifier.weight(1f)) {
-                            Text("Model failed to load", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer)
-                            Text(
-                                "${mErr.code} · ${mErr.message}",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onErrorContainer,
+                        Text("Printer", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        var printerMenu by remember { mutableStateOf(false) }
+                        ExposedDropdownMenuBox(
+                            expanded = printerMenu,
+                            onExpandedChange = { if (availablePrinters.isNotEmpty()) printerMenu = it }
+                        ) {
+                            OutlinedTextField(
+                                value = selectedPrinter?.let {
+                                    "${it.name} · ${it.model}${if (it.isLocal) " (Local)" else ""}"
+                                } ?: "Select a printer",
+                                onValueChange = {},
+                                readOnly = true,
+                                enabled = availablePrinters.isNotEmpty(),
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(printerMenu) },
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier.menuAnchor().fillMaxWidth(),
                             )
+                            ExposedDropdownMenu(expanded = printerMenu, onDismissRequest = { printerMenu = false }) {
+                                availablePrinters.forEach { p ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                if (p.isLocal) "${p.name} · ${p.model} (Local ${p.ip ?: ""})"
+                                                else "${p.name} · ${p.model}${if (p.online) "" else " (offline)"}"
+                                            )
+                                        },
+                                        onClick = { vm.selectPrinter(p); printerMenu = false },
+                                    )
+                                }
+                            }
                         }
-                        TextButton(onClick = { vm.dismissModelError() }) { Text("Dismiss") }
+                        if (selectedPrinter != null) {
+                            Text("Nozzle size", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                nozzleSizes.forEach { size ->
+                                    FilterChip(
+                                        selected = size == selectedNozzle,
+                                        onClick = { vm.selectNozzle(size) },
+                                        label = { Text("$size mm", maxLines = 1) },
+                                    )
+                                }
+                            }
+                        }
+                        val curPrinter = selectedPrinter
+                        val curFilament = curPrinter?.let {
+                            vm.filamentFor(it.id)
+                                ?: it.serial?.let { s -> vm.filamentFor(s) }
+                                ?: it.ip?.let { ip -> vm.filamentFor(ip) }
+                        }
+                        if (curFilament != null && curFilament.present) {
+                            Text("Loaded filament", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                            ) {
+                                val trays = curFilament.trays.ifEmpty {
+                                    listOf(world.yemyat.slicepilot.cloud.LoadedTray(0, curFilament.name, curFilament.name, curFilament.colorHex))
+                                }
+                                trays.forEachIndexed { idx, tray ->
+                                    if (idx > 0) Spacer(Modifier.width(14.dp))
+                                    val swatchColor = remember(tray.colorHex) {
+                                        tray.colorHex?.let {
+                                            try { android.graphics.Color.parseColor(it) } catch (_: Exception) { null }
+                                        }
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            Modifier
+                                                .size(16.dp)
+                                                .background(
+                                                    swatchColor?.let { Color(it) } ?: MaterialTheme.colorScheme.outline,
+                                                    CircleShape,
+                                                )
+                                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            tray.type.ifBlank { tray.name }.ifBlank { "Filament" },
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Medium,
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-            }
 
-            if (mesh != null && !modelLoading) {
-                Text("Preview", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(320.dp)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                ) {
-                    ModelPreviewCanvas(mesh = mesh, onError = { vm.reportModelLoadError("render", it) })
-                    FilledIconButton(
-                        onClick = onFullscreen,
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-                            contentColor = MaterialTheme.colorScheme.onSurface,
-                        ),
-                        modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
+                if (mErr != null) {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Icon(Icons.Filled.Fullscreen, "Fullscreen")
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Icon(Icons.Filled.Warning, null, tint = MaterialTheme.colorScheme.onErrorContainer)
+                            Column(Modifier.weight(1f)) {
+                                Text("Model failed to load", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer)
+                                Text(
+                                    "${mErr.code} · ${mErr.message}",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                )
+                            }
+                            TextButton(onClick = { vm.dismissModelError() }) { Text("Dismiss") }
+                        }
                     }
                 }
-            } else if (modelLoading) {
-                Box(
-                    Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(24.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    contentAlignment = Alignment.Center,
-                ) { CircularProgressIndicator() }
+
+                Spacer(Modifier.height(24.dp))
             }
+        }
 
-            Spacer(Modifier.height(24.dp))
+        // Model detail opened from the popular strip, full screen over home.
+        ModelDetailHost(vm, browser)
+    }
+}
 
+/** Sticky bottom button that always names the user's next step. */
+@Composable
+private fun HomeCta(
+    hasModel: Boolean,
+    printerReady: Boolean,
+    onFindModel: () -> Unit,
+    onConnect: () -> Unit,
+    onPrintSetup: () -> Unit,
+) {
+    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
+            val (text, icon, onClick) = when {
+                !hasModel -> Triple(
+                    "Find a model",
+                    Icons.Filled.TravelExplore,
+                    onFindModel,
+                )
+                !printerReady -> Triple(
+                    "Connect printer",
+                    Icons.Filled.CloudOff,
+                    onConnect,
+                )
+                else -> Triple(
+                    "Print setup",
+                    Icons.Filled.Print,
+                    onPrintSetup,
+                )
+            }
             BrandButton(
-                text = "Print setup",
-                onClick = { vm.openPrintSetup() },
-                enabled = vm.modelPath != null && selectedPrinter != null,
-                icon = { Icon(Icons.Filled.Print, null, tint = Color.White) },
+                text = text,
+                onClick = onClick,
+                icon = { Icon(icon, null, tint = Color.White) },
                 modifier = Modifier.fillMaxWidth(),
-                height = 64.dp,
+                height = 60.dp,
             )
-            Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+/** Compact printer status pill in the header; tap opens the Connect screen. */
+@Composable
+private fun PrinterStatusChip(name: String?, isLocal: Boolean, onClick: () -> Unit) {
+    val connected = name != null
+    Surface(
+        shape = CircleShape,
+        color = if (connected) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+        border = BorderStroke(1.dp, LanternGold.copy(alpha = 0.18f)),
+        onClick = onClick,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            Icon(
+                when {
+                    !connected -> Icons.Filled.CloudOff
+                    isLocal -> Icons.Filled.Wifi
+                    else -> Icons.Filled.CloudDone
+                },
+                null,
+                modifier = Modifier.size(16.dp),
+                tint = if (connected) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                name ?: "Connect",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                color = if (connected) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** Horizontal popular-models rails (MakerWorld, Printables) for the no-model state. */
+@Composable
+private fun PopularModelStrip(
+    browser: ModelBrowser,
+    onOpen: (world.yemyat.slicepilot.repo.ModelListing) -> Unit,
+    onBrowseAll: () -> Unit,
+) {
+    val st by browser.state.collectAsState()
+    val sections = st.sections.filter {
+        it.source == ModelSource.MAKERWORLD || it.source == ModelSource.PRINTABLES
+    }
+    sections.forEach { section ->
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Popular on ${section.source.label}",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onBrowseAll) { Text("See all") }
+            }
+            if (section.loading) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 18.dp),
+                ) {
+                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Text("Loading ${section.source.label}…", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else if (section.results.isNotEmpty()) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(section.results.take(10), key = { it.id }) { item ->
+                        ModelCard(item, Modifier.width(170.dp)) { onOpen(item) }
+                    }
+                }
+            }
         }
     }
 }
