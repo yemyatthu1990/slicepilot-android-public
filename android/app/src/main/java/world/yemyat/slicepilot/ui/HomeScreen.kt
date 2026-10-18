@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.TravelExplore
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Wifi
@@ -47,6 +48,7 @@ fun HomeScreen(
     onFullscreen: () -> Unit,
     onOpenConnect: () -> Unit,
     onOpenConfigure: () -> Unit,
+    onBrowse: () -> Unit,
 ) {
     val mesh by vm.mesh.collectAsState()
     val modelLoading by vm.modelLoading.collectAsState()
@@ -140,6 +142,17 @@ fun HomeScreen(
                     onClick = onOpenConnect,
                 )
             }
+
+            BigCard(
+                modifier = Modifier.fillMaxWidth(),
+                icon = {
+                    Icon(Icons.Filled.TravelExplore, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(30.dp))
+                },
+                iconBg = MaterialTheme.colorScheme.secondaryContainer,
+                title = "Find models online",
+                subtitle = "Search Printables & Thingiverse, download and slice",
+                onClick = onBrowse,
+            )
 
             val nozzleSizes = remember(selectedPrinter?.model) { vm.nozzleSizesFor(selectedPrinter?.model ?: "") }
             val selectedNozzle by vm.selectedNozzle.collectAsState()

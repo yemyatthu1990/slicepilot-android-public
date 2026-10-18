@@ -203,6 +203,14 @@ class MainActivity : ComponentActivity() {
         var showConnect by remember { mutableStateOf(false) }
         var showConfigure by remember { mutableStateOf(false) }
         var fullscreen by remember { mutableStateOf(false) }
+        val browser = remember {
+            world.yemyat.slicepilot.repo.ModelBrowser(
+                prefs = getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE),
+                cacheDir = cacheDir,
+                cloudTokenProvider = { cloud.auth.accessToken.takeIf { cloud.auth.isLoggedIn } },
+            )
+        }
+        DisposableEffect(browser) { onDispose { browser.dispose() } }
 
         val scope = remember { CoroutineScope(Dispatchers.Main) }
 
@@ -279,8 +287,10 @@ class MainActivity : ComponentActivity() {
                     onFullscreen = { fullscreen = true },
                     onOpenConnect = { showConnect = true },
                     onOpenConfigure = { showConfigure = true },
+                    onBrowse = { vm.openBrowse() },
                 )
                 is Screen.PrintSetup -> PrintSetupScreen(vm)
+                is Screen.Browse -> BrowseScreen(vm, browser)
                 is Screen.Slice -> SliceScreen(vm)
                 is Screen.Slicing -> SlicingScreen(vm)
                 is Screen.Preview -> {

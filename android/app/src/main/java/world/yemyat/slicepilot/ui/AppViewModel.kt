@@ -109,6 +109,7 @@ fun world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter.toConnectedP
 
 sealed class Screen {
     data object Home : Screen()
+    data object Browse : Screen()
     data object PrintSetup : Screen()
     data object Slice : Screen()
     data object Slicing : Screen()
@@ -866,8 +867,11 @@ class AppViewModel(
         EventNotifier.trackEvent("bed_type_selected", mapOf("plate" to plate))
     }
 
-    fun openPrintSetup() {
-        val printer = _config.value.printer ?: return
+    fun openBrowse() {
+        _screen.value = Screen.Browse
+    }
+
+    fun openPrintSetup() {        val printer = _config.value.printer ?: return
         NativeLib.nativeSelectPrinter(printer)
         val opts = printSetupMaterials()
         if (_setupMaterial.value == null || opts.none { it.key == _setupMaterial.value }) {
@@ -1344,6 +1348,7 @@ class AppViewModel(
     fun goBack() {
         when (_screen.value) {
             Screen.Home -> {}
+            Screen.Browse -> _screen.value = Screen.Home
             Screen.PrintSetup -> _screen.value = Screen.Home
             Screen.Slice -> _screen.value = Screen.PrintSetup
             Screen.Slicing -> {
