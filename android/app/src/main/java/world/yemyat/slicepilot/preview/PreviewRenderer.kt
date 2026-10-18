@@ -43,6 +43,9 @@ class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer 
 
     private val single = IntArray(1)
 
+    // Reused staging buffer for chunked VBO uploads. Only touched on the GL thread.
+    private var uploadScratch: ByteBuffer? = null
+
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
         GLES30.glDepthFunc(GLES30.GL_LEQUAL)
@@ -226,26 +229,65 @@ class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer 
     }
 
     private fun uploadVertices(data: FloatArray): Int {
-        val buffer = ByteBuffer.allocateDirect(data.size * 4).order(ByteOrder.nativeOrder())
-        buffer.asFloatBuffer().put(data)
-        buffer.position(0)
-        GLES30.glGenBuffers(1, single, 0)
-        val id = single[0]
-        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, id)
-        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, data.size * 4, buffer, GLES30.GL_STATIC_DRAW)
-        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        val target = GLES30.GL_ARRAY_BUFFER
+        val id = beginUpload(target, data.size * 4)
+        val buffer = scratch()
+        var offset = 0
+        while (offset < data.size) {
+            val n = minOf(data.size - offset, UPLOAD_CHUNK_FLOATS)
+            buffer.clear()
+            buffer.asFloatBuffer().put(data, offset, n)
+            buffer.limit(n * 4)
+            buffer.position(0)
+            GLES30.glBufferSubData(target, offset * 4, n * 4, buffer)
+            offset += n
+        }
+        GLES30.glBindBuffer(target, 0)
         return id
     }
 
     private fun uploadIndices(indices: IntArray): Int {
-        val buffer = ByteBuffer.allocateDirect(indices.size * 4).order(ByteOrder.nativeOrder())
-        buffer.asIntBuffer().put(indices)
-        buffer.position(0)
+        val target = GLES30.GL_ELEMENT_ARRAY_BUFFER
+        val id = beginUpload(target, indices.size * 4)
+        val buffer = scratch()
+        var offset = 0
+        while (offset < indices.size) {
+            val n = minOf(indices.size - offset, UPLOAD_CHUNK_FLOATS)
+            buffer.clear()
+            buffer.asIntBuffer().put(indices, offset, n)
+            buffer.limit(n * 4)
+            buffer.position(0)
+            GLES30.glBufferSubData(target, offset * 4, n * 4, buffer)
+            offset += n
+        }
+        GLES30.glBindBuffer(target, 0)
+        return id
+    }
+
+    /**
+     * Returns the shared staging buffer, allocated once on the GL thread with a
+     * fixed size independent of the mesh.
+     */
+    private fun scratch(): ByteBuffer {
+        var buffer = uploadScratch
+        if (buffer == null) {
+            buffer = ByteBuffer.allocateDirect(UPLOAD_CHUNK_BYTES).order(ByteOrder.nativeOrder()) as ByteBuffer
+            uploadScratch = buffer
+        }
+        return buffer
+    }
+
+    /**
+     * Allocates the VBO storage first, so the data can be streamed in chunks.
+     * Uploading the whole mesh through one direct allocation (on top of the
+     * source FloatArray) pushed large previews past the 256 MB heap footprint
+     * limit and OOM-crashed the GL thread.
+     */
+    private fun beginUpload(target: Int, totalBytes: Int): Int {
         GLES30.glGenBuffers(1, single, 0)
         val id = single[0]
-        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, id)
-        GLES30.glBufferData(GLES30.GL_ELEMENT_ARRAY_BUFFER, indices.size * 4, buffer, GLES30.GL_STATIC_DRAW)
-        GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
+        GLES30.glBindBuffer(target, id)
+        GLES30.glBufferData(target, totalBytes, null, GLES30.GL_STATIC_DRAW)
         return id
     }
 
@@ -309,6 +351,8 @@ class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer 
         private const val STRIDE_BYTES = 24
         private const val POSITION_STRIDE_BYTES = 12
         private const val NORMAL_OFFSET_BYTES = 12
+        private const val UPLOAD_CHUNK_FLOATS = 1 shl 20 // 4 MB staging chunks
+        private const val UPLOAD_CHUNK_BYTES = UPLOAD_CHUNK_FLOATS * 4
         private const val NO_CLIP = 1.0e9f
         private const val PLATE_ALPHA = 0.5f
         private val IDENTITY = Mat4.identity()
