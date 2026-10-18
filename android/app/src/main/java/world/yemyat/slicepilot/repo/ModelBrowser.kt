@@ -673,12 +673,14 @@ private object NexprintApi {
     fun detail(listing: ModelListing): ModelDetail {
         val d = getData("$BASE/model-base-info/get?id=${listing.id}")
         val files = ArrayList<ModelFile>()
+        val seenFiles = HashSet<String>()
         d.optJSONArray("modelFileList")?.let { arr ->
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
                 val name = o.optString("fileName", "")
                 val fileId = o.optLong("fileId").takeIf { it > 0 } ?: continue
                 if (name.isBlank() || !isModelFile(name)) continue
+                if (!seenFiles.add(fileId.toString())) continue // API lists files more than once
                 files.add(
                     ModelFile(
                         name = name,
