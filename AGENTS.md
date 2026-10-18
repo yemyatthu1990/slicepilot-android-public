@@ -24,6 +24,12 @@ Rules:
   `./gradlew :app:bundleRelease` (R8 output in `app/build/outputs/mapping/release/mapping.txt`;
   check the callback method survived name-mangling there).
 
+## Store copy: never mention "YE3D"
+
+**"YE3D" must never appear in user-facing text** — release notes, store description,
+screenshots, in-app UI copy. It is the user's own printer brand and reads as noise/
+brand-confusion to users. Say "Centauri Carbon 2" (or "cloud printing") instead.
+
 ## Secrets
 
 All secrets live in gitignored `secrets/` (template: `secrets.example/`). Never hardcode
