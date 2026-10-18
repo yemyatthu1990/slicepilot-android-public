@@ -7,7 +7,7 @@ Screenshots: `store_listing/screenshots/phone_new/` (captured on-device, v1.6.2)
 SlicePilot
 
 ## Short description
-Download from MakerWorld, Printables, Thingiverse & Nexprint — slice and cloud-print on your phone.
+Download MakerWorld, Printables, Thingiverse & Nexprint models — slice & print
 
 ## Full description
 SlicePilot brings a full desktop-class slicer to your Android phone.
