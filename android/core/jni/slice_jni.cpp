@@ -23,6 +23,7 @@
 
 #include <chrono>
 #include <cfloat>
+#include <cstdio>
 #include <functional>
 #include <vector>
 
@@ -40,6 +41,7 @@ struct SliceState {
     Print *print_raw = nullptr;
     std::thread worker;
     std::atomic<bool> running{false};
+    std::atomic<bool> cancel_requested{false};
     std::string error;
     bool cancelled = false;
     JavaVM *jvm = nullptr;
@@ -212,11 +214,64 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
         } catch (const std::exception &e) {
             LOGE("Slice input stat failed for %s: %s", model_path.c_str(), e.what());
         }
+        const auto t_model0 = std::chrono::steady_clock::now();
         DynamicPrintConfig embedded;
         ConfigSubstitutionContext embedded_substitutions(ForwardCompatibilitySubstitutionRule::EnableSilent);
-        Model model = Model::read_from_file(model_path, &embedded, &embedded_substitutions,
-            LoadStrategy::AddDefaultInstances | LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
-        LOGI("Model loaded: %zu objects, embedded config keys=%zu", model.objects.size(), embedded.keys().size());
+        Model model;
+        {
+            // Fast path for 3MF: stream the full-resolution geometry with the
+            // preview parser (expat/miniz, single pass) instead of libslic3r's
+            // 3MF importer, which materializes every component instance through
+            // the model API (extremely slow for Bambu assemblies). Config-only
+            // import keeps the embedded print settings. Fall back to the full
+            // import for STL, grids, or on any error.
+            bool fast = false;
+            FILE *hdr = std::fopen(model_path.c_str(), "rb");
+            bool is_zip = false;
+            if (hdr) {
+                unsigned char m[2] = {0};
+                is_zip = std::fread(m, 1, 2, hdr) == 2 && m[0] == 'P' && m[1] == 'K';
+                std::fclose(hdr);
+            }
+            if (is_zip) {
+                preview::Preview full;
+                std::string perr;
+                if (preview::parse_preview(model_path, 20000000, full, perr, {}, false)
+                    && !full.indices.empty() && !full.has_grid_transforms) {
+                    indexed_triangle_set its;
+                    its.vertices.reserve(full.positions.size() / 3);
+                    for (size_t i = 0; i + 2 < full.positions.size(); i += 3)
+                        its.vertices.emplace_back(full.positions[i], full.positions[i + 1], full.positions[i + 2]);
+                    its.indices.reserve(full.indices.size() / 3);
+                    for (size_t i = 0; i + 2 < full.indices.size(); i += 3)
+                        its.indices.emplace_back(full.indices[i], full.indices[i + 1], full.indices[i + 2]);
+                    model.add_object("model", model_path.c_str(), TriangleMesh(std::move(its)));
+                    model.objects.front()->add_instance();
+                    // Embedded config / plate metadata, geometry skipped (fast).
+                    // Failure here only loses embedded config keys (the app config
+                    // already carries the parsed project settings), so keep the
+                    // fast geometry and continue.
+                    try {
+                        Model cfg_only = Model::read_from_file(model_path, &embedded, &embedded_substitutions,
+                            LoadStrategy::LoadConfig | LoadStrategy::Silence);
+                    } catch (const std::exception &e) {
+                        LOGE("fast 3mf config-only read failed (%s); continuing without embedded config",
+                            e.what());
+                    }
+                    fast = !model.objects.empty();
+                }
+                if (!fast)
+                    LOGI("fast 3mf slice path not used: %s",
+                        full.has_grid_transforms ? "part_platform grids" : perr.c_str());
+            }
+            if (!fast)
+                model = Model::read_from_file(model_path, &embedded, &embedded_substitutions,
+                    LoadStrategy::AddDefaultInstances | LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+        }
+        LOGI("Model loaded: %zu objects, embedded config keys=%zu in %lld ms",
+            model.objects.size(), embedded.keys().size(),
+            (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t_model0).count());
         merge_embedded_print_settings(config, embedded);
         if (!overrides_ini.empty()) {
             try {
@@ -232,7 +287,19 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
 
         auto print = std::make_unique<Print>();
         print->set_status_callback([](const PrintBase::SlicingStatus &status) {
+            static std::string last_text;
+            if (status.text != last_text) {
+                last_text = status.text;
+                LOGI("Slice stage: %s (%d%%)", status.text.c_str(), status.percent);
+            }
             report_progress(0, status.text, status.percent);
+        });
+        // Abort promptly on cancel: libslic3r calls this callback at its internal
+        // checkpoints (every slicing step, support layer, seam pass, model prep
+        // section), so a cancel lands within seconds even during "apply".
+        print->set_cancel_callback([] {
+            if (g_state.cancel_requested.load(std::memory_order_relaxed))
+                throw CanceledException();
         });
         {
             std::lock_guard<std::mutex> lock(g_state.mutex);
@@ -240,9 +307,16 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
             g_state.print_raw = g_state.print.get();
         }
 
+        const auto t_apply0 = std::chrono::steady_clock::now();
         g_state.print_raw->apply(model, std::move(config));
         g_state.print_raw->process();
+        const auto t_process0 = std::chrono::steady_clock::now();
         g_state.print_raw->export_gcode(out_path, nullptr);
+        const auto t_end = std::chrono::steady_clock::now();
+        LOGI("Slice timing: apply=%lld ms, process=%lld ms, export=%lld ms",
+            (long long) std::chrono::duration_cast<std::chrono::milliseconds>(t_process0 - t_apply0).count(),
+            (long long) std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_process0).count(),
+            (long long) std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t_end).count());
         LOGI("G-code exported to %s", out_path.c_str());
 
         std::lock_guard<std::mutex> lock(g_state.mutex);
@@ -278,6 +352,7 @@ bool launch_slice(const std::string &model_path, DynamicPrintConfig config, cons
         g_state.callback = env->NewGlobalRef(callback);
         g_state.error.clear();
         g_state.cancelled = false;
+        g_state.cancel_requested = false;
         g_state.running = true;
     }
     // Join the old worker outside the lock: it has already passed its last mutex use
@@ -536,6 +611,7 @@ Java_world_yemyat_slicepilot_NativeLib_nativeSetModelTransform(JNIEnv *, jclass,
 
 JNIEXPORT void JNICALL
 Java_world_yemyat_slicepilot_NativeLib_nativeCancel(JNIEnv *, jclass) {
+    g_state.cancel_requested.store(true, std::memory_order_relaxed);
     std::lock_guard<std::mutex> lock(g_state.mutex);
     if (g_state.print_raw) g_state.print_raw->cancel();
 }

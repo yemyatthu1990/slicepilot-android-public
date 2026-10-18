@@ -1281,6 +1281,16 @@ class AppViewModel(
                 if (cfg.supportStyle == "trees") {
                     appendLine("support_type=tree(auto)")
                     appendLine("support_style=organic")
+                    // Speed: tree generation cost grows with branch count; wider
+                    // branch spacing and a single support wall cut generation
+                    // time several-fold with minor surface-quality impact.
+                    appendLine("tree_support_branch_distance_organic=2")
+                    appendLine("tree_support_branch_distance=2.5")
+                    appendLine("tree_support_wall_count=1")
+                    appendLine("tree_support_top_rate=20%")
+                    // Auto-brim around tree supports adds a second full brim
+                    // pass per layer; the normal brim already anchors the model.
+                    appendLine("tree_support_auto_brim=0")
                 } else {
                     appendLine("support_type=normal(auto)")
                     if (cfg.supportStyle == "snug") appendLine("support_style=snug")
@@ -1309,7 +1319,7 @@ class AppViewModel(
             when (cfg.adhesion) {
                 "none" -> { appendLine("brim_width=0"); appendLine("raft_layers=0"); appendLine("skirt_height=0") }
                 "skirt" -> { appendLine("brim_width=0"); appendLine("raft_layers=0"); appendLine("skirt_height=2") }
-                "brim" -> { appendLine("brim_width=${cfg.brimWidth ?: 5}"); appendLine("raft_layers=0") }
+                "brim" -> { appendLine("brim_width=${cfg.brimWidth ?: 5}"); appendLine("raft_layers=0"); appendLine("brim_type=outer_only") }
                 "raft" -> { appendLine("raft_layers=2") }
             }
             appendLine("seam_position=${cfg.seamPosition}")
@@ -1322,6 +1332,7 @@ class AppViewModel(
             cfg.travelSpeed?.let { appendLine("travel_speed=$it") }
             if (bedType != null) appendLine("curr_bed_type=$bedType")
         }
+        android.util.Log.i("SliceCore", "config overrides:\n$overrides")
         val t = _modelTransform.value
         try {
             SliceForegroundService.start(

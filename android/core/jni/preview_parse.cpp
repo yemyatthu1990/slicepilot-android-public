@@ -49,22 +49,25 @@ float fattr(const XML_Char **a, const char *n, float dflt = 0.f) {
 }
 
 // Parse a 3MF "transform" (12 floats, row-major 3x4), scaling the translation by unit.
-bool parse_matrix(const char *s, float out[12], float unit) {
-    float v[12];
+// Returns the number of floats found (0 = too few, >12 = 21-float part_platform
+// grid layout, which the streaming parser cannot map).
+int parse_matrix(const char *s, float out[12], float unit) {
+    float v[24];
     int n = 0;
     const char *p = s;
-    while (*p && n < 12) {
+    while (*p && n < 24) {
         char *end;
         v[n++] = (float) std::strtod(p, &end);
         if (end == p) break;
         p = end;
     }
-    if (n < 12) return false;
+    if (n > 12) return n;
+    if (n < 12) return 0;
     for (int i = 0; i < 9; ++i) out[i] = v[i];
     out[9] = v[9] * unit;
     out[10] = v[10] * unit;
     out[11] = v[11] * unit;
-    return true;
+    return 12;
 }
 
 void apply_matrix(const float m[12], const float v[3], float out[3]) {
@@ -122,7 +125,7 @@ struct Prog {
     const std::function<void(int)> *cb = nullptr;
     mutable int last = -1;
     void operator()(int p) const {
-        if (!cb) return;
+        if (!cb || !*cb) return;
         p = std::max(0, std::min(100, p));
         if (p > last) { last = p; (*cb)(p); }
     }
@@ -387,6 +390,9 @@ struct Ctx {
     bool cur_needed = true;
     bool in_object = false;
     bool in_build = false;
+    bool in_mesh_support = false;
+    bool keep_support = true;
+    bool has_grid = false;
     size_t tri_seen = 0;
 };
 
@@ -406,16 +412,26 @@ void XMLCALL mf_start(void *ud, const XML_Char *name, const XML_Char **attribs) 
     } else if (!std::strcmp(el, "build")) {
         c.in_build = true;
     } else if (!std::strcmp(el, "object")) {
+        c.in_mesh_support = false;
         const XML_Char *id = attr(attribs, "id");
         c.cur_id = id ? std::atoi(id) : -1;
         c.in_object = c.cur_id >= 0;
         c.tri_seen = 0;
+        // Bambu writes pre-generated support as separate objects with a
+        // "supported-part" attribute; they are not part of the printable mesh.
+        if (attr(attribs, "supported-part")) {
+            c.cur_id = -1;
+            c.in_object = false;
+            return;
+        }
         c.cur_needed = !c.pass2 || (c.needed && c.needed->count(c.cur_id) > 0);
         if (c.pass2 && c.cur_id >= 0) {
             MObject &o = f.objects[c.cur_id];
             o.verts.clear();
             o.tris.clear();
         }
+    } else if (!std::strcmp(el, "mesh-support")) {
+        c.in_mesh_support = true;
     } else if (!std::strcmp(el, "vertex")) {
         if (!c.in_object || !c.cur_needed) return;
         MObject &o = f.objects[c.cur_id];
@@ -424,6 +440,7 @@ void XMLCALL mf_start(void *ud, const XML_Char *name, const XML_Char **attribs) 
         o.verts.push_back(fattr(attribs, "z", 0.f) * c.unit);
     } else if (!std::strcmp(el, "triangle")) {
         if (!c.in_object) return;
+        if (c.in_mesh_support && !c.keep_support) return;
         MObject &o = f.objects[c.cur_id];
         if (!c.pass2) {
             ++o.tri_count;
@@ -456,8 +473,13 @@ void XMLCALL mf_start(void *ud, const XML_Char *name, const XML_Char **attribs) 
         o.comp_obj.push_back(std::atoi(oid));
         o.comp_path.push_back(p ? p : "");
         std::array<float, 12> m{};
-        if (tr) parse_matrix(tr, m.data(), c.unit);
-        else for (int i = 0; i < 9; ++i) m[i] = (i % 4 == 0) ? 1.f : 0.f;
+        const int nf = tr ? parse_matrix(tr, m.data(), c.unit) : 12;
+        if (nf > 12) {
+            c.has_grid = true;
+            for (int i = 0; i < 9; ++i) m[i] = (i % 4 == 0) ? 1.f : 0.f;
+        } else if (nf < 12) {
+            for (int i = 0; i < 9; ++i) m[i] = (i % 4 == 0) ? 1.f : 0.f;
+        }
         o.comp_tr.push_back(m);
     } else if (!std::strcmp(el, "item")) {
         if (!c.in_build || c.pass2) return;
@@ -470,8 +492,27 @@ void XMLCALL mf_start(void *ud, const XML_Char *name, const XML_Char **attribs) 
         MItem it;
         it.path = p ? p : "";
         it.objectid = std::atoi(oid);
-        it.has_tr = tr && parse_matrix(tr, it.tr.data(), c.unit);
+        it.has_tr = false;
+        if (tr) {
+            const int nf = parse_matrix(tr, it.tr.data(), c.unit);
+            if (nf > 12) c.has_grid = true; // 21-float part_platform grid
+            it.has_tr = nf == 12;
+        }
         f.items.push_back(it);
+    }
+}
+
+void XMLCALL mf_end(void *ud, const XML_Char *name) {
+    Ctx &c = *(Ctx *) ud;
+    const char *el = bare_name(name);
+    if (!std::strcmp(el, "object")) {
+        c.in_object = false;
+        c.in_mesh_support = false;
+        c.cur_id = -1;
+    } else if (!std::strcmp(el, "mesh-support")) {
+        c.in_mesh_support = false;
+    } else if (!std::strcmp(el, "build")) {
+        c.in_build = false;
     }
 }
 
@@ -502,26 +543,30 @@ size_t XMLCALL zip_read(void *user, mz_uint64, const void *buf, size_t len) {
 
 bool run_pass(mz_zip_archive &zip, int file_idx, MFFile &file, bool pass2, size_t stride,
               const std::set<int> *needed, const Prog *prog = nullptr,
-              int lo = 0, int hi = 0, size_t base_bytes = 0, size_t total_bytes = 1) {
+              int lo = 0, int hi = 0, size_t base_bytes = 0, size_t total_bytes = 1,
+              bool keep_support = true, bool *grid_flag = nullptr) {
     Ctx c;
     c.file = &file;
     c.pass2 = pass2;
     c.stride = std::max<size_t>(1, stride);
     c.needed = needed;
+    c.keep_support = keep_support;
     XML_Parser parser = XML_ParserCreate(nullptr);
     XML_SetUserData(parser, &c);
-    XML_SetElementHandler(parser, mf_start, nullptr);
+    XML_SetElementHandler(parser, mf_start, mf_end);
     ZipFeed feed{parser, true, 0, 0, prog, lo, hi, base_bytes, total_bytes};
     mz_zip_reader_extract_to_callback(&zip, file_idx, zip_read, &feed, 0);
     XML_Parse(parser, nullptr, 0, 1);
     XML_ParserFree(parser);
+    if (grid_flag && c.has_grid) *grid_flag = true;
     return feed.ok;
 }
 
 bool parse_3mf(const std::string &path, int target, Preview &out, std::string &err,
-               const std::function<void(int)> &progress) {
+               const std::function<void(int)> &progress, bool keep_support) {
     Prog prog{&progress};
     prog(1);
+    out.has_grid_transforms = false;
     mz_zip_archive zip;
     std::memset(&zip, 0, sizeof zip);
     if (!mz_zip_reader_init_file(&zip, path.c_str(), 0)) { err = "cannot open zip"; return false; }
@@ -574,7 +619,8 @@ bool parse_3mf(const std::string &path, int target, Preview &out, std::string &e
         const size_t fsz = mz_zip_reader_file_stat(&zip, (mz_uint) idx, &fst) ? fst.m_uncomp_size : 0;
         total1 += fsz;
         bool ok = true;
-        if (!run_pass(zip, idx, f, false, 1, nullptr, &prog, 2, 35, done1, total1)) ok = false;
+        if (!run_pass(zip, idx, f, false, 1, nullptr, &prog, 2, 35, done1, total1,
+                      keep_support, &out.has_grid_transforms)) ok = false;
         done1 += fsz;
         if (!ok) { mz_zip_reader_end(&zip); err = "xml pass1 failed in " + fp; return false; }
         for (const MItem &it : f.items)
@@ -645,7 +691,8 @@ bool parse_3mf(const std::string &path, int target, Preview &out, std::string &e
         if (idx < 0) continue;
         mz_zip_archive_file_stat fst;
         const size_t fsz = mz_zip_reader_file_stat(&zip, (mz_uint) idx, &fst) ? fst.m_uncomp_size : 0;
-        if (!run_pass(zip, idx, fit->second, true, stride, &kv.second, &prog, 36, 80, done2, total2)) {
+        if (!run_pass(zip, idx, fit->second, true, stride, &kv.second, &prog, 36, 80, done2, total2,
+                      keep_support, &out.has_grid_transforms)) {
             mz_zip_reader_end(&zip);
             err = "xml pass2 failed in " + kv.first;
             return false;
@@ -734,14 +781,14 @@ bool parse_3mf(const std::string &path, int target, Preview &out, std::string &e
 } // namespace
 
 bool parse_preview(const std::string &path, int target, Preview &out, std::string &err,
-                   const std::function<void(int)> &progress) {
+                   const std::function<void(int)> &progress, bool keep_support) {
     FILE *f = std::fopen(path.c_str(), "rb");
     if (!f) { err = "cannot open file"; return false; }
     unsigned char magic[4] = {0};
     const size_t n = std::fread(magic, 1, 4, f);
     std::fclose(f);
     const bool is_zip = n == 4 && magic[0] == 'P' && magic[1] == 'K';
-    return is_zip ? parse_3mf(path, target, out, err, progress)
+    return is_zip ? parse_3mf(path, target, out, err, progress, keep_support)
                   : parse_stl(path, target, out, err, progress);
 }
 

@@ -1,6 +1,17 @@
 #include "ClipperUtils.hpp"
 #include "Model.hpp"
 #include "Print.hpp"
+#include <chrono>
+#include <cstdio>
+
+static std::chrono::steady_clock::time_point g_apply_t0;
+static void apply_stage(const char *name) {
+    std::fprintf(stderr, "APPLYSTAGE %s +%lld ms\n", name,
+        (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - g_apply_t0).count());
+    std::fflush(stderr);
+}
+
 
 #include <boost/log/trivial.hpp>
 #include <cfloat>
@@ -1118,6 +1129,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 
     //BBS: add more logs
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", Line %1%: enter")%__LINE__;
+    g_apply_t0 = std::chrono::steady_clock::now();
+    apply_stage("enter");
     // Normalize the config.
 	new_full_config.option("print_settings_id",            true);
 	new_full_config.option("filament_settings_id",         true);
@@ -1281,6 +1294,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 	    m_default_region_config.apply_only(new_full_config, region_diff, true);
         //m_full_print_config = std::move(new_full_config);
         m_full_print_config = new_full_config;
+        apply_stage("config_apply");
+        this->call_cancel_callback();
         if (num_extruders  != m_config.filament_diameter.size()) {
             num_extruders  = m_config.filament_diameter.size();
             num_extruders_changed  = true;
@@ -1353,6 +1368,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             auto by_id_lower = [](const ModelObject *lhs, const ModelObject *rhs){ return lhs->id() < rhs->id(); };
             std::sort(model_objects_old.begin(), model_objects_old.end(), by_id_lower);
             for (const ModelObject *mobj : model.objects) {
+                this->call_cancel_callback();
                 auto it = std::lower_bound(model_objects_old.begin(), model_objects_old.end(), mobj, by_id_lower);
                 if (it == model_objects_old.end() || (*it)->id() != mobj->id()) {
                     // New ModelObject added.
@@ -1393,6 +1409,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     }
 
     // 2) Map print objects including their transformation matrices.
+    apply_stage("model_copy");
+    this->call_cancel_callback();
     PrintObjectStatusDB print_object_status_db(m_objects);
 
     // 3) Synchronize ModelObjects & PrintObjects.
@@ -1768,6 +1786,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             }
     }
 
+    apply_stage("objects_sync");
+    this->call_cancel_callback();
     // Update SlicingParameters for each object where the SlicingParameters is not valid.
     // If it is not valid, then it is ensured that PrintObject.m_slicing_params is not in use
     // (posSlicing and posSupportMaterial was invalidated).
@@ -1781,6 +1801,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     check_model_ids_equal(m_model, model);
 #endif /* _DEBUG */
 
+	apply_stage("slicing_params");
+	this->call_cancel_callback();
 	//BBS: add timestamp logic
 	if (apply_status != APPLY_STATUS_UNCHANGED)
 		m_modified_count++;
