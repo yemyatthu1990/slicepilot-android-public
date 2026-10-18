@@ -104,8 +104,8 @@ object ThreeMFParser {
             val rootModel = getModel(rootPath)
                 ?: throw RuntimeException("Failed to parse root model $rootPath")
 
-            val positions = ArrayList<Float>()
-            val indices = ArrayList<Int>()
+            val positions = FloatList()
+            val indices = IntList()
             var vOff = 0
 
             fun instantiate(modelPath: String, objectId: Int, transform: FloatArray?, depth: Int) {
@@ -189,8 +189,8 @@ object ThreeMFParser {
 
             if (positions.isEmpty()) throw RuntimeException("3MF contains no vertices in ${file.name}")
 
-            val posArr = positions.toFloatArray()
-            val idxArr = IntArray(indices.size) { indices[it] }
+            val posArr = positions.toTrimmedArray()
+            val idxArr = indices.toTrimmedArray()
             var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE; var minZ = Float.MAX_VALUE
             var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE; var maxZ = -Float.MAX_VALUE
             for (i in posArr.indices step 3) {
@@ -370,5 +370,49 @@ object ThreeMFParser {
         c[11] = a[2] * b[9] + a[5] * b[10] + a[8] * b[11] + a[11]
 
         return c
+    }
+}
+
+/** Growable primitive float array; avoids Float boxing of ArrayList<Float>. */
+private class FloatList(initialCapacity: Int = 4096) {
+    private var data = FloatArray(initialCapacity)
+    var size = 0
+        private set
+
+    fun add(value: Float) {
+        if (size == data.size) grow(1)
+        data[size++] = value
+    }
+
+    fun isEmpty() = size == 0
+
+    fun toTrimmedArray(): FloatArray = data.copyOf(size)
+
+    private fun grow(extra: Int) {
+        var capacity = data.size + (data.size shr 1)
+        if (capacity < size + extra) capacity = size + extra
+        data = data.copyOf(capacity)
+    }
+}
+
+/** Growable primitive int array; avoids Int boxing of ArrayList<Int>. */
+private class IntList(initialCapacity: Int = 4096) {
+    private var data = IntArray(initialCapacity)
+    var size = 0
+        private set
+
+    fun add(value: Int) {
+        if (size == data.size) grow(1)
+        data[size++] = value
+    }
+
+    fun isEmpty() = size == 0
+
+    fun toTrimmedArray(): IntArray = data.copyOf(size)
+
+    private fun grow(extra: Int) {
+        var capacity = data.size + (data.size shr 1)
+        if (capacity < size + extra) capacity = size + extra
+        data = data.copyOf(capacity)
     }
 }
