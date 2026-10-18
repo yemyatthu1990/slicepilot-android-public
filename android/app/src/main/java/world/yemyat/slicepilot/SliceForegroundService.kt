@@ -191,6 +191,11 @@ class SliceForegroundService : Service() {
             stopSelf()
             return
         }
+        if (!NativeLib.isLoaded) {
+            EventNotifier.trackEvent("slice_skipped_native_missing", emptyMap())
+            stopSelf()
+            return
+        }
 
         val overrides = intent.getStringExtra(EXTRA_OVERRIDES).orEmpty()
         val autoPrint = intent.getBooleanExtra(EXTRA_AUTO_PRINT, false)

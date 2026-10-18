@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -36,6 +37,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import world.yemyat.slicepilot.NativeLib
 import world.yemyat.slicepilot.preview.ModelPreviewView
 import world.yemyat.slicepilot.model.MeshData
 import world.yemyat.slicepilot.ui.theme.*
@@ -81,6 +83,31 @@ fun HomeScreen(
                 fontSize = 17.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            if (!NativeLib.isLoaded) {
+                val ctx = LocalContext.current
+                BigCard(
+                    icon = {
+                        Icon(Icons.Filled.Warning, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(30.dp))
+                    },
+                    iconBg = MaterialTheme.colorScheme.errorContainer,
+                    title = "Slicing engine missing",
+                    subtitle = "The native library failed to load. Reinstall SlicePilot from Google Play.",
+                    onClick = {
+                        val uri = android.net.Uri.parse("market://details?id=${ctx.packageName}")
+                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+                        runCatching { ctx.startActivity(intent) }
+                            .onFailure {
+                                ctx.startActivity(
+                                    android.content.Intent(
+                                        android.content.Intent.ACTION_VIEW,
+                                        android.net.Uri.parse("https://play.google.com/store/apps/details?id=${ctx.packageName}"),
+                                    )
+                                )
+                            }
+                    },
+                )
+            }
 
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 BigCard(

@@ -11,14 +11,34 @@ object NativeLib {
     @Volatile
     private var initialized = false
 
-    fun init(context: Context) {
-        if (initialized) return
-        System.loadLibrary("slice_core")
+    @Volatile
+    var isLoaded = false
+        private set
+
+    /**
+     * Loads the native engine. Returns false (instead of crashing) when the
+     * library is missing, e.g. after a corrupted Play install shows
+     * "dlopen failed: library libslice_core.so not found".
+     */
+    fun init(context: Context): Boolean {
+        if (initialized) return true
+        try {
+            System.loadLibrary("slice_core")
+        } catch (e: UnsatisfiedLinkError) {
+            android.util.Log.e("NativeLib", "slice_core load failed", e)
+            world.yemyat.slicepilot.tracking.EventNotifier.trackEvent(
+                "native_lib_load_failed",
+                mapOf("message" to (e.message ?: "")),
+            )
+            return false
+        }
+        isLoaded = true
         val dataDir = context.getDir("slic3r", Context.MODE_PRIVATE).absolutePath
         val resDir = context.applicationInfo.dataDir + "/resources"
         ensureProfilesCopied(context, resDir, dataDir)
         nativeInit(dataDir, resDir)
         initialized = true
+        return true
     }
 
     private fun ensureProfilesCopied(context: Context, resDir: String, dataDir: String) {
