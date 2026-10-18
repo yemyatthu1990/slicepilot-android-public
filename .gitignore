@@ -21,3 +21,4 @@ android/native-build/src
 secrets/
 android/app/google-services.json
 .venv-play/
+AGENTS.md
