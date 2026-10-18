@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -683,6 +684,68 @@ private fun RemoteThumbnail(
                 contentDescription = null,
                 contentScale = contentScale,
                 modifier = Modifier.fillMaxSize(),
+            )
+        }
+    }
+}
+
+/**
+ * App-wide top banner shown while a model file is downloading, so users
+ * understand why download buttons are disabled while browsing elsewhere.
+ */
+@Composable
+fun DownloadProgressBanner(name: String, progress: Int, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier
+            .windowInsetsPadding(
+                WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
+            )
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.primaryContainer,
+        tonalElevation = 6.dp,
+        shadowElevation = 6.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(
+                    Icons.Filled.Download,
+                    null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Text(
+                    "Downloading",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Text(
+                    name,
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "$progress%",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
+            LinearProgressIndicator(
+                progress = { progress / 100f },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp)),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
             )
         }
     }

@@ -38,6 +38,9 @@ import kotlin.math.max
 fun SlicingScreen(vm: AppViewModel) {
     val progress by vm.sliceProgress.collectAsState()
     val status by vm.sliceStatus.collectAsState()
+    var showCancelConfirm by remember { mutableStateOf(false) }
+    // Intercept the system back gesture/button while slicing: ask first.
+    androidx.activity.compose.BackHandler(enabled = !showCancelConfirm) { showCancelConfirm = true }
     val mesh by vm.mesh.collectAsState()
     val modelTransform by vm.modelTransform.collectAsState()
     val reveal by animateFloatAsState(
@@ -57,7 +60,7 @@ fun SlicingScreen(vm: AppViewModel) {
         val v = printVolumeForProfile(context, config.printer ?: "") ?: Triple(256f, 256f, 256f)
         Pair(v.first / 2f, v.second / 2f)
     }
-    Column(Modifier.fillMaxSize().background(Color(0xFFE9EFF8))) {
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Box(Modifier.weight(1f)) {
             LiveSliceView(
                 mesh = mesh,
@@ -69,7 +72,7 @@ fun SlicingScreen(vm: AppViewModel) {
             )
         }
         Surface(
-            color = Color.White,
+            color = MaterialTheme.colorScheme.surfaceContainer,
             shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
             shadowElevation = 12.dp,
             modifier = Modifier.fillMaxWidth(),
@@ -90,13 +93,13 @@ fun SlicingScreen(vm: AppViewModel) {
                         "Slicing",
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color(0xFF1A1C1E),
+                        color = MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
                         "${(progress * 100).toInt()}%",
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Blue600,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                 }
                 if (stalled) {
@@ -105,8 +108,8 @@ fun SlicingScreen(vm: AppViewModel) {
                             .fillMaxWidth()
                             .height(8.dp)
                             .clip(RoundedCornerShape(4.dp)),
-                        color = Blue600,
-                        trackColor = Color(0xFFDCE3EF),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant,
                     )
                 } else {
                     LinearProgressIndicator(
@@ -115,24 +118,41 @@ fun SlicingScreen(vm: AppViewModel) {
                             .fillMaxWidth()
                             .height(8.dp)
                             .clip(RoundedCornerShape(4.dp)),
-                        color = Blue600,
-                        trackColor = Color(0xFFDCE3EF),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant,
                     )
                 }
                 Text(
                     status,
                     fontSize = 13.sp,
-                    color = Color(0xFF5A616B),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 OutlinedButton(
-                    onClick = { vm.cancelSlice() },
+                    onClick = { showCancelConfirm = true },
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                 ) { Text("Cancel") }
             }
         }
+    }
+
+    if (showCancelConfirm) {
+        AlertDialog(
+            onDismissRequest = { showCancelConfirm = false },
+            title = { Text("Stop slicing?") },
+            text = { Text("The slice in progress will be cancelled and the G-code will not be generated.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showCancelConfirm = false
+                    vm.cancelSlice()
+                }) { Text("Stop slicing") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCancelConfirm = false }) { Text("Keep slicing") }
+            },
+        )
     }
 }
 
@@ -156,8 +176,10 @@ fun LiveSliceView(
             transform.offsetX, transform.offsetY,
         )
     }
-    LaunchedEffect(Unit) {
-        controller.setSceneBackground(0.914f, 0.937f, 0.973f)
+    val viewportDark = LocalIsDarkTheme.current
+    LaunchedEffect(viewportDark) {
+        if (viewportDark) controller.setSceneBackground(0.098f, 0.106f, 0.122f)
+        else controller.setSceneBackground(0.914f, 0.937f, 0.973f)
     }
     LaunchedEffect(mesh, transformArray, bedHalfX, bedHalfY) {
         mesh?.let {

@@ -13,8 +13,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import world.yemyat.slicepilot.cloud.ElegooCloudClient
@@ -280,6 +282,8 @@ class MainActivity : ComponentActivity() {
         androidx.compose.material3.Scaffold(
             snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
         ) { _ ->
+            val browse by browser.state.collectAsState()
+            Box(Modifier.fillMaxSize()) {
             when (screen) {
                 is Screen.Home -> HomeScreen(
                     vm = vm,
@@ -311,6 +315,17 @@ class MainActivity : ComponentActivity() {
                     vm = vm,
                     onBack = { vm.cancelPrint() },
                 )
+            }
+            val downloading = browse.downloadingFile
+            if (downloading != null) {
+                DownloadProgressBanner(
+                    name = downloading,
+                    progress = browse.downloadProgress,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth(),
+                )
+            }
             }
         }
 
