@@ -2,6 +2,7 @@
 
 -keep class world.yemyat.slicepilot.NativeLib { *; }
 -keep interface world.yemyat.slicepilot.NativeLib$SliceCallback { *; }
+-keep interface world.yemyat.slicepilot.NativeLib$PreviewCallback { *; }
 
 -keep class world.yemyat.slicepilot.MainActivity { *; }
 -keep class world.yemyat.slicepilot.SliceForegroundService { *; }
