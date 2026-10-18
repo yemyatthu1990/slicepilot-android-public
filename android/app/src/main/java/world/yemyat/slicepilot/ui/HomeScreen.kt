@@ -14,8 +14,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.TravelExplore
@@ -103,6 +105,15 @@ fun HomeScreen(
                         isLocal = selectedPrinter?.isLocal == true,
                         onClick = onOpenConnect,
                     )
+                    Spacer(Modifier.width(4.dp))
+                    val dark = LocalIsDarkTheme.current
+                    IconButton(onClick = { vm.toggleTheme() }) {
+                        Icon(
+                            if (dark) Icons.Filled.LightMode else Icons.Filled.DarkMode,
+                            contentDescription = if (dark) "Light mode" else "Dark mode",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 Text(
                     "Slice with a little magic.",
@@ -396,7 +407,13 @@ private fun HomeCta(
     onConnect: () -> Unit,
     onPrintSetup: () -> Unit,
 ) {
-    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 3.dp,
+        modifier = Modifier.windowInsetsPadding(
+            WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
+        ),
+    ) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
             val (text, icon, onClick) = when {
                 !hasModel -> Triple(

@@ -85,9 +85,10 @@ class MainActivity : ComponentActivity() {
         handleIncomingModel(intent)
         maybeRunHeadlessSlice()
         setContent {
-            ElegooSlicerTheme(darkTheme = false) {
+            val darkTheme by vm.themeDark.collectAsState()
+            ElegooSlicerTheme(darkTheme = darkTheme) {
                 Box(Modifier.fillMaxSize()) {
-                    SpiritedBackground(Modifier.fillMaxSize())
+                    SpiritedBackground(Modifier.fillMaxSize(), darkTheme = darkTheme)
                     Surface(Modifier.fillMaxSize(), color = Color.Transparent) {
                         AppRoot(vm)
                     }

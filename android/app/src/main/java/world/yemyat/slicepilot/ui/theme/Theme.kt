@@ -17,7 +17,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.core.view.WindowCompat
+
+/** True when the app currently renders its dark palette (explicit toggle or system). */
+val LocalIsDarkTheme = staticCompositionLocalOf { false }
 
 private val LightColors = lightColorScheme(
     primary = Vermillion,
@@ -104,10 +109,12 @@ fun ElegooSlicerTheme(
         }
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = ElegooTypography,
-        shapes = SpiritedShapes,
-        content = content,
-    )
+    CompositionLocalProvider(LocalIsDarkTheme provides darkTheme) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = ElegooTypography,
+            shapes = SpiritedShapes,
+            content = content,
+        )
+    }
 }

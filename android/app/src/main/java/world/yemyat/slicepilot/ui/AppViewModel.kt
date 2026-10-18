@@ -243,6 +243,15 @@ class AppViewModel(
         _modelTransform.value = ModelTransform()
     }
 
+    private val _themeDark = MutableStateFlow(prefs.getBoolean("ui_dark", false))
+    val themeDark: StateFlow<Boolean> = _themeDark.asStateFlow()
+
+    fun toggleTheme() {
+        val v = !_themeDark.value
+        _themeDark.value = v
+        prefs.edit().putBoolean("ui_dark", v).apply()
+    }
+
     private val _config = MutableStateFlow(
         SliceConfig(
             printer = prefs.getString("cfg_printer", null),

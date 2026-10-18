@@ -179,7 +179,7 @@ fun BrandSectionLabel(text: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun BrandWordmark(modifier: Modifier = Modifier, dark: Boolean = isSystemInDarkTheme()) {
+fun BrandWordmark(modifier: Modifier = Modifier, dark: Boolean = LocalIsDarkTheme.current) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(3.dp),
