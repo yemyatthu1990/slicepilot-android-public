@@ -282,8 +282,8 @@ fun SliceScreen(vm: AppViewModel) {
                             SliceDropdown(
                                 options = seamPositionLabels.keys.toList(),
                                 selected = seamPositionLabels[config.seamPosition] ?: "Aligned",
-                                onSelect = { label ->
-                                    vm.setSeamPosition(seamPositionLabels.entries.first { it.value == label }.key)
+                                onSelect = { key ->
+                                    if (seamPositionLabels.containsKey(key)) vm.setSeamPosition(key)
                                 },
                             )
                             Row(verticalAlignment = Alignment.CenterVertically) {
