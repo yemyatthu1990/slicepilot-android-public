@@ -27,8 +27,9 @@ Rules:
 ## Store copy: never mention "YE3D"
 
 **"YE3D" must never appear in user-facing text** — release notes, store description,
-screenshots, in-app UI copy. It is the user's own printer brand and reads as noise/
-brand-confusion to users. Say "Centauri Carbon 2" (or "cloud printing") instead.
+screenshots, in-app UI copy. It is the developer's personal network name for their own
+printer (user-assigned, not a brand) and is meaningless/private for users. Say
+"Centauri Carbon 2" (or "cloud printing") instead.
 
 ## Secrets
 
