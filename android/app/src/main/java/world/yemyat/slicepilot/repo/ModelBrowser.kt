@@ -45,22 +45,34 @@ data class ModelDetail(
     val files: List<ModelFile>,
 )
 
-data class BrowseState(
-    val source: ModelSource = ModelSource.PRINTABLES,
-    val query: String = "",
+/** Per-source search results shown as one section in the combined results list. */
+data class SourceSection(
+    val source: ModelSource,
+    val loading: Boolean = false,
     val results: List<ModelListing> = emptyList(),
-    val searching: Boolean = false,
+)
+
+data class BrowseState(
+    val query: String = "",
+    /** Sections in display order: cached ones first, then completed searches (first come, first served). */
+    val sections: List<SourceSection> = emptyList(),
+    val hasSearched: Boolean = false,
     val error: String? = null,
     val detail: ModelDetail? = null,
     val loadingDetail: Boolean = false,
     val downloadingFile: String? = null,
     val downloadProgress: Int = 0,
+    val bambuSignedIn: Boolean = false,
+    val bambuSigningIn: Boolean = false,
+    val bambuNeedsCode: Boolean = false,
+    val bambuPendingEmail: String = "",
 )
 
 enum class ModelSource(val id: String, val label: String) {
     PRINTABLES("printables", "Printables"),
     THINGIVERSE("thingiverse", "Thingiverse"),
-    NEXPRINT("nexprint", "Nexprint");
+    NEXPRINT("nexprint", "Nexprint"),
+    MAKERWORLD("makerworld", "MakerWorld");
 
     companion object {
         fun from(id: String): ModelSource = entries.firstOrNull { it.id == id } ?: PRINTABLES
@@ -85,6 +97,56 @@ class ModelBrowser(
     private val resultsCache = HashMap<String, List<ModelListing>>()
     private var searchGeneration = 0
 
+    val bambuToken: String
+        get() = prefs.getString("bambu_token", "").orEmpty()
+
+    init {
+        if (bambuToken.isNotBlank()) {
+            _state.value = _state.value.copy(bambuSignedIn = true)
+        }
+    }
+
+    fun bambuLogin(email: String, password: String, onDone: () -> Unit) {
+        if (_state.value.bambuSigningIn) return
+        _state.value = _state.value.copy(bambuSigningIn = true, error = null)
+        scope.launch {
+            try {
+                val token = withContext(Dispatchers.IO) { MakerworldApi.bambuLogin(email.trim(), password) }
+                prefs.edit().putString("bambu_token", token).apply()
+                _state.value = _state.value.copy(bambuSigningIn = false, bambuSignedIn = true)
+                onDone()
+        } catch (e: MakerworldApi.BambuVerificationRequired) {
+            _state.value = _state.value.copy(
+                bambuSigningIn = false,
+                bambuNeedsCode = true,
+                bambuPendingEmail = email.trim(),
+                error = "A sign-in code was emailed to ${email.trim()}. Enter it below.",
+            )
+        } catch (e: Exception) {
+            _state.value = _state.value.copy(bambuSigningIn = false, error = readable(e))
+        }
+        }
+    }
+
+    fun bambuVerify(code: String, onDone: () -> Unit) {
+        if (_state.value.bambuSigningIn) return
+        val email = _state.value.bambuPendingEmail
+        _state.value = _state.value.copy(bambuSigningIn = true, error = null)
+        scope.launch {
+            try {
+                val token = withContext(Dispatchers.IO) { MakerworldApi.bambuLoginWithCode(email, code.trim()) }
+                prefs.edit().putString("bambu_token", token).apply()
+                _state.value = _state.value.copy(
+                    bambuSigningIn = false, bambuSignedIn = true,
+                    bambuNeedsCode = false, bambuPendingEmail = "",
+                )
+                onDone()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(bambuSigningIn = false, error = readable(e))
+            }
+        }
+    }
+
     val thingiverseToken: String
         get() = prefs.getString("thingiverse_token", null)?.takeIf { it.isNotBlank() }
             ?: DEFAULT_THINGIVERSE_TOKEN
@@ -94,53 +156,65 @@ class ModelBrowser(
         _state.value = _state.value.copy(error = null)
     }
 
-    fun setSource(source: ModelSource) {
-        if (source == _state.value.source) return
-        // Abandon any in-flight search so it can't populate the new tab.
-        searchGeneration++
-        _state.value = _state.value.copy(source = source, results = emptyList(), searching = false, error = null)
-        if (_state.value.query.isNotBlank()) search()
-    }
-
     fun setQuery(q: String) {
         _state.value = _state.value.copy(query = q)
     }
 
+    private fun searchSource(source: ModelSource, q: String): List<ModelListing> =
+        when (source) {
+            ModelSource.PRINTABLES -> PrintablesApi.search(q)
+            ModelSource.THINGIVERSE ->
+                if (thingiverseToken.isBlank()) emptyList() else ThingiverseApi.search(q, thingiverseToken)
+            ModelSource.NEXPRINT -> NexprintApi.search(q)
+            ModelSource.MAKERWORLD -> MakerworldApi.search(q)
+        }
+
+    /** Searches every source in parallel; each completes into its own section. */
     fun search() {
         val st = _state.value
         val q = st.query.trim()
-        if (q.isEmpty() || st.searching) return
-        if (st.source == ModelSource.THINGIVERSE && thingiverseToken.isBlank()) {
-            _state.value = st.copy(error = "Add your Thingiverse API token below to search.")
-            return
-        }
-        val cacheKey = "${st.source.id}|$q"
-        resultsCache[cacheKey]?.let { cached ->
-            _state.value = st.copy(searching = false, results = cached, error = null)
-            return
-        }
+        if (q.isEmpty()) return
         val generation = ++searchGeneration
-        _state.value = st.copy(searching = true, error = null, results = emptyList())
-        EventNotifier.trackEvent("model_search", mapOf("source" to st.source.id, "query" to q))
-        scope.launch {
-            try {
-                val results = withContext(Dispatchers.IO) {
-                    when (st.source) {
-                        ModelSource.PRINTABLES -> PrintablesApi.search(q)
-                        ModelSource.THINGIVERSE -> ThingiverseApi.search(q, thingiverseToken)
-                        ModelSource.NEXPRINT -> NexprintApi.search(q)
+        EventNotifier.trackEvent("model_search", mapOf("sources" to "all", "query" to q))
+        // Cached results show instantly; the rest stream in as they arrive.
+        val cached = ModelSource.entries.mapNotNull { src ->
+            resultsCache["${src.id}|$q"]?.let { SourceSection(src, results = it) }
+        }
+        _state.value = st.copy(sections = cached, hasSearched = true, error = null)
+        for (src in ModelSource.entries) {
+            if (src == ModelSource.THINGIVERSE && thingiverseToken.isBlank()) continue
+            if (cached.any { it.source == src }) continue
+            updateSection(src) { SourceSection(src, loading = true) }
+            scope.launch {
+                val outcome: Result<List<ModelListing>> = try {
+                    Result.success(withContext(Dispatchers.IO) { searchSource(src, q) })
+                } catch (e: Exception) {
+                    Result.failure(e)
+                }
+                if (generation != searchGeneration) return@launch
+                outcome.onSuccess { results ->
+                    if (results.isEmpty()) {
+                        updateSection(src) { null } // empty → section disappears
+                    } else {
+                        resultsCache["${src.id}|$q"] = results
+                        updateSection(src) { SourceSection(src, results = results) }
                     }
-                }
-                if (generation == searchGeneration) {
-                    resultsCache[cacheKey] = results
-                    _state.value = _state.value.copy(searching = false, results = results)
-                }
-            } catch (e: Exception) {
-                if (generation == searchGeneration) {
-                    _state.value = _state.value.copy(searching = false, error = readable(e))
+                }.onFailure {
+                    android.util.Log.w("ModelBrowser", "${src.id} search failed", it)
+                    updateSection(src) { null } // failed → section is hidden
                 }
             }
         }
+    }
+
+    /** Replaces, appends (order of arrival) or removes (transform → null) a section. */
+    private fun updateSection(source: ModelSource, transform: (SourceSection?) -> SourceSection?) {
+        val current = _state.value.sections.toMutableList()
+        val idx = current.indexOfFirst { it.source == source }
+        val updated = transform(current.getOrNull(idx))
+        if (idx >= 0) current.removeAt(idx)
+        if (updated != null) current.add(updated)
+        _state.value = _state.value.copy(sections = current)
     }
 
     fun openDetail(listing: ModelListing) {
@@ -152,6 +226,7 @@ class ModelBrowser(
                     when (listing.source) {
                         ModelSource.PRINTABLES.id -> PrintablesApi.detail(listing)
                         ModelSource.NEXPRINT.id -> NexprintApi.detail(listing)
+                        ModelSource.MAKERWORLD.id -> MakerworldApi.detail(listing)
                         else -> ThingiverseApi.detail(listing, thingiverseToken)
                     }
                 }
@@ -167,6 +242,7 @@ class ModelBrowser(
     }
 
     fun download(file: ModelFile, onDone: (String) -> Unit) {
+        android.util.Log.i("ModelBrowser", "download tapped: ${file.name} busy=${_state.value.downloadingFile}")
         if (_state.value.downloadingFile != null) return
         _state.value = _state.value.copy(downloadingFile = file.name, downloadProgress = 0, error = null)
         scope.launch {
@@ -181,7 +257,16 @@ class ModelBrowser(
                 _state.value = _state.value.copy(downloadingFile = null, downloadProgress = 100)
                 onDone(path)
             } catch (e: Exception) {
-                _state.value = _state.value.copy(downloadingFile = null, downloadProgress = 0, error = readable(e))
+                val msg = readable(e)
+                android.util.Log.w("ModelBrowser", "download failed: $msg", e)
+                _state.value = _state.value.copy(
+                    downloadingFile = null,
+                    downloadProgress = 0,
+                    error = msg,
+                    // Token expired: show the MakerWorld sign-in card again.
+                    bambuSignedIn = _state.value.bambuSignedIn &&
+                        !(file.url.startsWith("makerworld://") && msg.contains("Sign in")),
+                )
             }
         }
     }
@@ -197,6 +282,9 @@ class ModelBrowser(
             val parts = file.url.removePrefix("nexprint://file/").split("/")
             if (parts.size < 2) throw IOException("Bad Nexprint file reference.")
             return NexprintApi.presignedDownloadUrl(parts[0], parts[1], cloudTokenProvider())
+        }
+        if (file.url.startsWith("makerworld://")) {
+            return MakerworldApi.downloadUrl(file.url.removePrefix("makerworld://profile/"), bambuToken)
         }
         return file.url
     }
@@ -618,6 +706,7 @@ private fun stripHtml(html: String): String = html
     .replace("&lt;", "<")
     .replace("&gt;", ">")
     .replace("&quot;", "\"")
+    .replace("&#0?34;", "\"")
     .replace("&#0?39;", "'")
     .replace("\\n", "\n")
     .replace(Regex("\n{3,}"), "\n\n")
@@ -741,5 +830,267 @@ private object NexprintApi {
         }
         android.util.Log.w("Nexprint", "presigned no url: " + json.toString().take(300))
         throw IOException("Nexprint returned no download link for this file.")
+    }
+}
+
+/** MakerWorld (makerworld.com, by Bambu Lab) GraphQL API. Mirrors the web frontend:
+ *  CSRF cookie handshake, then POSTs to /en/api/graphql. Cloudflare blocks datacenter
+ *  IPs; residential/mobile networks pass without a JS challenge. */private object MakerworldApi {
+    private const val SITE = "https://makerworld.com"
+    private const val GATEWAY = "https://api.bambulab.com/v1/design-service"
+
+    @Volatile private var cookieHeader: String? = null
+
+    /** Visits makerworld.com to pass the Cloudflare check and collect session cookies. */
+    private fun refreshSession() {
+        val conn = URL("$SITE/en").openConnection() as HttpURLConnection
+        conn.requestMethod = "GET"
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 20_000
+        conn.setRequestProperty("User-Agent", USER_AGENT)
+        conn.setRequestProperty("Accept", "text/html")
+        try {
+            val code = conn.responseCode
+            val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                ?.bufferedReader()?.use { it.readText() } ?: ""
+            if (body.contains("Just a moment")) {
+                throw IOException("MakerWorld is blocking this network (Cloudflare check). Try mobile data or Wi-Fi and retry.")
+            }
+            val keep = LinkedHashMap<String, String>()
+            conn.headerFields["Set-Cookie"]?.forEach { sc ->
+                val pair = sc.substringBefore(';')
+                val name = pair.substringBefore('=').trim()
+                if (name.isNotBlank() && !keep.containsKey(name)) keep[name] = pair
+            }
+            cookieHeader = keep.values.joinToString("; ").takeIf { it.isNotBlank() }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /**
+     * Searches by scraping the SSR search page: MakerWorld's data APIs sit behind
+     * Cloudflare/signed-request gates, but the Next.js HTML response embeds the
+     * full result list in its flight payload.
+     */
+    fun search(q: String): List<ModelListing> {
+        if (cookieHeader == null) refreshSession()
+        val url = "$SITE/en/search/models?keyword=" + URLEncoder.encode(q, "UTF-8") + "&page=1"
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.requestMethod = "GET"
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 30_000
+        conn.setRequestProperty("User-Agent", USER_AGENT)
+        conn.setRequestProperty("Accept", "text/html")
+        cookieHeader?.let { conn.setRequestProperty("Cookie", it) }
+        val html = try {
+            val code = conn.responseCode
+            if (code == 403) throw IOException("MakerWorld is blocking this network (Cloudflare check).")
+            if (code !in 200..299) throw IOException("MakerWorld returned HTTP $code")
+            conn.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            conn.disconnect()
+        }
+        if (html.contains("Just a moment")) {
+            throw IOException("MakerWorld is blocking this network (Cloudflare check).")
+        }
+        val out = ArrayList<ModelListing>()
+        val entry = Regex(""""id":(\d+),"title":"([^"]*)","slug":"[^"]*","titleTranslated":"[^"]*","cover":"([^"]*)"""")
+        android.util.Log.i("MakerWorld", "scrape len=${html.length} marker=${html.indexOf("\"title\":\"")} matches=${entry.findAll(html).count()}")
+        for (m in entry.findAll(html)) {
+            if (out.size >= 30) break
+            val window = html.substring(m.range.last, minOf(m.range.last + 3000, html.length))
+            val downloads = Regex(""""downloadCount":(\d+)""").find(window)?.groupValues?.get(1)?.toIntOrNull()
+            val author = Regex(""""designCreator":\{"uid":\d+,"name":"([^"]*)"""")
+                .find(window)?.groupValues?.get(1)?.let { jsonUnescape(it) }
+            val cover = jsonUnescape(m.groupValues[3])
+            out.add(
+                ModelListing(
+                    source = ModelSource.MAKERWORLD.id,
+                    id = m.groupValues[1],
+                    name = jsonUnescape(m.groupValues[2]),
+                    author = author,
+                    thumbnailUrl = cover.takeIf { it.startsWith("http") },
+                    downloads = downloads,
+                )
+            )
+        }
+        return out
+    }
+
+    /** Model detail from the public Bambu cloud design-service API. */
+    fun detail(listing: ModelListing): ModelDetail {
+        val conn = URL("$GATEWAY/design/${listing.id}").openConnection() as HttpURLConnection
+        conn.requestMethod = "GET"
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 20_000
+        conn.setRequestProperty("User-Agent", USER_AGENT)
+        conn.setRequestProperty("Accept", "application/json")
+        val d = try {
+            val code = conn.responseCode
+            if (code !in 200..299) throw IOException("MakerWorld detail returned HTTP $code")
+            JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+        } finally {
+            conn.disconnect()
+        }
+        val modelId = d.optString("modelId", "")
+        val files = ArrayList<ModelFile>()
+        d.optJSONArray("instances")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val inst = arr.getJSONObject(i)
+                val profileId = inst.optLong("profileId").takeIf { it > 0 } ?: continue
+                val plateTitle = inst.optString("title", "plate ${i + 1}")
+                val size = inst.optJSONObject("extention")?.optJSONObject("modelInfo")
+                    ?.optJSONObject("f3mf")?.optLong("size")?.takeIf { it > 0 }
+                files.add(
+                    ModelFile(
+                        name = d.optString("title", "model") + " - " + plateTitle + ".3mf",
+                        url = "makerworld://profile/$profileId/$modelId",
+                        sizeBytes = size,
+                    )
+                )
+            }
+        }
+        val images = ArrayList<String>()
+        d.optJSONObject("designExtension")?.optJSONArray("design_pictures")?.let { arr ->
+            for (i in 0 until arr.length().coerceAtMost(12)) {
+                val url = arr.getJSONObject(i).optString("url", "")
+                if (url.startsWith("http")) images.add(url)
+            }
+        }
+        if (images.isEmpty()) d.optString("coverUrl", "").takeIf { it.startsWith("http") }?.let { images.add(it) }
+        return ModelDetail(
+            listing = listing.copy(
+                author = d.optJSONObject("designCreator")?.optString("name", "")?.takeIf { it.isNotBlank() }
+                    ?: listing.author,
+                downloads = d.optInt("downloadCount", listing.downloads ?: 0),
+            ),
+            description = stripHtml(d.optString("summary", "")),
+            images = images,
+            likes = d.optInt("collectionCount").takeIf { it > 0 },
+            published = d.optString("createTime", "").take(10).takeIf { it.isNotBlank() },
+            files = files,
+        )
+    }
+
+    /**
+     * Signs in to the Bambu cloud gateway (AES-encrypted password, like Bambu Studio).
+     * Returns the access token (valid ~90 days).
+     */
+    class BambuVerificationRequired(message: String) : IOException(message)
+
+    fun bambuLogin(email: String, password: String): String {
+        // The gateway accepts several password encodings depending on region/version;
+        // try the documented ones in order and report the last error if all fail.
+        var lastError = IOException("Bambu sign-in failed.")
+        val attempts = listOf(
+            JSONObject().put("account", email).put("password", password),
+            JSONObject().put("account", email).put("password", bambuEncrypt(password)).put("encrypted", true),
+            JSONObject()
+                .put("account", email)
+                .put("password", bambuEncrypt(password, "d303da87bed66592"))
+                .put("encrypted", true),
+        )
+        for (body in attempts) {
+            try {
+                return bambuLoginOnce(body)
+            } catch (e: BambuVerificationRequired) {
+                throw e
+            } catch (e: IOException) {
+                lastError = e
+            }
+        }
+        throw lastError
+    }
+
+    fun bambuLoginWithCode(email: String, code: String): String =
+        bambuLoginOnce(JSONObject().put("account", email).put("code", code))
+
+    private fun bambuLoginOnce(body: JSONObject): String {
+        val conn = URL("https://api.bambulab.com/v1/user-service/user/login").openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 20_000
+        conn.doOutput = true
+        conn.setRequestProperty("User-Agent", USER_AGENT)
+        conn.setRequestProperty("Content-Type", "application/json")
+        conn.setRequestProperty("Accept", "application/json")
+        conn.setRequestProperty("x-bbl-language", "en-US")
+        conn.setRequestProperty("x-bbl-region-global", "true")
+        val text = try {
+            conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            val code = conn.responseCode
+            (if (code in 200..299) conn.inputStream else conn.errorStream)
+                ?.bufferedReader()?.use { it.readText() } ?: ""
+        } finally {
+            conn.disconnect()
+        }
+        android.util.Log.i("MakerWorld", "bambu login (encrypted=${body.opt("encrypted")}) -> ${text.take(200)}")
+        val json = try {
+            JSONObject(text)
+        } catch (e: org.json.JSONException) {
+            throw IOException("Bambu sign-in returned an unexpected response.")
+        }
+        json.optString("accessToken", "").takeIf { it.isNotBlank() }?.let { return it }
+        val loginType = json.optString("loginType", "")
+        if (loginType == "verifyCode") {
+            throw BambuVerificationRequired("A sign-in code was emailed to your address.")
+        }
+        throw IOException(json.optString("error", "Bambu sign-in failed. Check the email and password.").ifBlank { "Bambu sign-in failed." })
+    }
+
+    /** AES-128-CBC with the Bambu gateway's fixed key/IV (as used by Bambu Studio). */
+    private fun bambuEncrypt(password: String, keyStr: String = "b47f7652e530d66a"): String {
+        val key = javax.crypto.spec.SecretKeySpec(keyStr.toByteArray(Charsets.UTF_8), "AES")
+        val iv = javax.crypto.spec.IvParameterSpec("55282a2660e28773".toByteArray(Charsets.UTF_8))
+        val cipher = javax.crypto.Cipher.getInstance("AES/CBC/PKCS7Padding")
+        cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, key, iv)
+        return android.util.Base64.encodeToString(
+            cipher.doFinal(password.toByteArray(Charsets.UTF_8)),
+            android.util.Base64.NO_WRAP,
+        )
+    }
+
+    /** Resolves a plate (profile id) to a short-lived presigned 3MF URL. */
+    fun downloadUrl(ref: String, token: String?): String {
+        android.util.Log.i("MakerWorld", "presign ref=$ref token=${if (token.isNullOrBlank()) "none" else "len" + token.length}")
+        val parts = ref.split("/")
+        if (parts.size < 2) throw IOException("Bad MakerWorld file reference.")
+        if (token.isNullOrBlank()) {
+            throw IOException("Sign in with your Bambu Lab account below to download from MakerWorld.")
+        }
+        val url = "https://api.bambulab.com/v1/iot-service/api/user/profile/${parts[0]}" +
+            "?model_id=" + URLEncoder.encode(parts[1], "UTF-8")
+        android.util.Log.i("MakerWorld", "presign GET $url")
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.requestMethod = "GET"
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 30_000
+        conn.setRequestProperty("User-Agent", USER_AGENT)
+        conn.setRequestProperty("Accept", "application/json")
+        conn.setRequestProperty("Authorization", "Bearer $token")
+        conn.setRequestProperty("x-bbl-language", "en-US")
+        conn.setRequestProperty("x-bbl-region-global", "true")
+        val text = try {
+            val code = conn.responseCode
+            when (code) {
+                401, 403 -> throw IOException("Sign in with your Bambu Lab account below to download from MakerWorld.")
+                in 200..299 -> conn.inputStream.bufferedReader().use { it.readText() }
+                else -> throw IOException("MakerWorld download returned HTTP $code")
+            }
+        } finally {
+            conn.disconnect()
+        }
+        val json = JSONObject(text)
+        return json.optString("url", "").takeIf { it.startsWith("http") }
+            ?: throw IOException("MakerWorld returned no download link for this file.")
+    }
+
+
+    /** Decodes a JSON string literal body (handles \" \\ \n \uXXXX). */
+    private fun jsonUnescape(s: String): String = try {
+        org.json.JSONTokener("\"$s\"").nextValue() as String
+    } catch (e: Exception) {
+        s
     }
 }

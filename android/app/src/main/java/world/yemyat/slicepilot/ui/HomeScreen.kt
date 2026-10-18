@@ -150,7 +150,7 @@ fun HomeScreen(
                 },
                 iconBg = MaterialTheme.colorScheme.secondaryContainer,
                 title = "Find models online",
-                subtitle = "Search Printables & Thingiverse, download and slice",
+                subtitle = "Search Printables, Thingiverse, Nexprint & MakerWorld",
                 onClick = onBrowse,
             )
 

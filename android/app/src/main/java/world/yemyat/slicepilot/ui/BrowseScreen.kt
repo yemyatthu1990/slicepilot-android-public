@@ -5,9 +5,11 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -19,8 +21,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -30,6 +35,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
@@ -40,6 +48,7 @@ import world.yemyat.slicepilot.repo.ModelDetail
 import world.yemyat.slicepilot.repo.ModelFile
 import world.yemyat.slicepilot.repo.ModelListing
 import world.yemyat.slicepilot.repo.ModelSource
+import world.yemyat.slicepilot.repo.SourceSection
 import world.yemyat.slicepilot.ui.theme.Blue600
 import java.net.HttpURLConnection
 import java.net.URL
@@ -48,6 +57,7 @@ import java.net.URL
 @Composable
 fun BrowseScreen(vm: AppViewModel, browser: ModelBrowser) {
     val st by browser.state.collectAsState()
+    var expandedSource by remember { mutableStateOf<ModelSource?>(null) }
 
     val detail = st.detail
     androidx.activity.compose.BackHandler(enabled = detail != null || st.loadingDetail) {
@@ -64,6 +74,9 @@ fun BrowseScreen(vm: AppViewModel, browser: ModelBrowser) {
             detail = detail,
             downloadingFile = st.downloadingFile,
             progress = st.downloadProgress,
+            bambuSignedIn = st.bambuSignedIn,
+            bambuSigningIn = st.bambuSigningIn,
+            bambuNeedsCode = st.bambuNeedsCode,
             onBack = { browser.closeDetail() },
             onDownload = { file ->
                 browser.download(file) { path ->
@@ -71,8 +84,25 @@ fun BrowseScreen(vm: AppViewModel, browser: ModelBrowser) {
                     vm.requestLoadModel(path)
                 }
             },
+            onBambuSignIn = { email, pass -> browser.bambuLogin(email, pass, onDone = {}) },
+            onBambuVerify = { code -> browser.bambuVerify(code, onDone = {}) },
         )
         return
+    }
+
+    // "See more" full list for one source.
+    expandedSource?.let { src ->
+        val section = st.sections.firstOrNull { it.source == src }
+        if (section == null) {
+            expandedSource = null
+        } else {
+            SourceListScreen(
+                section = section,
+                onBack = { expandedSource = null },
+                onOpen = { browser.openDetail(it) },
+            )
+            return
+        }
     }
 
     Scaffold(
@@ -99,7 +129,7 @@ fun BrowseScreen(vm: AppViewModel, browser: ModelBrowser) {
                     value = st.query,
                     onValueChange = { browser.setQuery(it) },
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("Search models…") },
+                    placeholder = { Text("Search all sites…") },
                     singleLine = true,
                     shape = RoundedCornerShape(14.dp),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -107,28 +137,14 @@ fun BrowseScreen(vm: AppViewModel, browser: ModelBrowser) {
                 )
                 FilledIconButton(
                     onClick = { browser.search() },
-                    enabled = !st.searching && st.query.isNotBlank(),
+                    enabled = st.query.isNotBlank(),
                     modifier = Modifier.size(56.dp),
                 ) {
-                    if (st.searching) {
-                        CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-                    } else {
-                        Icon(Icons.Filled.Search, "Search")
-                    }
+                    Icon(Icons.Filled.Search, "Search")
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ModelSource.entries.forEach { src ->
-                    FilterChip(
-                        selected = st.source == src,
-                        onClick = { browser.setSource(src) },
-                        label = { Text(src.label) },
-                    )
-                }
-            }
-
-            if (st.source == ModelSource.THINGIVERSE && browser.thingiverseToken.isBlank()) {
+            if (browser.thingiverseToken.isBlank()) {
                 ThingiverseTokenField(browser)
             }
 
@@ -136,30 +152,99 @@ fun BrowseScreen(vm: AppViewModel, browser: ModelBrowser) {
                 Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
             }
 
-            if (st.searching && st.results.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            } else if (st.results.isEmpty()) {
+            if (st.sections.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        if (st.query.isBlank()) "Search Printables or Thingiverse without leaving the app."
+                        if (!st.hasSearched) "Search Printables, Thingiverse, Nexprint and MakerWorld without leaving the app."
                         else "No results.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             } else {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(20.dp),
                     contentPadding = PaddingValues(bottom = 24.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                    items(st.results, key = { it.source + it.id }) { item ->
-                        ModelCard(item) { browser.openDetail(item) }
+                    items(st.sections, key = { it.source.id }) { section ->
+                        SourceSectionBlock(
+                            section = section,
+                            onOpen = { browser.openDetail(it) },
+                            onSeeMore = { expandedSource = section.source },
+                        )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SourceSectionBlock(
+    section: SourceSection,
+    onOpen: (ModelListing) -> Unit,
+    onSeeMore: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(section.source.label, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            if (!section.loading && section.results.size > 4) {
+                TextButton(onClick = onSeeMore) { Text("See more") }
+            }
+        }
+        if (section.loading) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 18.dp),
+            ) {
+                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                Text("Searching ${section.source.label}…", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            section.results.take(4).chunked(2).forEach { rowItems ->
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    rowItems.forEach { item ->
+                        ModelCard(item, Modifier.weight(1f)) { onOpen(item) }
+                    }
+                    if (rowItems.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SourceListScreen(
+    section: SourceSection,
+    onBack: () -> Unit,
+    onOpen: (ModelListing) -> Unit,
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(section.source.label, fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                    }
+                },
+            )
+        }
+    ) { padding ->
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(16.dp),
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize(),
+        ) {
+            items(section.results, key = { it.id }) { item ->
+                ModelCard(item) { onOpen(item) }
             }
         }
     }
@@ -200,12 +285,12 @@ private fun ThingiverseTokenField(browser: ModelBrowser) {
 }
 
 @Composable
-private fun ModelCard(item: ModelListing, onClick: () -> Unit) {
+private fun ModelCard(item: ModelListing, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Card(
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        modifier = Modifier.clickable(onClick = onClick),
+        modifier = modifier.clickable(onClick = onClick),
     ) {
         Column {
             RemoteThumbnail(item.thumbnailUrl, Modifier.fillMaxWidth().height(120.dp))
@@ -234,8 +319,13 @@ private fun ModelDetailScreen(
     detail: ModelDetail,
     downloadingFile: String?,
     progress: Int,
+    bambuSignedIn: Boolean,
+    bambuSigningIn: Boolean,
+    bambuNeedsCode: Boolean,
     onBack: () -> Unit,
     onDownload: (ModelFile) -> Unit,
+    onBambuSignIn: (String, String) -> Unit,
+    onBambuVerify: (String) -> Unit,
 ) {
     val listing = detail.listing
     Scaffold(
@@ -324,6 +414,103 @@ private fun ModelDetailScreen(
                         fontSize = 14.sp,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
+                }
+            }
+
+            if (detail.listing.source == "makerworld" && !bambuSignedIn) {
+                var email by rememberSaveable { mutableStateOf("") }
+                var password by rememberSaveable { mutableStateOf("") }
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "MakerWorld downloads need a free Bambu Lab account",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        if (bambuNeedsCode) {
+                            var code by rememberSaveable { mutableStateOf("") }
+                            OutlinedTextField(
+                                value = code,
+                                onValueChange = { code = it },
+                                label = { Text("Verification code") },
+                                singleLine = true,
+                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                    keyboardType = KeyboardType.Number,
+                                ),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Button(
+                                onClick = { onBambuVerify(code) },
+                                enabled = !bambuSigningIn && code.isNotBlank(),
+                            ) {
+                                if (bambuSigningIn) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimary,
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Verifying…")
+                                } else {
+                                    Text("Enter code")
+                                }
+                            }
+                        } else {
+                        OutlinedTextField(
+                            value = email,
+                            onValueChange = { email = it },
+                            label = { Text("Bambu Lab email") },
+                            singleLine = true,
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = KeyboardType.Email,
+                            ),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        var showPassword by rememberSaveable { mutableStateOf(false) }
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { password = it },
+                            label = { Text("Password") },
+                            singleLine = true,
+                            visualTransformation = if (showPassword) {
+                                VisualTransformation.None
+                            } else {
+                                PasswordVisualTransformation()
+                            },
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = KeyboardType.Password,
+                            ),
+                            trailingIcon = {
+                                IconButton(onClick = { showPassword = !showPassword }) {
+                                    Icon(
+                                        imageVector = if (showPassword) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                        contentDescription = if (showPassword) "Hide password" else "Show password",
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Button(
+                            onClick = { onBambuSignIn(email, password) },
+                            enabled = !bambuSigningIn && email.isNotBlank() && password.isNotBlank(),
+                        ) {
+                            if (bambuSigningIn) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text("Signing in…")
+                            } else {
+                                Text("Sign in")
+                            }
+                        }
+                        }
+                    }
                 }
             }
 
