@@ -93,6 +93,18 @@ class CloudAuthClient(context: Context) {
 
     suspend fun refreshIfNeeded(): Boolean = tokenUsable() || refreshTokens()
 
+    /** Maps raw Elegoo cloud login errors to user-friendly text. */
+    private fun friendlyLoginError(msg: String, code: Int): String = when {
+        msg.contains("password error", ignoreCase = true) ->
+            "Wrong email or password. Please try again."
+        msg.contains("user not exist", ignoreCase = true) ->
+            "No account found for this email. Please sign up first."
+        msg.contains("账号锁定") || msg.contains("locked", ignoreCase = true) ->
+            "Account temporarily locked after too many attempts. Wait a few minutes and try again."
+        msg.isBlank() -> "Login failed (code $code)"
+        else -> msg
+    }
+
     suspend fun login(emailAddr: String, password: String): CloudAuthResult<Unit> = withContext(Dispatchers.IO) {
         try {
             val pubKeyPem = fetchPublicKeyOrFallback()
@@ -132,7 +144,10 @@ class CloudAuthClient(context: Context) {
             )
             if (!isSuccess(resp)) {
                 return@withContext CloudAuthResult.Err(
-                    resp.optString("msg", "login failed (code ${resp.optInt("code")})"),
+                    friendlyLoginError(
+                        resp.optString("msg", ""),
+                        resp.optInt("code"),
+                    ),
                 )
             }
             val data = resp.optJSONObject("data")

@@ -371,6 +371,21 @@ class AppViewModel(
                         failPrint("Sign in to cloud to print on ${sp.name}")
                         return@launch
                     }
+                    if (!cp.online) {
+                        ticker.cancel()
+                        EventNotifier.trackEvent(
+                            "print_skipped_printer_offline",
+                            mapOf("printer" to sp.name),
+                        )
+                        _printSim.update {
+                            it.copy(
+                                message = "${sp.name} is offline. Wake it up and try again.",
+                                failed = true,
+                                complete = false,
+                            )
+                        }
+                        return@launch
+                    }
                     cloudPrint.print(cp, File(gp), slot) { msg -> applyPrintStatus(msg) }
                 }
             } catch (e: Exception) {
