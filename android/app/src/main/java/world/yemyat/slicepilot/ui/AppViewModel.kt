@@ -318,7 +318,10 @@ class AppViewModel(
 
     private fun currentPrintSlot(): world.yemyat.slicepilot.cloud.PrintSlot? {
         val cfg = _config.value
-        val tray = cfg.filamentTrayId ?: return null
+        // Local prints default to spool slot 1 when the user never picked one.
+        val tray = cfg.filamentTrayId
+            ?: selectedPrinter?.takeIf { it.isLocal }?.let { 0 }
+            ?: return null
         return world.yemyat.slicepilot.cloud.PrintSlot(
             t = 0,
             canvasId = cfg.filamentCanvasId ?: 0,
@@ -597,16 +600,20 @@ class AppViewModel(
         if (!serial.isNullOrBlank()) e.putString("filament_$serial", jsonStr)
         if (!ip.isNullOrBlank()) e.putString("filament_$ip", jsonStr)
         e.apply()
-        EventNotifier.trackEvent(
-            "filament_synced",
-            mapOf(
-                "serial" to serial.orEmpty(),
-                "ip" to ip.orEmpty(),
-                "present" to info.present,
-                "name" to info.name,
-                "tray_count" to info.trays.size,
-            ),
-        )
+        // Skip the empty "no cached data" placeholder written on connect, so the
+        // event only ever reflects what the printer (or cloud) actually reported.
+        if (info.present || info.trays.isNotEmpty()) {
+            EventNotifier.trackEvent(
+                "filament_synced",
+                mapOf(
+                    "serial" to serial.orEmpty(),
+                    "ip" to ip.orEmpty(),
+                    "present" to info.present,
+                    "name" to info.name,
+                    "tray_count" to info.trays.size,
+                ),
+            )
+        }
 
         // Sync setup material if needed
         val opts = printSetupMaterials()
@@ -629,14 +636,14 @@ class AppViewModel(
         }
     }
 
-    fun setLanPrinterFilament(material: String, colorHex: String?) {
+    fun setLanPrinterFilament(material: String, colorHex: String?, trayId: Int = 0) {
         val p = _selectedLanPrinter.value ?: return
         val normColor = colorHex?.let { if (it.startsWith("#")) it else "#$it" }
         val info = world.yemyat.slicepilot.cloud.FilamentInfo(
             present = true,
             name = material,
             colorHex = normColor,
-            trays = listOf(world.yemyat.slicepilot.cloud.LoadedTray(0, material, material, normColor)),
+            trays = listOf(world.yemyat.slicepilot.cloud.LoadedTray(trayId, material, material, normColor)),
         )
         EventNotifier.trackEvent(
             "filament_selected",
@@ -644,9 +651,26 @@ class AppViewModel(
                 "source" to "lan",
                 "material" to material,
                 "color" to normColor.orEmpty(),
+                "tray" to trayId,
             ),
         )
         applyFilament(p.serial, p.ip, info)
+        setPrintSlot(canvasId = 0, trayId = trayId)
+    }
+
+    /** Spools the connected local printer reported (sorted); empty when it never reported. */
+    fun lanSpools(): List<world.yemyat.slicepilot.cloud.LoadedTray> {
+        val p = selectedPrinter ?: return emptyList()
+        val filament = filamentFor(p.id)
+            ?: p.serial?.let { filamentFor(it) }
+            ?: p.ip?.let { filamentFor(it) }
+        return filament?.trays.orEmpty().sortedWith(compareBy({ it.canvasId }, { it.trayId }))
+    }
+
+    /** Choose the printer spool (canvas/tray) used as the print's slot_map. */
+    fun setPrintSlot(canvasId: Int, trayId: Int) {
+        updateConfig(_config.value.copy(filamentCanvasId = canvasId, filamentTrayId = trayId))
+        EventNotifier.trackEvent("print_slot_selected", mapOf("canvas" to canvasId, "tray" to trayId))
     }
 
     private fun filamentToJson(f: world.yemyat.slicepilot.cloud.FilamentInfo): String {
@@ -1000,8 +1024,9 @@ class AppViewModel(
             _config.value.copy(
                 filament = selected.profile,
                 filamentColor = selected.colorHex,
-                filamentTrayId = selected.trayId,
-                filamentCanvasId = selected.canvasId,
+                // Generic (no-tray) material options keep the spool picked on the Printer spool row.
+                filamentTrayId = selected.trayId ?: _config.value.filamentTrayId,
+                filamentCanvasId = selected.canvasId ?: _config.value.filamentCanvasId,
                 process = process,
             )
         )
@@ -1037,8 +1062,8 @@ class AppViewModel(
             _config.value.copy(
                 filament = selected.profile,
                 filamentColor = selected.colorHex,
-                filamentTrayId = selected.trayId,
-                filamentCanvasId = selected.canvasId,
+                filamentTrayId = selected.trayId ?: _config.value.filamentTrayId,
+                filamentCanvasId = selected.canvasId ?: _config.value.filamentCanvasId,
                 process = process,
             )
         )

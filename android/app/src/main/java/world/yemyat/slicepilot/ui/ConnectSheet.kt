@@ -426,9 +426,11 @@ private fun LocalNetworkSection(
                 FilamentPickerDialog(
                     currentMaterial = curLanFilament?.name ?: "PLA",
                     currentColorHex = curLanFilament?.colorHex ?: "#E0E0E0",
+                    spools = vm.lanSpools().map { it.trayId to it.colorHex },
+                    currentTrayId = curLanFilament?.trays?.firstOrNull()?.trayId ?: 0,
                     onDismiss = { showFilamentPicker = false },
-                    onConfirm = { mat, col ->
-                        vm.setLanPrinterFilament(mat, col)
+                    onConfirm = { mat, col, tray ->
+                        vm.setLanPrinterFilament(mat, col, tray)
                         showFilamentPicker = false
                     },
                 )
@@ -802,8 +804,10 @@ fun AccessCodeDialog(
 private fun FilamentPickerDialog(
     currentMaterial: String,
     currentColorHex: String?,
+    spools: List<Pair<Int, String?>>,
+    currentTrayId: Int,
     onDismiss: () -> Unit,
-    onConfirm: (String, String) -> Unit,
+    onConfirm: (String, String, Int) -> Unit,
 ) {
     val materials = listOf("PLA", "PETG", "ABS", "TPU", "PLA+", "PLA-CF", "PETG-CF", "ASA", "PC", "PA")
     val colors = listOf(
@@ -822,6 +826,9 @@ private fun FilamentPickerDialog(
     )
     var selectedMat by remember { mutableStateOf(currentMaterial.ifBlank { "PLA" }) }
     var selectedCol by remember { mutableStateOf(currentColorHex ?: "#FFFFFF") }
+    var selectedTray by remember { mutableStateOf(currentTrayId) }
+    // The printer's own slots when known; the CC2 has four when it never reported.
+    val slotOptions = spools.ifEmpty { (0..3).map { it to null as String? } }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -876,10 +883,37 @@ private fun FilamentPickerDialog(
                         }
                     }
                 }
+
+                Text("Printer spool", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    slotOptions.forEach { (trayId, trayColorHex) ->
+                        FilterChip(
+                            selected = selectedTray == trayId,
+                            onClick = { selectedTray = trayId },
+                            leadingIcon = {
+                                val parsed = remember(trayColorHex) {
+                                    trayColorHex?.let {
+                                        try { android.graphics.Color.parseColor(it) } catch (_: Exception) { null }
+                                    }
+                                }
+                                Box(
+                                    Modifier
+                                        .size(14.dp)
+                                        .background(
+                                            parsed?.let { Color(it) } ?: MaterialTheme.colorScheme.outline,
+                                            CircleShape,
+                                        )
+                                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                                )
+                            },
+                            label = { Text("Slot ${trayId + 1}") },
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
-            Button(onClick = { onConfirm(selectedMat, selectedCol) }) {
+            Button(onClick = { onConfirm(selectedMat, selectedCol, selectedTray) }) {
                 Text("Save")
             }
         },

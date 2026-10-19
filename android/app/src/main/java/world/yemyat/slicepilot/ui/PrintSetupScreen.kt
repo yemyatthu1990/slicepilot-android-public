@@ -176,6 +176,34 @@ fun PrintSetupScreen(vm: AppViewModel) {
                 onSelect = { vm.setSetupMaterial(it) },
             )
 
+            // When the printer reports its spools, the Material dropdown already lists them
+            // per tray; only pick a bare slot manually when it reported nothing.
+            if (printer?.isLocal == true && vm.lanSpools().isEmpty()) {
+                // Slot 1 is the default; the CC2 has four inlets.
+                val selectedTray = config.filamentTrayId ?: 0
+                SectionLabel("Printer spool")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    (0..3).forEach { trayId ->
+                        FilterChip(
+                            selected = selectedTray == trayId,
+                            onClick = { vm.setPrintSlot(0, trayId) },
+                            label = { Text("Slot ${trayId + 1}", maxLines = 1) },
+                        )
+                    }
+                }
+                Text(
+                    "The printer didn't report its loaded filament — pick the slot it should load from.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(
+                    onClick = { vm.requestAccessCodeEntry() },
+                    contentPadding = PaddingValues(0.dp),
+                ) {
+                    Text("Enter the printer's access code to load its filament", fontSize = 13.sp)
+                }
+            }
+
             SectionLabel("Build plate")
             ChipRow(
                 options = listOf("Textured", "Smooth"),
