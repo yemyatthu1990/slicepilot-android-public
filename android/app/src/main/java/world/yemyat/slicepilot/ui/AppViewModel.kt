@@ -358,7 +358,10 @@ class AppViewModel(
             val result = try {
                 if (sp.isLocal) {
                     val lanTarget = sp.lanPrinter ?: _selectedLanPrinter.value
-                    var local = lanPrint.print(context.applicationContext, File(gp), lanTarget, slot) { msg -> applyPrintStatus(msg) }
+                    val accessCode = lanTarget?.let { storedAccessCode(it) }.orEmpty()
+                    var local = lanPrint.print(
+                        context.applicationContext, File(gp), lanTarget, slot, accessCode,
+                    ) { msg -> applyPrintStatus(msg) }
                     if (local is CloudResult.Err && isConnectionFailure(local.message)) {
                         if (cloudLoggedIn) {
                             applyPrintStatus("Local upload failed — trying cloud…")
@@ -435,7 +438,12 @@ class AppViewModel(
                         )
                     }
                 }
-                is CloudResult.Err -> failPrint(result.message)
+                is CloudResult.Err -> {
+                    if (world.yemyat.slicepilot.cloud.LanPrintManager.isAccessCodeRejection(result.message)) {
+                        handleAccessCodeRejection(sp)
+                    }
+                    failPrint(result.message)
+                }
             }
         }
     }
@@ -603,7 +611,8 @@ class AppViewModel(
     fun refreshLanFilament(printer: world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter? = _selectedLanPrinter.value) {
         val p = printer ?: return
         viewModelScope.launch {
-            var info: world.yemyat.slicepilot.cloud.FilamentInfo? = lanPrint.getFilament(p.ip, p.serial)
+            var info: world.yemyat.slicepilot.cloud.FilamentInfo? =
+                lanPrint.getFilament(p.ip, p.serial, storedAccessCode(p))
             if ((info == null || (!info.present && info.trays.isEmpty())) && cloud.auth.isLoggedIn && p.serial.isNotBlank()) {
                 info = cloud.getFilament(p.serial)
             }
@@ -709,6 +718,61 @@ class AppViewModel(
     val lanPrinters: StateFlow<List<world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter>> = _lanPrinters.asStateFlow()
     private val _selectedLanPrinter = MutableStateFlow<world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter?>(null)
     val selectedLanPrinter: StateFlow<world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter?> = _selectedLanPrinter.asStateFlow()
+
+    // ---- Printer access code (Centauri Carbon 2 screens can show a code the app must send) ----
+
+    /** Printer the app should ask an access code for; non-null shows the dialog. Never tracked. */
+    private val _accessCodePrompt = MutableStateFlow<world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter?>(null)
+    val accessCodePrompt: StateFlow<world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter?> = _accessCodePrompt.asStateFlow()
+
+    /** Keyed by serial (falls back to IP), like the filament_$serial cache, so codes survive printer switching. */
+    private fun accessCodeKey(p: world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter): String =
+        "lan_access_code_" + p.serial.ifBlank { p.ip }
+
+    /** Stored code for [printer], blank when the printer uses the default (123456). */
+    fun storedAccessCode(p: world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter): String =
+        prefs.getString(accessCodeKey(p), "").orEmpty()
+
+    /** Ask for the code of the currently selected local printer (card button). */
+    fun requestAccessCodeEntry() {
+        _selectedLanPrinter.value?.let { _accessCodePrompt.value = it }
+    }
+
+    fun dismissAccessCodePrompt() {
+        _accessCodePrompt.value = null
+    }
+
+    fun setLanAccessCode(printer: world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter, code: String) {
+        val trimmed = code.trim()
+        if (trimmed.isEmpty()) return
+        prefs.edit().putString(accessCodeKey(printer), trimmed).apply()
+        _accessCodePrompt.value = null
+        _cloudMessage.value = "Access code saved"
+        EventNotifier.trackEvent(
+            "lan_access_code_saved",
+            mapOf(
+                "printer" to printer.name,
+                "ip" to printer.ip,
+            ),
+        )
+        refreshLanFilament(printer)
+    }
+
+    /** Set the prompt when a print failed with an access-code rejection on a local printer. */
+    private fun handleAccessCodeRejection(sp: ConnectedPrinter) {
+        if (sp.isLocal) {
+            _accessCodePrompt.value = sp.lanPrinter
+                ?: _selectedLanPrinter.value
+                ?: world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter(
+                    ip = sp.ip.orEmpty(),
+                    serial = sp.serial.orEmpty(),
+                    model = sp.model,
+                    name = sp.name,
+                    lanMode = true,
+                    needsAccessCode = true,
+                )
+        }
+    }
 
     init {
         val restoredPreview = if (!initialOpenPreviewGcodePath.isNullOrBlank() || !initialOpenPreviewModelPath.isNullOrBlank()) {
@@ -1954,6 +2018,9 @@ class AppViewModel(
             ?: world.yemyat.slicepilot.cloud.FilamentInfo(present = false)
         applyFilament(printer.serial, printer.ip, info)
         refreshLanFilament(printer)
+        if (printer.needsAccessCode && storedAccessCode(printer).isBlank()) {
+            _accessCodePrompt.value = printer
+        }
         EventNotifier.trackEvent(
             "printer_selected",
             mapOf(
@@ -2052,9 +2119,15 @@ class AppViewModel(
             val lanTarget = sp.lanPrinter ?: _selectedLanPrinter.value
             viewModelScope.launch {
                 _cloudMessage.value = "Preparing local print…"
-                when (val r = lanPrint.print(context.applicationContext, File(gp), lanTarget, currentPrintSlot()) { msg -> _cloudMessage.value = msg }) {
+                val accessCode = lanTarget?.let { storedAccessCode(it) }.orEmpty()
+                when (val r = lanPrint.print(context.applicationContext, File(gp), lanTarget, currentPrintSlot(), accessCode) { msg -> _cloudMessage.value = msg }) {
                     is CloudResult.Ok -> _cloudMessage.value = "Print started on ${sp.name}"
-                    is CloudResult.Err -> _cloudMessage.value = r.message
+                    is CloudResult.Err -> {
+                        if (world.yemyat.slicepilot.cloud.LanPrintManager.isAccessCodeRejection(r.message)) {
+                            handleAccessCodeRejection(sp)
+                        }
+                        _cloudMessage.value = r.message
+                    }
                 }
             }
         } else {
