@@ -761,11 +761,11 @@ fun AccessCodeDialog(
                 )
                 OutlinedTextField(
                     value = code,
-                    onValueChange = { code = it.filter(Char::isDigit).take(8) },
+                    onValueChange = { code = it.filter(Char::isLetterOrDigit).take(16) },
                     label = { Text("Access code") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.NumberPassword,
+                        keyboardType = KeyboardType.Password,
                         imeAction = ImeAction.Done,
                     ),
                     keyboardActions = KeyboardActions(
