@@ -629,14 +629,14 @@ class AppViewModel(
         }
     }
 
-    fun setLanPrinterFilament(material: String, colorHex: String?) {
+    fun setLanPrinterFilament(material: String, colorHex: String?, trayId: Int = 0) {
         val p = _selectedLanPrinter.value ?: return
         val normColor = colorHex?.let { if (it.startsWith("#")) it else "#$it" }
         val info = world.yemyat.slicepilot.cloud.FilamentInfo(
             present = true,
             name = material,
             colorHex = normColor,
-            trays = listOf(world.yemyat.slicepilot.cloud.LoadedTray(0, material, material, normColor)),
+            trays = listOf(world.yemyat.slicepilot.cloud.LoadedTray(trayId, material, material, normColor)),
         )
         EventNotifier.trackEvent(
             "filament_selected",
@@ -644,9 +644,26 @@ class AppViewModel(
                 "source" to "lan",
                 "material" to material,
                 "color" to normColor.orEmpty(),
+                "tray" to trayId,
             ),
         )
         applyFilament(p.serial, p.ip, info)
+        setPrintSlot(canvasId = 0, trayId = trayId)
+    }
+
+    /** Spools the connected local printer reported (sorted); empty when it never reported. */
+    fun lanSpools(): List<world.yemyat.slicepilot.cloud.LoadedTray> {
+        val p = selectedPrinter ?: return emptyList()
+        val filament = filamentFor(p.id)
+            ?: p.serial?.let { filamentFor(it) }
+            ?: p.ip?.let { filamentFor(it) }
+        return filament?.trays.orEmpty().sortedWith(compareBy({ it.canvasId }, { it.trayId }))
+    }
+
+    /** Choose the printer spool (canvas/tray) used as the print's slot_map. */
+    fun setPrintSlot(canvasId: Int, trayId: Int) {
+        updateConfig(_config.value.copy(filamentCanvasId = canvasId, filamentTrayId = trayId))
+        EventNotifier.trackEvent("print_slot_selected", mapOf("canvas" to canvasId, "tray" to trayId))
     }
 
     private fun filamentToJson(f: world.yemyat.slicepilot.cloud.FilamentInfo): String {

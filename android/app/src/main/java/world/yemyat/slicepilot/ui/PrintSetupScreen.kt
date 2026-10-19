@@ -3,6 +3,7 @@ package world.yemyat.slicepilot.ui
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -175,6 +176,42 @@ fun PrintSetupScreen(vm: AppViewModel) {
                 selected = material,
                 onSelect = { vm.setSetupMaterial(it) },
             )
+
+            if (printer?.isLocal == true) {
+                val spools = remember(filaments) { vm.lanSpools() }
+                // The printer's own filament slots; the CC2 has two when it never reported.
+                val slots: List<Triple<Int, Int, String?>> =
+                    if (spools.isNotEmpty()) spools.map { Triple(it.canvasId, it.trayId, it.colorHex) }
+                    else listOf(Triple(0, 0, null), Triple(0, 1, null))
+                SectionLabel("Printer spool")
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                ) {
+                    slots.forEach { (canvasId, trayId, colorHex) ->
+                        val label = if (spools.isNotEmpty()) {
+                            val spool = spools.first { it.canvasId == canvasId && it.trayId == trayId }
+                            "${spool.type.ifBlank { spool.name }.ifBlank { "Filament" }} · Slot ${trayId + 1}" +
+                                if (canvasId > 0) " (AMS $canvasId)" else ""
+                        } else {
+                            "Slot ${trayId + 1}"
+                        }
+                        FilterChip(
+                            selected = config.filamentCanvasId == canvasId && config.filamentTrayId == trayId,
+                            onClick = { vm.setPrintSlot(canvasId, trayId) },
+                            leadingIcon = { ColorDot(colorHex) },
+                            label = { Text(label, maxLines = 1) },
+                        )
+                    }
+                }
+                if (spools.isEmpty()) {
+                    Text(
+                        "The printer didn't report its spools — pick the slot it should load from.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
 
             SectionLabel("Build plate")
             ChipRow(
