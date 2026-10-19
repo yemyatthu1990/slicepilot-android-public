@@ -306,6 +306,9 @@ class AppViewModel(
     val printSim: StateFlow<PrintSimState> = _printSim.asStateFlow()
     private var printSimJob: Job? = null
 
+    /** G-code of a print that failed with an access-code rejection; retried when a code is saved. */
+    private var printRetryGcodeAfterCode: String? = null
+
     val printSimSteps = listOf(
         PrintSimStep("Preparing G-code", 0.16f, 700L),
         PrintSimStep("Uploading to printer", 0.58f, 1500L),
@@ -421,6 +424,7 @@ class AppViewModel(
             ticker.cancel()
             when (result) {
                 is CloudResult.Ok -> {
+                    printRetryGcodeAfterCode = null
                     EventNotifier.trackEvent(
                         "print_started",
                         mapOf(
@@ -441,6 +445,7 @@ class AppViewModel(
                 is CloudResult.Err -> {
                     if (world.yemyat.slicepilot.cloud.LanPrintManager.isAccessCodeRejection(result.message)) {
                         handleAccessCodeRejection(sp)
+                        printRetryGcodeAfterCode = gp
                     }
                     failPrint(result.message)
                 }
@@ -539,6 +544,7 @@ class AppViewModel(
             "print_cancelled",
             mapOf("printer" to selectedPrinter?.name.orEmpty()),
         )
+        printRetryGcodeAfterCode = null
         printSimJob?.cancel()
         printSimJob = null
         _printSim.value = PrintSimState()
@@ -550,6 +556,7 @@ class AppViewModel(
             "print_finished",
             mapOf("printer" to selectedPrinter?.name.orEmpty()),
         )
+        printRetryGcodeAfterCode = null
         printSimJob?.cancel()
         printSimJob = null
         _printSim.value = PrintSimState()
@@ -756,6 +763,15 @@ class AppViewModel(
             ),
         )
         refreshLanFilament(printer)
+
+        // A print was rejected on the printer's code — retry it right away.
+        val retryGcode = printRetryGcodeAfterCode
+        printRetryGcodeAfterCode = null
+        if (retryGcode != null && _screen.value == Screen.Printing &&
+            File(retryGcode).exists() && selectedPrinter?.isLocal == true
+        ) {
+            startPrint(context)
+        }
     }
 
     /** Set the prompt when a print failed with an access-code rejection on a local printer. */
