@@ -600,16 +600,20 @@ class AppViewModel(
         if (!serial.isNullOrBlank()) e.putString("filament_$serial", jsonStr)
         if (!ip.isNullOrBlank()) e.putString("filament_$ip", jsonStr)
         e.apply()
-        EventNotifier.trackEvent(
-            "filament_synced",
-            mapOf(
-                "serial" to serial.orEmpty(),
-                "ip" to ip.orEmpty(),
-                "present" to info.present,
-                "name" to info.name,
-                "tray_count" to info.trays.size,
-            ),
-        )
+        // Skip the empty "no cached data" placeholder written on connect, so the
+        // event only ever reflects what the printer (or cloud) actually reported.
+        if (info.present || info.trays.isNotEmpty()) {
+            EventNotifier.trackEvent(
+                "filament_synced",
+                mapOf(
+                    "serial" to serial.orEmpty(),
+                    "ip" to ip.orEmpty(),
+                    "present" to info.present,
+                    "name" to info.name,
+                    "tray_count" to info.trays.size,
+                ),
+            )
+        }
 
         // Sync setup material if needed
         val opts = printSetupMaterials()
