@@ -402,6 +402,16 @@ private fun LocalNetworkSection(
             if (selectedPrinter?.isLocal == true) {
                 Spacer(Modifier.height(4.dp))
                 OutlinedButton(
+                    onClick = { vm.requestAccessCodeEntry() },
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                ) {
+                    Icon(Icons.Filled.Visibility, null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Access code", fontSize = 14.sp)
+                }
+                Spacer(Modifier.height(4.dp))
+                OutlinedButton(
                     onClick = { showFilamentPicker = true },
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth().height(46.dp),
@@ -728,6 +738,63 @@ private fun PrinterRow(
             }
         }
     }
+}
+
+@Composable
+fun AccessCodeDialog(
+    printerName: String,
+    initialCode: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var code by rememberSaveable { mutableStateOf(initialCode) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Access code", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Enter the access code shown on $printerName's screen.",
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { code = it.filter(Char::isLetterOrDigit).take(16) },
+                    label = { Text("Access code") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Password,
+                        imeAction = ImeAction.Done,
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = { if (code.isNotBlank()) onSave(code.trim()) },
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "No code on the screen? Update the printer's firmware, then turn on " +
+                        "LAN Only mode in its network settings.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(code.trim()) },
+                enabled = code.isNotBlank(),
+            ) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)

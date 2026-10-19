@@ -40,6 +40,8 @@ class LanPrintManager {
         val model: String,
         val name: String,
         val lanMode: Boolean = false,
+        /** True when the printer advertises that it requires a custom access code. */
+        val needsAccessCode: Boolean = false,
     )
 
     suspend fun print(
@@ -47,10 +49,13 @@ class LanPrintManager {
         gcode: File,
         target: DiscoveredPrinter? = null,
         slot: PrintSlot? = null,
+        accessCode: String = CC2_DEFAULT_TOKEN,
         onStatus: (String) -> Unit,
     ): CloudResult<Unit> =
         withContext(Dispatchers.IO) {
             if (!gcode.exists()) return@withContext CloudResult.Err("Sliced file not found")
+
+            val token = accessCode.ifBlank { CC2_DEFAULT_TOKEN }
 
             val printer = target ?: run {
                 onStatus("Searching for a printer on the local network…")
@@ -78,7 +83,7 @@ class LanPrintManager {
                     "size_bytes" to gcode.length(),
                 ),
             )
-            val up = uploadCc2(printer.ip, gcode)
+            val up = uploadCc2(printer.ip, gcode, token)
             if (up is CloudResult.Err) {
                 EventNotifier.trackError(
                     "http_upload_failed",
@@ -114,7 +119,7 @@ class LanPrintManager {
                     "file" to gcode.name,
                 ),
             )
-            return@withContext startPrintCc2(printer.ip, printer.serial, gcode.name, slot)
+            return@withContext startPrintCc2(printer.ip, printer.serial, gcode.name, slot, token)
         }
 
     // ---------------- Discovery ----------------
@@ -167,6 +172,7 @@ class LanPrintManager {
                             model = result.optString("machine_model", ""),
                             name = result.optString("host_name", ""),
                             lanMode = result.optInt("lan_status", 0) == 1,
+                            needsAccessCode = result.optInt("token_status", 0) != 0,
                         )
                     } catch (_: SocketTimeoutException) {
                     } catch (_: Exception) {
@@ -184,10 +190,11 @@ class LanPrintManager {
     suspend fun getFilament(
         ip: String,
         serial: String,
-        token: String = CC2_DEFAULT_TOKEN,
+        accessCode: String = CC2_DEFAULT_TOKEN,
         timeoutMs: Long = 6000,
     ): FilamentInfo? = withContext(Dispatchers.IO) {
         if (ip.isBlank() || serial.isBlank()) return@withContext null
+        val token = accessCode.ifBlank { CC2_DEFAULT_TOKEN }
         val clientId = "1_PC_" + (1000..9999).random()
         val requestId = clientId + "_req"
         val responses = ConcurrentLinkedQueue<String>()
@@ -380,7 +387,7 @@ class LanPrintManager {
 
     // ---------------- CC2 upload ----------------
 
-    private fun uploadCc2(ip: String, file: File): CloudResult<Unit> {
+    private fun uploadCc2(ip: String, file: File, token: String): CloudResult<Unit> {
         val total = file.length()
         if (total <= 0) return CloudResult.Err("G-code file is empty")
         val md5 = md5Hex(file)
@@ -403,13 +410,16 @@ class LanPrintManager {
                     conn.setRequestProperty("Content-Range", "bytes $offset-${offset + len - 1}/$total")
                     conn.setRequestProperty("X-File-Name", file.name)
                     conn.setRequestProperty("X-File-MD5", md5)
-                    conn.setRequestProperty("X-Token", CC2_DEFAULT_TOKEN)
+                    conn.setRequestProperty("X-Token", token)
                     conn.setFixedLengthStreamingMode(len)
                     conn.outputStream.use { it.write(data) }
                     val code = conn.responseCode
                     val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
                         ?.bufferedReader()?.use { it.readText() }.orEmpty()
                     conn.disconnect()
+                    if (code == 401) {
+                        return CloudResult.Err(ACCESS_CODE_REJECTED_MESSAGE)
+                    }
                     if (code !in 200..299) {
                         return CloudResult.Err("Upload failed HTTP $code: ${body.take(200)}")
                     }
@@ -435,7 +445,13 @@ class LanPrintManager {
         )
     }
 
-    private fun startPrintCc2(ip: String, serial: String, fileName: String, slot: PrintSlot?): CloudResult<Unit> {
+    private fun startPrintCc2(
+        ip: String,
+        serial: String,
+        fileName: String,
+        slot: PrintSlot?,
+        token: String,
+    ): CloudResult<Unit> {
         val clientId = "1_PC_" + (100000..999999).random()
         val requestId = clientId + "_req"
         val responses = ConcurrentLinkedQueue<String>()
@@ -445,7 +461,7 @@ class LanPrintManager {
         try {
             val auth = Mqtt3SimpleAuth.builder()
                 .username(DEFAULT_MQTT_USER)
-                .password(CC2_DEFAULT_TOKEN.toByteArray(Charsets.UTF_8))
+                .password(token.toByteArray(Charsets.UTF_8))
                 .build()
             val c = MqttClient.builder()
                 .useMqttVersion3()
@@ -524,6 +540,7 @@ class LanPrintManager {
             return CloudResult.Err("Printer did not respond")
         } catch (e: Exception) {
             Log.e(TAG, "LAN start print failed", e)
+            if (isMqttAuthFailure(e)) return CloudResult.Err(ACCESS_CODE_REJECTED_MESSAGE)
             return CloudResult.Err(e.message ?: "LAN print failed")
         } finally {
             try { client?.disconnect() } catch (_: Exception) {}
@@ -545,11 +562,29 @@ class LanPrintManager {
         return sb.toString()
     }
 
-    private companion object {
+    /** True when the printer refused the MQTT login because the access code (password) was wrong. */
+    private fun isMqttAuthFailure(e: Throwable): Boolean {
+        val m = generateSequence<Throwable>(e) { it.cause }
+            .joinToString(" ") { it.message?.lowercase().orEmpty() }
+        return listOf(
+            "not authorized", "not authorised",
+            "not_authorized", "not_authorised",
+            "bad user name", "bad_user_name", "bad username",
+        ).any { m.contains(it) }
+    }
+
+    companion object {
         const val TAG = "LanPrint"
         const val CC2_DISCOVERY_PORT = 52700
         const val CC2_DEFAULT_TOKEN = "123456"
         const val DEFAULT_MQTT_USER = "elegoo"
         const val CHUNK_SIZE = 1024 * 1024
+
+        /** User-facing error when the printer rejects the access code (HTTP 401 / MQTT auth). */
+        const val ACCESS_CODE_REJECTED_MESSAGE =
+            "The printer rejected the access code. Enter the code shown on its screen."
+
+        fun isAccessCodeRejection(message: String): Boolean =
+            message.startsWith(ACCESS_CODE_REJECTED_MESSAGE)
     }
 }

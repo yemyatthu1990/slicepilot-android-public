@@ -202,6 +202,7 @@ class MainActivity : ComponentActivity() {
         val cloudMessage by vm.cloudMessage.collectAsState()
         val slicing by vm.slicing.collectAsState()
         val pendingModelPath by vm.pendingModelPath.collectAsState()
+        val accessCodePrompt by vm.accessCodePrompt.collectAsState()
         androidx.activity.compose.BackHandler(enabled = screen != Screen.Home) { vm.goBack() }
         var showConnect by remember { mutableStateOf(false) }
         var showConfigure by remember { mutableStateOf(false) }
@@ -389,6 +390,16 @@ class MainActivity : ComponentActivity() {
             onDismiss = { showConnect = false },
         )
         if (showConfigure) ConfigureSheet(vm, onDismiss = { showConfigure = false })
+
+        // Shown from the root so it also appears over the print screen when a print is rejected.
+        accessCodePrompt?.let { printer ->
+            AccessCodeDialog(
+                printerName = printer.name.ifBlank { printer.model.ifBlank { "the printer" } },
+                initialCode = vm.storedAccessCode(printer),
+                onDismiss = { vm.dismissAccessCodePrompt() },
+                onSave = { code -> vm.setLanAccessCode(printer, code) },
+            )
+        }
 
         LaunchedEffect(cloudMessage) {
             cloudMessage?.let {

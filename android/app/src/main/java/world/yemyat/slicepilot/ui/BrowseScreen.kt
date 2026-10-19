@@ -186,6 +186,7 @@ fun ModelDetailHost(vm: AppViewModel, browser: ModelBrowser): Boolean {
         return true
     }
     if (detail != null) {
+        var nexprintSigningIn by rememberSaveable { mutableStateOf(false) }
         ModelDetailScreen(
             detail = detail,
             downloadingFile = st.downloadingFile,
@@ -193,6 +194,8 @@ fun ModelDetailHost(vm: AppViewModel, browser: ModelBrowser): Boolean {
             bambuSignedIn = st.bambuSignedIn,
             bambuSigningIn = st.bambuSigningIn,
             bambuNeedsCode = st.bambuNeedsCode,
+            nexprintSignedIn = vm.cloudLoggedIn,
+            nexprintSigningIn = nexprintSigningIn,
             onBack = { browser.closeDetail() },
             onDownload = { file ->
                 browser.download(file) { path ->
@@ -202,6 +205,10 @@ fun ModelDetailHost(vm: AppViewModel, browser: ModelBrowser): Boolean {
             },
             onBambuSignIn = { email, pass -> browser.bambuLogin(email, pass, onDone = {}) },
             onBambuVerify = { code -> browser.bambuVerify(code, onDone = {}) },
+            onNexprintSignIn = { email, pass ->
+                nexprintSigningIn = true
+                vm.nativeLogin(email, pass) { nexprintSigningIn = false }
+            },
         )
         return true
     }
@@ -368,10 +375,13 @@ private fun ModelDetailScreen(
     bambuSignedIn: Boolean,
     bambuSigningIn: Boolean,
     bambuNeedsCode: Boolean,
+    nexprintSignedIn: Boolean,
+    nexprintSigningIn: Boolean,
     onBack: () -> Unit,
     onDownload: (ModelFile) -> Unit,
     onBambuSignIn: (String, String) -> Unit,
     onBambuVerify: (String) -> Unit,
+    onNexprintSignIn: (String, String) -> Unit,
 ) {
     val listing = detail.listing
     Scaffold(
@@ -555,6 +565,73 @@ private fun ModelDetailScreen(
                                 Text("Sign in")
                             }
                         }
+                        }
+                    }
+                }
+            }
+
+            if (detail.listing.source == "nexprint" && !nexprintSignedIn) {
+                var email by rememberSaveable { mutableStateOf("") }
+                var password by rememberSaveable { mutableStateOf("") }
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "Nexprint downloads need a free Elegoo account",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        OutlinedTextField(
+                            value = email,
+                            onValueChange = { email = it },
+                            label = { Text("Elegoo email") },
+                            singleLine = true,
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = KeyboardType.Email,
+                            ),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        var showPassword by rememberSaveable { mutableStateOf(false) }
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { password = it },
+                            label = { Text("Password") },
+                            singleLine = true,
+                            visualTransformation = if (showPassword) {
+                                VisualTransformation.None
+                            } else {
+                                PasswordVisualTransformation()
+                            },
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = KeyboardType.Password,
+                            ),
+                            trailingIcon = {
+                                IconButton(onClick = { showPassword = !showPassword }) {
+                                    Icon(
+                                        imageVector = if (showPassword) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                        contentDescription = if (showPassword) "Hide password" else "Show password",
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Button(
+                            onClick = { onNexprintSignIn(email, password) },
+                            enabled = !nexprintSigningIn && email.isNotBlank() && password.isNotBlank(),
+                        ) {
+                            if (nexprintSigningIn) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text("Signing in…")
+                            } else {
+                                Text("Sign in")
+                            }
                         }
                     }
                 }
