@@ -827,8 +827,8 @@ private fun FilamentPickerDialog(
     var selectedMat by remember { mutableStateOf(currentMaterial.ifBlank { "PLA" }) }
     var selectedCol by remember { mutableStateOf(currentColorHex ?: "#FFFFFF") }
     var selectedTray by remember { mutableStateOf(currentTrayId) }
-    // The printer's own slots when known; the CC2 has two when it never reported.
-    val slotOptions = spools.ifEmpty { listOf(0 to null as String?, 1 to null) }
+    // The printer's own slots when known; the CC2 has four when it never reported.
+    val slotOptions = spools.ifEmpty { (0..3).map { it to null as String? } }
 
     AlertDialog(
         onDismissRequest = onDismiss,

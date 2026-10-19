@@ -179,10 +179,10 @@ fun PrintSetupScreen(vm: AppViewModel) {
 
             if (printer?.isLocal == true) {
                 val spools = remember(filaments) { vm.lanSpools() }
-                // The printer's own filament slots; the CC2 has two when it never reported.
+                // The printer's own filament slots; the CC2 has four when it never reported.
                 val slots: List<Triple<Int, Int, String?>> =
                     if (spools.isNotEmpty()) spools.map { Triple(it.canvasId, it.trayId, it.colorHex) }
-                    else listOf(Triple(0, 0, null), Triple(0, 1, null))
+                    else (0..3).map { Triple(0, it, null) }
                 SectionLabel("Printer spool")
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
