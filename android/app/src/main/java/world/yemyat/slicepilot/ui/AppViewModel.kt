@@ -318,7 +318,10 @@ class AppViewModel(
 
     private fun currentPrintSlot(): world.yemyat.slicepilot.cloud.PrintSlot? {
         val cfg = _config.value
-        val tray = cfg.filamentTrayId ?: return null
+        // Local prints default to spool slot 1 when the user never picked one.
+        val tray = cfg.filamentTrayId
+            ?: selectedPrinter?.takeIf { it.isLocal }?.let { 0 }
+            ?: return null
         return world.yemyat.slicepilot.cloud.PrintSlot(
             t = 0,
             canvasId = cfg.filamentCanvasId ?: 0,
@@ -1017,8 +1020,9 @@ class AppViewModel(
             _config.value.copy(
                 filament = selected.profile,
                 filamentColor = selected.colorHex,
-                filamentTrayId = selected.trayId,
-                filamentCanvasId = selected.canvasId,
+                // Generic (no-tray) material options keep the spool picked on the Printer spool row.
+                filamentTrayId = selected.trayId ?: _config.value.filamentTrayId,
+                filamentCanvasId = selected.canvasId ?: _config.value.filamentCanvasId,
                 process = process,
             )
         )
@@ -1054,8 +1058,8 @@ class AppViewModel(
             _config.value.copy(
                 filament = selected.profile,
                 filamentColor = selected.colorHex,
-                filamentTrayId = selected.trayId,
-                filamentCanvasId = selected.canvasId,
+                filamentTrayId = selected.trayId ?: _config.value.filamentTrayId,
+                filamentCanvasId = selected.canvasId ?: _config.value.filamentCanvasId,
                 process = process,
             )
         )
