@@ -196,6 +196,12 @@ fun PrintSetupScreen(vm: AppViewModel) {
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                TextButton(
+                    onClick = { vm.requestAccessCodeEntry() },
+                    contentPadding = PaddingValues(0.dp),
+                ) {
+                    Text("Enter the printer's access code to load its filament", fontSize = 13.sp)
+                }
             }
 
             SectionLabel("Build plate")
