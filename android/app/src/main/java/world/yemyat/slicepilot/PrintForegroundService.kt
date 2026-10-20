@@ -143,6 +143,9 @@ class PrintForegroundService : Service() {
         private fun notificationsUsable(context: Context): Boolean {
             val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
+            // A user-deleted channel reads back null: recreate it (a deleted
+            // channel cannot host the FGS notification — "Bad notification" crash).
+            if (mgr.getNotificationChannel(PROGRESS_CHANNEL_ID) == null) ensureChannel(context)
             val importance = mgr.getNotificationChannel(PROGRESS_CHANNEL_ID)?.importance
                 ?: NotificationManager.IMPORTANCE_LOW
             return importance != NotificationManager.IMPORTANCE_NONE
