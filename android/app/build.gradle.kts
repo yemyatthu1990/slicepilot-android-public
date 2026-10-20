@@ -66,8 +66,8 @@ android {
         applicationId = "world.yemyat.slicepilot"
         minSdk = 28
         targetSdk = 36
-        versionCode = 18
-        versionName = "1.6.5-android"
+        versionCode = 26
+        versionName = "1.7.7-android"
 
         buildConfigField("String", "CLOUD_GATEWAY_GLOBAL", ktLiteral(secret("CLOUD_GATEWAY_GLOBAL")))
         buildConfigField("String", "CLOUD_GATEWAY_CHINA", ktLiteral(secret("CLOUD_GATEWAY_CHINA")))
@@ -133,6 +133,29 @@ android {
         kotlinCompilerExtensionVersion = "1.5.14"
     }
     packaging {
+        // full-sdk (RTC) and rtm-sdk both ship the Agora Shared Library; RTC's is newer.
+        jniLibs.pickFirsts += "**/libaosl.so"
+        // Printer camera viewing needs the core RTC stack only — drop the unused
+        // Agora AI/codec extension libraries (smaller bundle, smaller attack
+        // surface; they load on demand only when a feature is enabled).
+        jniLibs.excludes += setOf(
+            "lib/**/libagora_ai_echo_cancellation_extension.so",
+            "lib/**/libagora_ai_echo_cancellation_ll_extension.so",
+            "lib/**/libagora_ai_noise_suppression_extension.so",
+            "lib/**/libagora_ai_noise_suppression_ll_extension.so",
+            "lib/**/libagora_audio_beauty_extension.so",
+            "lib/**/libagora_clear_vision_extension.so",
+            "lib/**/libagora_content_inspect_extension.so",
+            "lib/**/libagora_face_capture_extension.so",
+            "lib/**/libagora_face_detection_extension.so",
+            "lib/**/libagora_lip_sync_extension.so",
+            "lib/**/libagora_screen_capture_extension.so",
+            "lib/**/libagora_segmentation_extension.so",
+            "lib/**/libagora_spatial_audio_extension.so",
+            "lib/**/libagora_video_av1_decoder_extension.so",
+            "lib/**/libagora_video_av1_encoder_extension.so",
+            "lib/**/libagora_video_quality_analyzer_extension.so",
+        )
         resources {
             excludes += setOf(
                 "META-INF/INDEX.LIST",
@@ -159,6 +182,7 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.0")
     implementation("androidx.fragment:fragment-ktx:1.6.2")
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.2")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.2")
@@ -167,6 +191,7 @@ dependencies {
     implementation("com.hivemq:hivemq-mqtt-client:1.3.3")
     implementation("io.netty:netty-codec-http:4.1.99.Final")
     implementation("io.agora.rtm:rtm-sdk:2.2.8")
+    implementation("io.agora.rtc:full-sdk:4.5.3")
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
     implementation("com.google.firebase:firebase-analytics-ktx")
     implementation("com.google.firebase:firebase-crashlytics")

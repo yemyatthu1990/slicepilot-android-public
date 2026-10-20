@@ -62,6 +62,7 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
     }
 
     private fun handleMessage(content: String) {
+        android.util.Log.i("CloudPrint", "rtm rx: ${content.take(400)}")
         val json = try {
             JSONObject(content)
         } catch (_: Exception) {
@@ -183,8 +184,76 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
             }
         }
 
-    private fun slotMapJson(slot: PrintSlot?): JSONArray {
-        if (slot == null) return JSONArray()
+    /**
+     * Cloud print control (pause 1021 / stop 1022 / resume 1023) over Agora RTM, verified
+     * against the Elegoo Matrix app (blutter of libapp.so: ElegooRtmHelper.pausePrint/
+     * resumePrint/cancelPrint publish `{"id":n,"method":m,"params":{}}` via RTM).
+     */
+    suspend fun control(
+        printer: CloudPrinter,
+        method: Int,
+        params: JSONObject = JSONObject(),
+    ): CloudResult<Unit> =
+        withContext(Dispatchers.IO) {
+            try {
+                val cred = when (val r = cloud.getAgoraCredential()) {
+                    is CloudResult.Ok -> r.value
+                    is CloudResult.Err -> return@withContext CloudResult.Err(r.message)
+                }
+                ensureLoggedIn(cred)
+                val c = client ?: return@withContext CloudResult.Err("RTM not connected")
+                val channel = cred.userId + printer.id
+                subscribeChannel(c, channel)
+                val res = send(channel, method, params, 15_000)
+                if (res.ok) CloudResult.Ok(Unit) else CloudResult.Err(res.message)
+            } catch (e: Exception) {
+                Log.e(TAG, "control($method) failed", e)
+                CloudResult.Err(e.message ?: "control failed")
+            }
+        }
+
+    /**
+     * Publish raw RTM text wrapped in the FDM command envelope, Matrix
+     * `ElegooRtmHelper.rtcSwitch` style: `{id, method: 1054, params: {action: …}}`.
+     * The printer daemon ignores bare payloads (camera never published its
+     * RTC stream until the handshake arrived as method 1054).
+     */
+    suspend fun publishRaw(printer: CloudPrinter, payload: JSONObject): CloudResult<Unit> =
+        withContext(Dispatchers.IO) {
+            try {
+                val cred = when (val r = cloud.getAgoraCredential()) {
+                    is CloudResult.Ok -> r.value
+                    is CloudResult.Err -> return@withContext CloudResult.Err(r.message)
+                }
+                ensureLoggedIn(cred)
+                val c = client ?: return@withContext CloudResult.Err("RTM not connected")
+                val channel = cred.userId + printer.id
+                subscribeChannel(c, channel)
+                val envelope = JSONObject()
+                    .put("id", requestCounter.incrementAndGet())
+                    .put("method", 1054)
+                    .put("params", payload)
+                val options = PublishOptions().apply {
+                    customType = "PlainText"
+                    setChannelType(RtmConstants.RtmChannelType.USER)
+                }
+                val done = CountDownLatch(1)
+                var err: String? = null
+                c.publish(channel, envelope.toString(), options, object : ResultCallback<Void> {
+                    override fun onSuccess(info: Void?) { done.countDown() }
+                    override fun onFailure(e: ErrorInfo) { err = e.toString(); done.countDown() }
+                })
+                when {
+                    !done.await(10, TimeUnit.SECONDS) -> CloudResult.Err("publish timed out")
+                    err != null -> CloudResult.Err(err!!)
+                    else -> CloudResult.Ok(Unit)
+                }
+            } catch (e: Exception) {
+                CloudResult.Err(e.message ?: "publish failed")
+            }
+        }
+
+    private fun slotMapJson(slot: PrintSlot?): JSONArray {        if (slot == null) return JSONArray()
         return JSONArray().put(
             JSONObject()
                 .put("t", slot.t)

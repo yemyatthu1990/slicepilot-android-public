@@ -83,7 +83,7 @@ class SliceForegroundService : Service() {
         private const val CHANNEL_RESULT = "slice_result"
         private const val GROUP_SLICE = "world.yemyat.slicepilot.slice"
         private const val NOTIFICATION_ID = 4201
-        private const val RESULT_NOTIFICATION_ID = 4202
+        internal const val RESULT_NOTIFICATION_ID = 4202
 
         private val _state = MutableStateFlow(SliceServiceState())
         val state: StateFlow<SliceServiceState> = _state.asStateFlow()
@@ -119,7 +119,7 @@ class SliceForegroundService : Service() {
                 putExtra(EXTRA_OFFSET_X, transform.offsetX)
                 putExtra(EXTRA_OFFSET_Y, transform.offsetY)
             }
-            ContextCompat.startForegroundService(context, intent)
+            startService(context, intent)
         }
 
         fun cancel(context: Context, jobId: Long) {
@@ -128,13 +128,38 @@ class SliceForegroundService : Service() {
                 action = ACTION_CANCEL
                 putExtra(EXTRA_JOB_ID, jobId)
             }
-            ContextCompat.startForegroundService(context, intent)
+            startService(context, intent)
         }
 
         fun clearFinishedJob() {
             _state.update {
                 if (it.isRunning) it else it.copy(jobId = 0L)
             }
+        }
+
+        /**
+         * True when the FGS progress notification can actually be posted. When the user
+         * blocks the app's notifications the system refuses the startForeground
+         * notification and kills the process with
+         * RemoteServiceException$CannotPostForegroundServiceNotificationException
+         * ("Bad notification for startForeground") — an async, uncatchable crash.
+         * Slicing then runs as a plain started service (user-initiated, so the
+         * background-start restrictions do not apply).
+         */
+        private fun notificationsUsable(context: Context): Boolean {
+            val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
+            val importance = mgr.getNotificationChannel(CHANNEL_PROGRESS)?.importance
+                ?: NotificationManager.IMPORTANCE_LOW
+            return importance != NotificationManager.IMPORTANCE_NONE
+        }
+
+        private fun startService(context: Context, intent: Intent) {
+            if (!notificationsUsable(context)) {
+                runCatching { context.startService(intent) }
+                return
+            }
+            ContextCompat.startForegroundService(context, intent)
         }
     }
 
@@ -224,12 +249,14 @@ class SliceForegroundService : Service() {
                 autoPrint = autoPrint,
             )
         }
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            buildProgressNotification("Starting…", 0f),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
-        )
+        if (notificationsUsable(this)) {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                buildProgressNotification("Starting…", 0f),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+        }
         acquireWakeLock()
 
         sliceJob?.cancel()
@@ -312,6 +339,7 @@ class SliceForegroundService : Service() {
     }
 
     private fun ensureForeground(notification: Notification) {
+        if (!notificationsUsable(this)) return
         try {
             ServiceCompat.startForeground(
                 this,

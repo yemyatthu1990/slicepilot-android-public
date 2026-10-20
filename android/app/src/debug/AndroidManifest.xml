@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- Debug builds export the print monitor service so it can be started from
+         adb (am start-foreground-service) to verify foreground-service types. -->
+    <application>
+        <service
+            android:name=".PrintForegroundService"
+            android:exported="true"
+            tools:replace="android:exported" />
+    </application>
+</manifest>

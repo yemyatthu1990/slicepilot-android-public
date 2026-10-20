@@ -10,6 +10,12 @@ import com.hivemq.client.mqtt.mqtt3.message.auth.Mqtt3SimpleAuth
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.RandomAccessFile
@@ -21,6 +27,7 @@ import java.net.NetworkInterface
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.security.MessageDigest
+import java.util.UUID
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 
@@ -66,9 +73,8 @@ class LanPrintManager {
             if (!isCentauri) {
                 return@withContext CloudResult.Err("Local printing supports Centauri series only (found ${printer.model})")
             }
-            val isCc2 = printer.model.contains("2") || printer.model.contains("CC2", ignoreCase = true)
-            if (!isCc2) {
-                return@withContext CloudResult.Err("Local printing currently supports Centauri Carbon 2 only")
+            if (isCc1Model(printer.model)) {
+                return@withContext printCc1(printer, gcode, slot, onStatus)
             }
 
             onStatus("Uploading G-code to ${printer.name.ifBlank { printer.ip }}…")
@@ -122,6 +128,143 @@ class LanPrintManager {
             return@withContext startPrintCc2(printer.ip, printer.serial, gcode.name, slot, token)
         }
 
+    private val cc1Http by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
+    }
+
+    private suspend fun printCc1(
+        printer: DiscoveredPrinter,
+        gcode: File,
+        slot: PrintSlot?,
+        onStatus: (String) -> Unit,
+    ): CloudResult<Unit> {
+        onStatus("Uploading G-code to ${printer.name.ifBlank { printer.ip }}…")
+        val uploadStartedAt = System.currentTimeMillis()
+        EventNotifier.trackEvent(
+            "print_upload_started",
+            mapOf(
+                "transport" to "lan-cc1",
+                "printer" to printer.name,
+                "ip" to printer.ip,
+                "file" to gcode.name,
+                "size_bytes" to gcode.length(),
+            ),
+        )
+        val up = uploadCc1(printer.ip, gcode, onStatus)
+        if (up is CloudResult.Err) {
+            EventNotifier.trackError(
+                "http_upload_failed",
+                null,
+                mapOf(
+                    "printer" to printer.name,
+                    "ip" to printer.ip,
+                    "message" to up.message,
+                    "duration_ms" to (System.currentTimeMillis() - uploadStartedAt),
+                ),
+            )
+            return up
+        }
+        EventNotifier.trackEvent(
+            "print_upload_completed",
+            mapOf(
+                "transport" to "lan-cc1",
+                "printer" to printer.name,
+                "duration_ms" to (System.currentTimeMillis() - uploadStartedAt),
+            ),
+        )
+        onStatus("Starting print…")
+        val params = JSONObject()
+            .put("Filename", "/local/${gcode.name}")
+            .put("StartLayer", 0)
+            .put("Calibration_switch", 0)
+            .put("PrintPlatformType", 0)
+            .put("Tlp_Switch", 0)
+            // Canvas/AMS: map the selected spool; an empty slot_map on a
+            // Canvas-equipped CC1 starts the job paused for filament confirm.
+            .put("slot_map", slotMapJson(slot))
+        val ok = LanPrintMonitorCC1.oneShotCommand(
+            printer.ip, printer.serial, LanPrintMonitorCC1.CMD_START_PRINT, params,
+        )
+        return if (ok) {
+            EventNotifier.trackEvent(
+                "lan_cc1_print_started",
+                mapOf("printer" to printer.name, "ip" to printer.ip, "file" to gcode.name),
+            )
+            CloudResult.Ok(Unit)
+        } else {
+            EventNotifier.trackError(
+                "lan_cc1_start_print_failed",
+                null,
+                mapOf("printer" to printer.name, "ip" to printer.ip),
+            )
+            CloudResult.Err("The printer rejected the print command")
+        }
+    }
+
+    /**
+     * CC1 file upload: `POST /uploadFile/upload`, multipart form-data in 1 MiB chunks;
+     * every chunk carries the whole-file MD5 (verified per chunk by the printer) and the
+     * same Uuid for the transfer. Success per chunk: `{"code":"000000"}`.
+     * (Framing from Elegoo's open-source elegoo-link SDK, confirmed by community probes.)
+     */
+    private fun uploadCc1(ip: String, gcode: File, onStatus: (String) -> Unit): CloudResult<Unit> {
+        val total = gcode.length()
+        if (total <= 0) return CloudResult.Err("Sliced file is empty")
+        val md5 = MessageDigest.getInstance("MD5").let { d ->
+            gcode.inputStream().use { input ->
+                val buf = ByteArray(1024 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    d.update(buf, 0, n)
+                }
+            }
+            d.digest().joinToString("") { "%02x".format(it) }
+        }
+        val uuid = UUID.randomUUID().toString()
+        val chunkSize = 1024 * 1024
+        RandomAccessFile(gcode, "r").use { raf ->
+            var offset = 0L
+            while (offset < total) {
+                val len = minOf(chunkSize.toLong(), total - offset).toInt()
+                val chunk = ByteArray(len)
+                raf.seek(offset)
+                raf.readFully(chunk)
+                val body = MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart("Check", "1")
+                    .addFormDataPart("S-File-MD5", md5)
+                    .addFormDataPart("Offset", offset.toString())
+                    .addFormDataPart("Uuid", uuid)
+                    .addFormDataPart("TotalSize", total.toString())
+                    .addFormDataPart(
+                        "File",
+                        gcode.name,
+                        chunk.toRequestBody("application/octet-stream".toMediaType()),
+                    )
+                    .build()
+                val request = Request.Builder().url("http://$ip/uploadFile/upload").post(body).build()
+                try {
+                    cc1Http.newCall(request).execute().use { resp ->
+                        val text = resp.body?.string().orEmpty()
+                        if (!resp.isSuccessful || !text.contains("000000")) {
+                            return CloudResult.Err("CC1 upload failed (HTTP ${resp.code}): ${text.take(120)}")
+                        }
+                    }
+                } catch (e: Exception) {
+                    return CloudResult.Err("CC1 upload failed: ${e.message}")
+                }
+                offset += len
+                onStatus("Uploading G-code… ${(offset * 100 / total).toInt()}%")
+            }
+        }
+        return CloudResult.Ok(Unit)
+    }
+
     // ---------------- Discovery ----------------
 
     suspend fun discoverAll(context: Context, timeoutMs: Long = 5000): List<DiscoveredPrinter> =
@@ -142,6 +285,8 @@ class LanPrintManager {
                 socket.broadcast = true
                 socket.soTimeout = 400
                 val payload = """{"id":0,"method":7000}""".toByteArray(Charsets.UTF_8)
+                // CC1 answers a plain "M99999" on UDP 3000 (SDCP), not the CC2 JSON probe.
+                val cc1Payload = "M99999".toByteArray(Charsets.UTF_8)
                 val targets = broadcastAddresses()
                 val buffer = ByteArray(8192)
                 val deadline = System.currentTimeMillis() + timeoutMs
@@ -152,6 +297,7 @@ class LanPrintManager {
                         for (addr in targets) {
                             try {
                                 socket.send(DatagramPacket(payload, payload.size, InetAddress.getByName(addr), CC2_DISCOVERY_PORT))
+                                socket.send(DatagramPacket(cc1Payload, cc1Payload.size, InetAddress.getByName(addr), CC1_DISCOVERY_PORT))
                             } catch (_: Exception) {
                             }
                         }
@@ -163,6 +309,20 @@ class LanPrintManager {
                         val ip = packet.address?.hostAddress ?: continue
                         val text = String(packet.data, 0, packet.length, Charsets.UTF_8)
                         val json = try { JSONObject(text) } catch (_: Exception) { continue }
+                        // CC1 SDCP reply: {"Id", "Data":{Name, MachineName, MainboardID, …}}
+                        json.optJSONObject("Data")?.let { data ->
+                            val mainboard = data.optString("MainboardID", "")
+                            if (mainboard.isBlank()) return@let
+                            found["cc1-$mainboard"] = DiscoveredPrinter(
+                                ip = ip,
+                                serial = mainboard,
+                                model = data.optString("MachineName", ""),
+                                name = data.optString("Name", ""),
+                                lanMode = true,
+                                needsAccessCode = false,
+                            )
+                            return@let
+                        }
                         val result = json.optJSONObject("result") ?: continue
                         val serial = result.optString("sn", "")
                         if (serial.isBlank()) continue
@@ -181,6 +341,16 @@ class LanPrintManager {
             } finally {
                 try { socket.close() } catch (_: Exception) {}
                 try { lock?.release() } catch (_: Exception) {}
+            }
+            val cc1Found = found.filterKeys { it.startsWith("cc1-") }.values
+            if (cc1Found.isNotEmpty()) {
+                EventNotifier.trackEvent(
+                    "lan_cc1_discovered",
+                    mapOf(
+                        "count" to cc1Found.size,
+                        "models" to cc1Found.joinToString(",") { it.model }.take(100),
+                    ),
+                )
             }
             found.values.toList()
         }
@@ -576,6 +746,10 @@ class LanPrintManager {
     companion object {
         const val TAG = "LanPrint"
         const val CC2_DISCOVERY_PORT = 52700
+        /** Centauri Carbon 1: "Centauri Carbon" (no "2"); SDCP over WebSocket, no access code. */
+        fun isCc1Model(model: String): Boolean =
+            model.contains("Centauri", ignoreCase = true) && !model.contains("2")
+        const val CC1_DISCOVERY_PORT = 3000
         const val CC2_DEFAULT_TOKEN = "123456"
         const val DEFAULT_MQTT_USER = "elegoo"
         const val CHUNK_SIZE = 1024 * 1024

@@ -16,7 +16,11 @@ def main():
     parser.add_argument("--key", default="secrets/play-service-account.json")
     parser.add_argument("--bundle", default="android/app/build/outputs/bundle/release/app-release.aab")
     parser.add_argument("--track", default="internal")
-    parser.add_argument("--release-name", default="1.5.3-android (1)")
+    parser.add_argument(
+        "--release-name",
+        default=None,
+        help="Release label shown in the console; omit to let Play show the version code.",
+    )
     parser.add_argument("--version-code", type=int, default=1)
     parser.add_argument("--status", default="draft", choices=["draft", "inProgress", "halted", "completed"])
     parser.add_argument("--mapping", default="android/app/build/outputs/mapping/release/mapping.txt")
@@ -75,12 +79,16 @@ def main():
         ).execute()
         print(f"Uploaded native symbols {args.native_symbols}")
 
+    notes = args.notes
+    if os.path.isfile(args.notes):
+        notes = open(args.notes, encoding="utf-8").read().strip()
     release = {
-        "name": args.release_name,
         "versionCodes": [args.version_code],
         "status": args.status,
-        "releaseNotes": [{"language": "en-US", "text": args.notes}],
+        "releaseNotes": [{"language": "en-US", "text": notes}],
     }
+    if args.release_name:
+        release["name"] = args.release_name
     track_body = {"track": args.track, "releases": [release]}
     service.edits().tracks().update(
         packageName=PACKAGE,

@@ -3,7 +3,9 @@ package world.yemyat.slicepilot.ui
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import world.yemyat.slicepilot.BuildConfig
 import world.yemyat.slicepilot.NativeLib
+import world.yemyat.slicepilot.PrintForegroundService
 import world.yemyat.slicepilot.SliceForegroundService
 import world.yemyat.slicepilot.SliceTransform
 import world.yemyat.slicepilot.cloud.CloudPrinter
@@ -22,12 +24,17 @@ import world.yemyat.slicepilot.tracking.EventNotifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 private const val DEMO_EMAIL = "demo@demo.com"
@@ -111,11 +118,13 @@ fun world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter.toConnectedP
 sealed class Screen {
     data object Home : Screen()
     data object Browse : Screen()
+    data object Library : Screen()
     data object PrintSetup : Screen()
     data object Slice : Screen()
     data object Slicing : Screen()
     data object Preview : Screen()
     data object Printing : Screen()
+    data object DeviceStatus : Screen()
 }
 
 class AppViewModel(
@@ -125,6 +134,8 @@ class AppViewModel(
     private val context: Context,
     private val initialOpenPreviewGcodePath: String? = null,
     private val initialOpenPreviewModelPath: String? = null,
+    private val initialOpenPrintMonitor: Boolean = false,
+    private val initialOpenDeviceStatus: Boolean = false,
 ) : ViewModel() {
 
     private val _screen = MutableStateFlow<Screen>(Screen.Home)
@@ -293,6 +304,672 @@ class AppViewModel(
     val demoModeState: StateFlow<Boolean> = _demoMode.asStateFlow()
     val isDemoMode: Boolean get() = _demoMode.value
 
+    // ---- Live print monitoring (LAN MQTT) ----
+
+    private val lanPrintMonitor = world.yemyat.slicepilot.cloud.LanPrintMonitor()
+    private val lanPrintMonitorCc1 = world.yemyat.slicepilot.cloud.LanPrintMonitorCC1()
+    /** The CC2 (MQTT) or CC1 (SDCP WebSocket) monitor for the current LAN session. */
+    private var activeLanMonitor: world.yemyat.slicepilot.cloud.PrintMonitor = lanPrintMonitor
+    private val _printStatus = MutableStateFlow<world.yemyat.slicepilot.cloud.PrintStatus?>(null)
+    /** Live status of a started print; null when no monitor is active (e.g. cloud prints). */
+    val printStatus: StateFlow<world.yemyat.slicepilot.cloud.PrintStatus?> = _printStatus.asStateFlow()
+    private var printMonitorJob: Job? = null
+    private var demoMonitorJob: Job? = null
+    private var cloudMonitorJob: Job? = null
+    /** True while a print monitor feeds the foreground-service notification. */
+    private var printMonitorActive = false
+
+    private fun startPrintMonitoring(
+        sp: ConnectedPrinter,
+        accessCode: String,
+        autoResumeOnPause: Boolean = false,
+    ) {
+        val ip = sp.ip ?: sp.lanPrinter?.ip ?: _selectedLanPrinter.value?.ip
+        val serial = sp.serial ?: sp.lanPrinter?.serial ?: _selectedLanPrinter.value?.serial
+        if (ip.isNullOrBlank() || serial.isNullOrBlank()) return
+        EventNotifier.trackEvent(
+            "print_monitor_started",
+            mapOf("printer" to sp.name, "ip" to ip),
+        )
+        printMonitorJob?.cancel()
+        val monitor =
+            if (world.yemyat.slicepilot.cloud.LanPrintManager.isCc1Model(sp.model)) lanPrintMonitorCc1
+            else lanPrintMonitor
+        activeLanMonitor = monitor
+        if (autoResumeOnPause) monitor.armAutoResume()
+        printMonitorJob = viewModelScope.launch {
+            var ok = monitor.start(ip, serial, accessCode)
+            // The CC2 MQTT broker keeps dead sessions (e.g. from a force-killed app)
+            // for tens of seconds and answers "too many clients" meanwhile — back off
+            // long enough (≈20 s total) for the broker to free the slots.
+            for (attempt in 0 until 4) {
+                if (ok || !isActive) break
+                delay(longArrayOf(1500, 3000, 5000, 8000)[attempt])
+                ok = monitor.start(ip, serial, accessCode)
+            }
+            // A cancelled start (user pressed back and reopened) must not clobber the
+            // status of the monitor that replaced it.
+            if (!isActive) return@launch
+            if (ok) {
+                monitor.status.collect { _printStatus.value = it }
+            } else {
+                // Print started fine, monitoring is unavailable — show "no live status"
+                // instead of leaving the screen stuck on "Connecting to printer…".
+                _printStatus.value = world.yemyat.slicepilot.cloud.PrintStatus(
+                    state = world.yemyat.slicepilot.cloud.PrintJobState.CONNECTING,
+                )
+            }
+            // CC1 Canvas/AMS filament (Cmd 324) shares spool info like the CC2's
+            // MQTT canvas report; feed the same filament store.
+            if (monitor === lanPrintMonitorCc1) {
+                launch {
+                    lanPrintMonitorCc1.filament.collect { f ->
+                        if (f != null && (f.present || f.trays.isNotEmpty())) {
+                            applyFilament(serial, ip, f)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Cloud prints: snapshot the last reported status, then follow live cloud MQTT
+     * updates for the printer (the cloud relays the same CC2 status schema).
+     */
+    private fun startCloudPrintMonitoring(
+        sp: ConnectedPrinter,
+        justStarted: Boolean = false,
+    ) {
+        val serial = sp.cloudPrinter?.id ?: sp.id
+        if (serial.isBlank()) return
+        EventNotifier.trackEvent("print_monitor_started", mapOf("printer" to sp.name, "transport" to "cloud"))
+        _printStatus.value = world.yemyat.slicepilot.cloud.PrintStatus(
+            state = world.yemyat.slicepilot.cloud.PrintJobState.CONNECTING,
+        )
+        cloudMonitorJob?.cancel()
+        cloudMonitorJob = viewModelScope.launch {
+            // Report-data lags a few seconds behind a print start: right after
+            // `start` it still carries the *previous* print's terminal state.
+            // Accepting that immediately ends the fresh session with a bogus
+            // "Print stopped". Hold terminal states for a grace window until
+            // this print has been seen running at least once.
+            val startedAt = android.os.SystemClock.elapsedRealtime()
+            var sawActive = false
+            fun freshEnough(state: world.yemyat.slicepilot.cloud.PrintJobState): Boolean {
+                if (state == world.yemyat.slicepilot.cloud.PrintJobState.PRINTING ||
+                    state == world.yemyat.slicepilot.cloud.PrintJobState.PAUSED
+                ) {
+                    sawActive = true
+                    return true
+                }
+                return !(justStarted && state.isTerminal && !sawActive &&
+                    android.os.SystemClock.elapsedRealtime() - startedAt < 30_000)
+            }
+            val snapshot = cloud.getReportStatus(serial)
+            // Don't let a cancelled job clobber the status of the monitor that replaced it.
+            if (!isActive) return@launch
+            snapshot?.let { if (freshEnough(it.state)) _printStatus.value = it }
+            startMqtt()
+            launch {
+                mqtt.printStatuses
+                    .map { it[serial] }
+                    .filterNotNull()
+                    .collect { if (freshEnough(it.state)) _printStatus.value = it }
+            }
+            // The cloud MQTT relay pushed nothing during a real print, so
+            // poll the same report-data endpoint the app's REST status uses.
+            while (isActive) {
+                delay(5000)
+                val live = cloud.getReportStatus(serial) ?: continue
+                if (!isActive) return@launch
+                if (!freshEnough(live.state)) continue
+                val prev = _printStatus.value
+                // Keep the richer/optimistic state when the poll is behind.
+                _printStatus.value = if (
+                    prev != null && live.state == world.yemyat.slicepilot.cloud.PrintJobState.CONNECTING
+                ) {
+                    prev
+                } else {
+                    live
+                }
+            }
+        }
+    }
+
+    private var cloudControlRetryJob: Job? = null
+
+    private fun cloudControl(
+        method: Int,
+        confirm: (world.yemyat.slicepilot.cloud.PrintJobState) -> Boolean,
+        optimistic: (world.yemyat.slicepilot.cloud.PrintStatus) -> world.yemyat.slicepilot.cloud.PrintStatus,
+    ) {
+        val sp = selectedPrinter ?: return
+        val cp = sp.cloudPrinter ?: _printers.value.firstOrNull { it.id == sp.id } ?: return
+        _printStatus.update { cur -> cur?.let(optimistic) }
+        cloudControlRetryJob?.cancel()
+        cloudControlRetryJob = viewModelScope.launch {
+            // RTM publishes are fire-and-forget; resend until the status stream confirms,
+            // so one tap is enough (mirrors LanPrintMonitor.resendUntilConfirmed).
+            for (attempt in 1..3) {
+                val r = cloudPrint.control(cp, method)
+                if (r is CloudResult.Err) {
+                    android.util.Log.w("AppViewModel", "cloud print control $method failed: ${r.message}")
+                    EventNotifier.trackError("print_control_failed", null, mapOf("method" to method, "message" to r.message))
+                }
+                val confirmed = withTimeoutOrNull(8_000) {
+                    mqtt.printStatuses
+                        .map { it[cp.id] }
+                        .first { it != null && confirm(it.state) }
+                    true
+                } ?: false
+                if (confirmed) break
+                android.util.Log.i("AppViewModel", "cloud control $method unconfirmed (attempt $attempt), resending")
+            }
+        }
+    }
+
+    /** Demo mode fake monitor: progress ticks up, pause/resume/stop behave plausibly. */
+    private fun startDemoMonitor() {
+        demoMonitorJob?.cancel()
+        demoMonitorJob = viewModelScope.launch {
+            var progress = 0
+            _printStatus.value = world.yemyat.slicepilot.cloud.PrintStatus(
+                state = world.yemyat.slicepilot.cloud.PrintJobState.PRINTING,
+                filename = suggestedGcodeName,
+                totalLayer = 240,
+                live = true,
+            )
+            while (progress < 100) {
+                val cur = _printStatus.value
+                if (cur != null && !cur.state.isTerminal && cur.state != world.yemyat.slicepilot.cloud.PrintJobState.PAUSED) {
+                    progress = (progress + 1).coerceAtMost(100)
+                    _printStatus.value = cur.copy(
+                        progress = progress,
+                        currentLayer = 240 * progress / 100,
+                        elapsedSec = progress * 18,
+                        remainingSec = (100 - progress) * 18,
+                    )
+                }
+                delay(500)
+            }
+            _printStatus.update {
+                it?.copy(state = world.yemyat.slicepilot.cloud.PrintJobState.COMPLETED, progress = 100, remainingSec = 0)
+            }
+        }
+    }
+
+    fun pausePrint() {
+        EventNotifier.trackEvent("print_paused", mapOf("printer" to selectedPrinter?.name.orEmpty()))
+        if (_demoMode.value) {
+            _printStatus.update { it?.copy(state = world.yemyat.slicepilot.cloud.PrintJobState.PAUSED) }
+        } else if (selectedPrinter?.isLocal == true) {
+            activeLanMonitor.pausePrint()
+        } else {
+            cloudControl(1021, { it == world.yemyat.slicepilot.cloud.PrintJobState.PAUSED }) {
+                it.copy(state = world.yemyat.slicepilot.cloud.PrintJobState.PAUSING)
+            }
+        }
+    }
+
+    fun resumePrint() {
+        EventNotifier.trackEvent("print_resumed", mapOf("printer" to selectedPrinter?.name.orEmpty()))
+        if (_demoMode.value) {
+            _printStatus.update { it?.copy(state = world.yemyat.slicepilot.cloud.PrintJobState.PRINTING) }
+        } else if (selectedPrinter?.isLocal == true) {
+            activeLanMonitor.resumePrint()
+        } else {
+            cloudControl(1023, { it == world.yemyat.slicepilot.cloud.PrintJobState.PRINTING }) {
+                it.copy(state = world.yemyat.slicepilot.cloud.PrintJobState.RESUMING)
+            }
+        }
+    }
+
+    fun stopPrintJob() {
+        EventNotifier.trackEvent("print_stopped", mapOf("printer" to selectedPrinter?.name.orEmpty()))
+        if (_demoMode.value) {
+            _printStatus.update { it?.copy(state = world.yemyat.slicepilot.cloud.PrintJobState.STOPPED) }
+        } else if (selectedPrinter?.isLocal == true) {
+            activeLanMonitor.stopPrint()
+        } else {
+            cloudControl(
+                1022,
+                {
+                    it == world.yemyat.slicepilot.cloud.PrintJobState.STOPPED ||
+                        it == world.yemyat.slicepilot.cloud.PrintJobState.COMPLETED
+                },
+            ) {
+                it.copy(state = world.yemyat.slicepilot.cloud.PrintJobState.STOPPING)
+            }
+        }
+    }
+
+    /** Stop watching the print (the job itself keeps running on the printer). */
+    private fun stopPrintMonitoring() {
+        printMonitorActive = false
+        PrintForegroundService.clear(context)
+        prefs.edit().putBoolean("print_session_active", false).apply()
+        printMonitorJob?.cancel()
+        printMonitorJob = null
+        demoMonitorJob?.cancel()
+        demoMonitorJob = null
+        cloudMonitorJob?.cancel()
+        cloudMonitorJob = null
+        lanPrintMonitor.shutdown()
+        lanPrintMonitorCc1.shutdown()
+        _printStatus.value = null
+    }
+
+    /** Persist enough to rebuild the monitor screen after the app process dies. */
+    private fun persistPrintSession(sp: ConnectedPrinter) {
+        prefs.edit()
+            .putBoolean("print_session_active", true)
+            .putString("print_session_type", if (sp.isLocal) "lan" else "cloud")
+            .putString("print_session_name", sp.name)
+            .putString("print_session_model", sp.model)
+            .putString("print_session_ip", sp.ip ?: sp.lanPrinter?.ip ?: "")
+            .putString("print_session_serial", sp.serial ?: sp.lanPrinter?.serial ?: "")
+            .putString("print_session_cloud_id", sp.cloudPrinter?.id ?: sp.id)
+            .apply()
+    }
+
+    /**
+     * Open the print monitor screen — tap target of the print notification. In a fresh process
+     * (app swiped away, notification tapped) the session is rebuilt from persisted prefs.
+     */
+    fun openPrintMonitor() {
+        stopCamera()
+        if (_screen.value == Screen.Printing) return
+        if (_printStatus.value != null) {
+            val sp = selectedPrinter ?: return
+            _printSim.update { it.copy(progress = 1f, complete = true, message = "Print started on ${sp.name}") }
+            _screen.value = Screen.Printing
+            return
+        }
+        if (_demoMode.value || !prefs.getBoolean("print_session_active", false)) return
+        viewModelScope.launch {
+            val name = prefs.getString("print_session_name", "Centauri Carbon 2").orEmpty()
+            if (prefs.getString("print_session_type", "lan") == "cloud") {
+                val cloudId = prefs.getString("print_session_cloud_id", "").orEmpty()
+                if (_printers.value.isEmpty()) refreshPrinters()
+                val cp = _printers.value.firstOrNull { it.id == cloudId }
+                    ?: _printers.value.firstOrNull { it.name == name }
+                    ?: return@launch
+                val sp = cp.toConnectedPrinter()
+                _selectedPrinter.value = sp
+                _printSim.update { it.copy(progress = 1f, complete = true, message = "Print started on ${sp.name}") }
+                _screen.value = Screen.Printing
+                printMonitorActive = true
+                startCloudPrintMonitoring(sp)
+            } else {
+                val lp = world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter(
+                    ip = prefs.getString("print_session_ip", "").orEmpty(),
+                    serial = prefs.getString("print_session_serial", "").orEmpty(),
+                    model = prefs.getString("print_session_model", "Centauri Carbon 2").orEmpty(),
+                    name = name.ifBlank { "Centauri Carbon 2" },
+                    lanMode = true,
+                )
+                if (lp.ip.isBlank() && lp.serial.isBlank()) return@launch
+                val sp = lp.toConnectedPrinter()
+                _selectedLanPrinter.value = lp
+                _selectedPrinter.value = sp
+                _printSim.update { it.copy(progress = 1f, complete = true, message = "Print started on ${sp.name}") }
+                _screen.value = Screen.Printing
+                printMonitorActive = true
+                startPrintMonitoring(sp, storedAccessCode(lp))
+            }
+        }
+    }
+
+    /**
+     * Device status view from the home printer card: live temps, and print progress when a
+     * job is running. Starts an on-demand monitor when no print monitor is active.
+     */
+    fun openDeviceStatus() {
+        val sp = selectedPrinter ?: return
+        _screen.value = Screen.DeviceStatus
+        // Local printers: preview the camera by default once the monitor goes live.
+        autoCameraPending = !_demoMode.value
+        if (_printStatus.value != null) {
+            // Monitor already live (kept alive from a previous open): the status flow
+            // emits nothing new, so start the camera right here.
+            if (autoCameraPending && _printStatus.value?.live == true && !_cameraOn.value) {
+                autoCameraPending = false
+                startCamera()
+            }
+            return
+        }
+        if (_demoMode.value) {
+            // A finished/stopped demo print must not resurrect as a fresh simulation
+            // (progress restarting at 0 looked like the print restarting). The session
+            // flag is set on print start and cleared on terminal states, so an ended
+            // print lands on the idle device status instead.
+            if (printMonitorActive) return
+            if (prefs.getBoolean("print_session_active", false)) {
+                startDemoMonitor()
+            } else {
+                _printStatus.value = world.yemyat.slicepilot.cloud.PrintStatus(
+                    state = world.yemyat.slicepilot.cloud.PrintJobState.IDLE,
+                    live = true,
+                )
+            }
+            return
+        }
+        viewModelScope.launch {
+            if (sp.isLocal) {
+                val lp = sp.lanPrinter ?: _selectedLanPrinter.value
+                startPrintMonitoring(sp, lp?.let { storedAccessCode(it) }.orEmpty())
+            } else {
+                startCloudPrintMonitoring(sp)
+            }
+        }
+    }
+
+    fun closeDeviceStatus() {
+        _screen.value = Screen.Home
+        autoCameraPending = false
+        stopCamera()
+        // Keep the monitor alive after browsing (reopening reuses it: the CC2 broker
+        // runs out of client slots when connections are churned, "too many clients").
+        // Idle monitoring stops when the app is backgrounded; a print's monitor keeps
+        // going for the notification.
+        if (_demoMode.value && !printMonitorActive) stopPrintMonitoring()
+    }
+
+    /** App backgrounded: drop idle device-status monitoring (prints keep monitoring). */
+    fun onAppBackgrounded() {
+        if (!printMonitorActive) stopPrintMonitoring()
+    }
+
+    /** Method 1028: manual nozzle target (°C; 0 = heater off). */
+    fun setNozzleTarget(tempC: Int) = setPrinterTemperature(extruder = tempC, bed = null)
+
+    /** Method 1028: manual bed target (°C; 0 = heater off). */
+    fun setBedTarget(tempC: Int) = setPrinterTemperature(extruder = null, bed = tempC)
+
+    private fun setPrinterTemperature(extruder: Int?, bed: Int?) {
+        val sp = selectedPrinter ?: return
+        _printStatus.update { cur ->
+            cur?.copy(
+                nozzleTarget = extruder?.toFloat() ?: cur.nozzleTarget,
+                bedTarget = bed?.toFloat() ?: cur.bedTarget,
+            )
+        }
+        EventNotifier.trackEvent(
+            "printer_temp_set",
+            mapOf("printer" to sp.name, "extruder" to (extruder ?: -1), "bed" to (bed ?: -1)),
+        )
+        if (_demoMode.value) return
+        if (sp.isLocal) {
+            activeLanMonitor.setTemperature(extruder, bed)
+        } else {
+            val cp = sp.cloudPrinter ?: _printers.value.firstOrNull { it.id == sp.id } ?: return
+            val params = org.json.JSONObject()
+            extruder?.let { params.put("extruder", it) }
+            bed?.let { params.put("heater_bed", it) }
+            viewModelScope.launch {
+                val r = cloudPrint.control(cp, 1028, params)
+                if (r is CloudResult.Err) {
+                    android.util.Log.w("AppViewModel", "set temp failed: ${r.message}")
+                }
+            }
+        }
+    }
+
+    /** Method 1030: part ("model") cooling fan, 0-100 % (mapped to the CC2 0-255 PWM scale). */
+    fun setFanSpeed(percent: Int) = setFanSpeed("fan", percent)
+
+    /** Method 1030: aux (chamber circulation) fan, 0-100 %. */
+    fun setAuxFanSpeed(percent: Int) = setFanSpeed("aux_fan", percent)
+
+    /** Method 1029 SET_LIGHT: case light on/off (Matrix `lightSwitch`, `{"power": n}`). */
+    fun setCaseLight(on: Boolean) {
+        val sp = selectedPrinter ?: return
+        _printStatus.update { it?.copy(lightOn = on) }
+        EventNotifier.trackEvent("printer_light_set", mapOf("printer" to sp.name, "on" to on))
+        if (_demoMode.value) return
+        if (sp.isLocal) {
+            activeLanMonitor.setLight(on)
+        } else {
+            val cp = sp.cloudPrinter ?: _printers.value.firstOrNull { it.id == sp.id } ?: return
+            viewModelScope.launch {
+                val r = cloudPrint.control(cp, 1029, org.json.JSONObject().put("power", if (on) 1 else 0))
+                if (r is CloudResult.Err) {
+                    android.util.Log.w("AppViewModel", "set light failed: ${r.message}")
+                }
+            }
+        }
+    }
+
+    private var cameraJob: Job? = null
+
+    /** Deferred 1042 disable, cancelled when the camera is re-opened quickly. */
+    private var cameraOffJob: Job? = null
+    private var cloudCameraHeartbeatJob: Job? = null
+    private var cloudCameraRtcUid: Int? = null
+
+    /** Bumped on every start/stop so cancelled camera loops can't reconnect over a new one. */
+    private var cameraGen = 0
+    private var autoCameraPending = false
+    private val cloudRtc by lazy { world.yemyat.slicepilot.cloud.CloudRtcCamera(context) }
+    private val _cameraSurface = MutableStateFlow<android.view.SurfaceView?>(null)
+    val cameraSurface = _cameraSurface.asStateFlow()
+    private val _cameraOn = MutableStateFlow(false)
+    val cameraOn = _cameraOn.asStateFlow()
+    private val _cameraFrame = MutableStateFlow<android.graphics.Bitmap?>(null)
+    val cameraFrame = _cameraFrame.asStateFlow()
+
+    /**
+     * Camera preview for local printers: method 1042 enables the camera, the MJPEG stream
+     * comes from `http://ip:8080`. The printer allows one stream connection, so the
+     * preview stops when the device-status screen closes.
+     */
+    fun toggleCamera() {
+        if (_cameraOn.value) stopCamera() else startCamera()
+    }
+
+    fun startCamera() {
+        val sp = selectedPrinter ?: return
+        if (_cameraOn.value || _demoMode.value) return
+        val ip = sp.ip ?: sp.lanPrinter?.ip
+        if (sp.isLocal) {
+            if (ip.isNullOrBlank()) return
+            _cameraOn.value = true
+            EventNotifier.trackEvent("printer_camera_on", mapOf("printer" to sp.name, "transport" to "lan"))
+            val monitor = activeLanMonitor
+            cameraOffJob?.cancel() // quick OFF/ON: keep the camera armed, don't cycle it
+            if (monitor.cameraNeedsArm) monitor.setCamera(true)
+            cameraJob?.cancel()
+            val gen = ++cameraGen
+            cameraJob = viewModelScope.launch {
+                // The printer's camera + streaming pipeline needs a few seconds after
+                // the 1042 enable; connecting too early gets the stream yanked.
+                delay(monitor.cameraWarmupMs)
+                var attempt = 0
+                while (isActive && gen == cameraGen && _cameraOn.value) {
+                    val startedAt = System.currentTimeMillis()
+                    world.yemyat.slicepilot.cloud.CameraStream.frames(monitor.cameraStreamUrl(ip))
+                        .collect { _cameraFrame.value = it }
+                    if (!isActive || gen != cameraGen || !_cameraOn.value) break
+                    // The printer serves one video connection; pounding it with fast
+                    // reconnects wedges its camera server (TCP resets), so back off
+                    // exponentially and re-arm the camera (1042) on the way.
+                    attempt = if (System.currentTimeMillis() - startedAt > 3000) 0 else attempt + 1
+                    if (attempt >= 5) break
+                    if (monitor.cameraNeedsArm && attempt % 2 == 0) monitor.setCamera(true)
+                    delay(minOf(2000L * attempt, 8000L))
+                }
+                // Stream gone for good: reset the toggle.
+                if (gen == cameraGen && _cameraOn.value) stopCamera()
+            }
+        } else {
+            startCloudCamera(sp)
+        }
+    }
+
+    /** Cloud camera: Agora RTC video (same project as RTM), RTM 1054 start/heartbeat handshake. */
+    private fun startCloudCamera(sp: ConnectedPrinter) {
+        val cp = sp.cloudPrinter ?: _printers.value.firstOrNull { it.id == sp.id } ?: return
+        _cameraOn.value = true
+        EventNotifier.trackEvent("printer_camera_on", mapOf("printer" to sp.name, "transport" to "cloud"))
+        viewModelScope.launch {
+            val cred = (cloud.getAgoraCredential() as? CloudResult.Ok)?.value
+            val rtcToken = cred?.rtcToken
+            val rtcUid = cred?.rtcUserId
+            if (cred == null || rtcToken.isNullOrBlank() || rtcUid == null) {
+                android.util.Log.w("AppViewModel", "cloud camera: no rtc credentials")
+                _cameraOn.value = false
+                return@launch
+            }
+            // Matrix RtcHelper (CC2): device-rpc/direct prepare → RTC join →
+            // RTM method 1054 {action:"start"} → 30 s {action:"heartbeat"} loop.
+            // `app_rtc_connect` is only an analytics event name; the printer
+            // daemon answers unknown 1054 actions with error_code 1003.
+            val prepare = cloud.deviceRpcPrepare(cp.id)
+            android.util.Log.i("CloudRtc", "device-rpc prepare: $prepare")
+            val surface = android.view.SurfaceView(context)
+            val ok = cloudRtc.start(BuildConfig.AGORA_APP_ID, rtcToken, cp.id, rtcUid, surface)
+            if (!ok) {
+                cloudRtc.stop()
+                _cameraOn.value = false
+                return@launch
+            }
+            cloudCameraRtcUid = rtcUid
+            val pub = cloudPrint.publishRaw(
+                cp,
+                org.json.JSONObject()
+                    .put("action", "start")
+                    .put("client_rtc_uid", rtcUid),
+            )
+            android.util.Log.i("CloudRtc", "rtc start publish: $pub")
+            cloudCameraHeartbeatJob?.cancel()
+            cloudCameraHeartbeatJob = viewModelScope.launch {
+                while (isActive) {
+                    delay(30_000)
+                    cloudPrint.publishRaw(
+                        cp,
+                        org.json.JSONObject()
+                            .put("action", "heartbeat")
+                            .put("client_rtc_uid", rtcUid),
+                    )
+                }
+            }
+            _cameraSurface.value = surface
+        }
+    }
+
+    fun stopCamera() {
+        if (!_cameraOn.value) return
+        cameraGen++
+        _cameraOn.value = false
+        _cameraFrame.value = null
+        _cameraSurface.value = null
+        cameraJob?.cancel()
+        cameraJob = null
+        val sp = selectedPrinter
+        if (sp?.isLocal == true && activeLanMonitor.cameraNeedsArm) {
+            // Debounce the 1042 disable: a quick OFF/ON toggle must not cycle the
+            // printer's camera (the disable/enable churn wedges its stream server).
+            cameraOffJob?.cancel()
+            cameraOffJob = viewModelScope.launch {
+                delay(5000)
+                if (!_cameraOn.value) activeLanMonitor.setCamera(false)
+            }
+        } else if (sp != null) {
+            val cp = sp.cloudPrinter ?: _printers.value.firstOrNull { it.id == sp.id }
+            cloudCameraHeartbeatJob?.cancel()
+            cloudCameraHeartbeatJob = null
+            cloudRtc.stop()
+            if (cp != null) {
+                val uid = cloudCameraRtcUid
+                cloudCameraRtcUid = null
+                viewModelScope.launch {
+                    cloudPrint.publishRaw(
+                        cp,
+                        org.json.JSONObject()
+                            .put("action", "stop")
+                            .apply { uid?.let { put("client_rtc_uid", it) } },
+                    )
+                }
+            }
+        }
+    }
+
+    private fun setFanSpeed(target: String, percent: Int) {
+        val sp = selectedPrinter ?: return
+        val speed = (percent.coerceIn(0, 100) * 255 / 100)
+        _printStatus.update { cur ->
+            cur?.let {
+                when (target) {
+                    "aux_fan" -> it.copy(auxFanSpeed = speed)
+                    else -> it.copy(partFanSpeed = speed)
+                }
+            }
+        }
+        EventNotifier.trackEvent("printer_fan_set", mapOf("printer" to sp.name, "fan" to target, "speed" to speed))
+        if (_demoMode.value) return
+        if (sp.isLocal) {
+            activeLanMonitor.setFanSpeed(target, speed)
+        } else {
+            val cp = sp.cloudPrinter ?: _printers.value.firstOrNull { it.id == sp.id } ?: return
+            viewModelScope.launch {
+                val r = cloudPrint.control(cp, 1030, org.json.JSONObject().put(target, speed))
+                if (r is CloudResult.Err) {
+                    android.util.Log.w("AppViewModel", "set fan failed: ${r.message}")
+                }
+            }
+        }
+    }
+
+    init {
+        // Mirror the live print status into the foreground-service notification; on a terminal
+        // state, replace it with a result notification and end the service.
+        viewModelScope.launch {
+            _printStatus.collect { st ->
+                if (!printMonitorActive || st == null) return@collect
+                val name = selectedPrinter?.name ?: "Printer"
+                PrintForegroundService.notifyStatus(context, name, st)
+                if (st.state.isTerminal) {
+                    printMonitorActive = false
+                    val text = when (st.state) {
+                        world.yemyat.slicepilot.cloud.PrintJobState.COMPLETED -> "Print completed"
+                        world.yemyat.slicepilot.cloud.PrintJobState.STOPPED -> "Print stopped"
+                        else -> "Printer reported an error"
+                    }
+                    PrintForegroundService.finish(context, name, text)
+                    prefs.edit().putBoolean("print_session_active", false).apply()
+                }
+            }
+        }
+        // Pause/Resume/Stop buttons on the notification.
+        viewModelScope.launch {
+            PrintForegroundService.commands.collect { cmd ->
+                when (cmd) {
+                    PrintForegroundService.ACTION_PAUSE -> pausePrint()
+                    PrintForegroundService.ACTION_RESUME -> resumePrint()
+                    PrintForegroundService.ACTION_STOP -> stopPrintJob()
+                }
+            }
+        }
+        // Auto-start the camera preview once the monitor goes live (LAN: 1042 + MJPEG;
+        // cloud: Agora RTC handshake).
+        viewModelScope.launch {
+            _printStatus.collect { st ->
+                if (autoCameraPending && st?.live == true &&
+                    (_screen.value == Screen.DeviceStatus || _screen.value == Screen.Printing) &&
+                    !_cameraOn.value
+                ) {
+                    autoCameraPending = false
+                    startCamera()
+                }
+            }
+        }
+        if (initialOpenPrintMonitor) openPrintMonitor()
+        // viewModelScope is Main.immediate: a plain launch would run during init,
+        // before properties declared later exist. Dispatch for real.
+        if (initialOpenDeviceStatus) viewModelScope.launch(Dispatchers.Main) { openDeviceStatus() }
+    }
+
     data class PrintSimStep(val label: String, val targetProgress: Float, val durationMs: Long)
     data class PrintSimState(
         val stepIndex: Int = 0,
@@ -345,6 +1022,7 @@ class AppViewModel(
                 return@launch
             }
             val slot = currentPrintSlot()
+            var lanAccessCode = ""
 
             if (_demoMode.value) {
                 simulateDemoPrint(sp)
@@ -365,6 +1043,7 @@ class AppViewModel(
                 if (sp.isLocal) {
                     val lanTarget = sp.lanPrinter ?: _selectedLanPrinter.value
                     val accessCode = lanTarget?.let { storedAccessCode(it) }.orEmpty()
+                    lanAccessCode = accessCode
                     var local = lanPrint.print(
                         context.applicationContext, File(gp), lanTarget, slot, accessCode,
                     ) { msg -> applyPrintStatus(msg) }
@@ -444,6 +1123,13 @@ class AppViewModel(
                             failed = false,
                         )
                     }
+                    // Live monitoring: LAN MQTT for local prints, cloud relay for cloud prints.
+                    if (sp.isLocal) startPrintMonitoring(sp, lanAccessCode, autoResumeOnPause = true)
+                    else startCloudPrintMonitoring(sp, justStarted = true)
+                    printMonitorActive = true
+                    PrintForegroundService.start(context, sp.name)
+                    persistPrintSession(sp)
+                    autoCameraPending = true
                 }
                 is CloudResult.Err -> {
                     if (world.yemyat.slicepilot.cloud.LanPrintManager.isAccessCodeRejection(result.message)) {
@@ -517,6 +1203,10 @@ class AppViewModel(
                 "gcode" to gcodePath.orEmpty(),
             ),
         )
+        startDemoMonitor()
+        printMonitorActive = true
+        PrintForegroundService.start(context, sp.name)
+        persistPrintSession(sp)
     }
 
     private fun failPrint(msg: String) {
@@ -551,6 +1241,7 @@ class AppViewModel(
         printSimJob?.cancel()
         printSimJob = null
         _printSim.value = PrintSimState()
+        stopPrintMonitoring()
         _screen.value = Screen.Preview
     }
 
@@ -563,6 +1254,11 @@ class AppViewModel(
         printSimJob?.cancel()
         printSimJob = null
         _printSim.value = PrintSimState()
+        stopCamera()
+        // An active print keeps its monitor + notification (the notification is the way
+        // back); terminal states tear everything down.
+        val state = _printStatus.value?.state
+        if (state == null || state.isTerminal) stopPrintMonitoring()
         _modelError.value = null
         _cloudMessage.value = null
         _pendingModelPath.value = null
@@ -625,8 +1321,21 @@ class AppViewModel(
     fun refreshLanFilament(printer: world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter? = _selectedLanPrinter.value) {
         val p = printer ?: return
         viewModelScope.launch {
-            var info: world.yemyat.slicepilot.cloud.FilamentInfo? =
-                lanPrint.getFilament(p.ip, p.serial, storedAccessCode(p))
+            var info: world.yemyat.slicepilot.cloud.FilamentInfo? = null
+            val isCc1 = world.yemyat.slicepilot.cloud.LanPrintManager.isCc1Model(p.model)
+            // CC1 has no MQTT broker; its Canvas/AMS filament arrives on the
+            // SDCP monitor (Cmd 324), so read the live monitor's last report.
+            val cc1 = activeLanMonitor as? world.yemyat.slicepilot.cloud.LanPrintMonitorCC1
+            if (cc1 != null && isCc1) {
+                info = cc1.filament.value
+            }
+            if (isCc1 && (info == null || info.trays.isEmpty())) {
+                // Home card with no live monitor: one-shot WS fetch (FW-gated).
+                info = world.yemyat.slicepilot.cloud.LanPrintMonitorCC1.oneShotCanvas(p.ip, p.serial)
+            }
+            if (!isCc1 && (info == null || (!info.present && info.trays.isEmpty()))) {
+                info = lanPrint.getFilament(p.ip, p.serial, storedAccessCode(p))
+            }
             if ((info == null || (!info.present && info.trays.isEmpty())) && cloud.auth.isLoggedIn && p.serial.isNotBlank()) {
                 info = cloud.getFilament(p.serial)
             }
@@ -998,6 +1707,10 @@ class AppViewModel(
         _setupPlate.value = plate
         prefs.edit().putString("setup_plate", plate).apply()
         EventNotifier.trackEvent("bed_type_selected", mapOf("plate" to plate))
+    }
+
+    fun openLibrary() {
+        _screen.value = Screen.Library
     }
 
     fun openBrowse() {
@@ -1512,7 +2225,7 @@ class AppViewModel(
     fun goBack() {
         when (_screen.value) {
             Screen.Home -> {}
-            Screen.Browse -> _screen.value = Screen.Home
+            Screen.Browse, Screen.Library -> _screen.value = Screen.Home
             Screen.PrintSetup -> _screen.value = Screen.Home
             Screen.Slice -> _screen.value = Screen.PrintSetup
             Screen.Slicing -> {
@@ -1521,6 +2234,7 @@ class AppViewModel(
             }
             Screen.Preview -> _screen.value = Screen.Slice
             Screen.Printing -> if (_printSim.value.complete) finishPrintToHome() else cancelPrint()
+            Screen.DeviceStatus -> closeDeviceStatus()
         }
     }
 
@@ -1919,7 +2633,7 @@ class AppViewModel(
             when (val r = cloud.getMqttConfig()) {
                 is CloudResult.Ok -> {
                     val c = r.value
-                    mqtt.start(c.host, c.port, c.path, c.clientId, c.username, c.password, c.topicFilter)
+                    mqtt.start(c.host, c.port, c.path, c.clientId, c.username, c.password, c.topicFilter, c.extraTopicFilters)
                 }
                 is CloudResult.Err -> android.util.Log.w("AppViewModel", "mqtt config: ${r.message}")
             }
@@ -2183,6 +2897,8 @@ class AppViewModel(
 
     override fun onCleared() {
         cloudPrint.release()
+        lanPrintMonitor.shutdown()
+        lanPrintMonitorCc1.shutdown()
         super.onCleared()
     }
 

@@ -76,6 +76,16 @@ class MainActivity : ComponentActivity() {
         requestNotificationPermissionIfNeeded()
         cloud = ElegooCloudClient(this)
         val openPreview = intent?.getBooleanExtra("open_preview", false) == true
+        // Any print-related notification tap lands on the device status screen.
+        // A swipe-killed task discards the tap's extras, so a live print session
+        // itself routes there too (covers the icon tap during printing as well).
+        val openPrint = intent?.getBooleanExtra("open_print_monitor", false) == true
+        val prefs = getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE)
+        val openStatus = intent?.getBooleanExtra("open_device_status", false) == true ||
+            prefs.getBoolean("print_session_active", false) ||
+            prefs.getBoolean("pending_device_status", false).also {
+                if (it) prefs.edit().remove("pending_device_status").apply()
+            }
         vm = AppViewModel(
             cloud = cloud,
             cacheDir = cacheDir,
@@ -83,6 +93,8 @@ class MainActivity : ComponentActivity() {
             context = this,
             initialOpenPreviewGcodePath = if (openPreview) intent?.getStringExtra("gcode_path") else null,
             initialOpenPreviewModelPath = if (openPreview) intent?.getStringExtra("model_path") else null,
+            initialOpenPrintMonitor = openPrint,
+            initialOpenDeviceStatus = openStatus,
         )
         handleIncomingModel(intent)
         maybeRunHeadlessSlice()
@@ -104,6 +116,12 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         if (intent.getBooleanExtra("open_preview", false)) {
             vm.openPreviewFromPaths(intent.getStringExtra("gcode_path"), intent.getStringExtra("model_path"))
+        }
+        if (intent.getBooleanExtra("open_print_monitor", false)) {
+            vm.openPrintMonitor()
+        }
+        if (intent.getBooleanExtra("open_device_status", false)) {
+            vm.openDeviceStatus()
         }
         val data = intent.data
         android.util.Log.i("AuthCallback", "onNewIntent scheme=${intent.scheme} data=$data extras=${intent.extras?.keySet()?.joinToString()}")
@@ -208,11 +226,13 @@ class MainActivity : ComponentActivity() {
         var showConfigure by remember { mutableStateOf(false) }
         var fullscreen by remember { mutableStateOf(false) }
         var showModelSource by remember { mutableStateOf(false) }
+        val favorites = remember { world.yemyat.slicepilot.repo.FavoritesStore(this) }
         val browser = remember {
             world.yemyat.slicepilot.repo.ModelBrowser(
                 prefs = getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE),
                 cacheDir = cacheDir,
                 cloudTokenProvider = { cloud.auth.accessToken.takeIf { cloud.auth.isLoggedIn } },
+                favorites = favorites,
             )
         }
         DisposableEffect(browser) { onDispose { browser.dispose() } }
@@ -227,6 +247,7 @@ class MainActivity : ComponentActivity() {
                     vm.checkSession()
                 } else if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
                     EventNotifier.trackEvent("app_backgrounded")
+                    vm.onAppBackgrounded()
                 }
             }
             lifecycleOwner.lifecycle.addObserver(obs)
@@ -293,10 +314,17 @@ class MainActivity : ComponentActivity() {
                     onOpenConnect = { showConnect = true },
                     onOpenConfigure = { showConfigure = true },
                     onBrowse = { vm.openBrowse() },
+                    onLibrary = { vm.openLibrary() },
                     browser = browser,
+                    favorites = favorites,
                 )
                 is Screen.PrintSetup -> PrintSetupScreen(vm)
                 is Screen.Browse -> BrowseScreen(vm, browser)
+                is Screen.Library -> LibraryScreen(
+                    vm = vm,
+                    favorites = favorites,
+                    onBrowse = { vm.openBrowse() },
+                )
                 is Screen.Slice -> SliceScreen(vm)
                 is Screen.Slicing -> SlicingScreen(vm)
                 is Screen.Preview -> {
@@ -316,6 +344,7 @@ class MainActivity : ComponentActivity() {
                     vm = vm,
                     onBack = { vm.cancelPrint() },
                 )
+                is Screen.DeviceStatus -> DeviceStatusScreen(vm = vm)
             }
             val downloading = browse.downloadingFile
             if (downloading != null) {

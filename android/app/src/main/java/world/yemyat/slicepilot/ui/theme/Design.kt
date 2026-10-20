@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -187,7 +189,7 @@ fun BrandWordmark(modifier: Modifier = Modifier, dark: Boolean = LocalIsDarkThem
     ) {
         Box(
             Modifier
-                .width(40.dp)
+                .requiredWidth(40.dp)
                 .height(36.dp)
                 .shadow(
                     10.dp,
@@ -209,10 +211,13 @@ fun BrandWordmark(modifier: Modifier = Modifier, dark: Boolean = LocalIsDarkThem
         }
         Text(
             "LICEPILOT",
-            fontSize = 18.sp,
+            fontSize = 16.sp,
             fontWeight = FontWeight.Black,
             color = if (dark) PaperCream else BrandInk,
-            letterSpacing = 2.sp,
+            letterSpacing = 1.5.sp,
+            maxLines = 1,
+            softWrap = false,
+            modifier = Modifier.requiredWidth(IntrinsicSize.Max),
         )
     }
 }

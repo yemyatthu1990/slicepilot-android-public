@@ -12,12 +12,19 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CollectionsBookmark
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import kotlinx.coroutines.launch
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.TravelExplore
@@ -57,7 +64,9 @@ fun HomeScreen(
     onOpenConnect: () -> Unit,
     onOpenConfigure: () -> Unit,
     onBrowse: () -> Unit,
+    onLibrary: () -> Unit,
     browser: ModelBrowser,
+    favorites: world.yemyat.slicepilot.repo.FavoritesStore,
 ) {
     val mesh by vm.mesh.collectAsState()
     val modelLoading by vm.modelLoading.collectAsState()
@@ -67,6 +76,7 @@ fun HomeScreen(
     val selectedPrinter by vm.selectedPrinterState.collectAsState()
     val availablePrinters by vm.availablePrinters.collectAsState()
     val browse by browser.state.collectAsState()
+    val favEntriesHome by favorites.entries.collectAsState()
 
     // Popular-models strip (empty search-bar feed) for the "no model yet" state.
     LaunchedEffect(Unit) { browser.loadHome() }
@@ -97,15 +107,37 @@ fun HomeScreen(
             ) {
                 Spacer(Modifier.height(8.dp))
 
-                // Compact header: wordmark + printer status chip.
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    BrandWordmark(Modifier.weight(1f))
-                    PrinterStatusChip(
-                        name = selectedPrinter?.name ?: if (vm.cloudLoggedIn) "Cloud" else null,
-                        isLocal = selectedPrinter?.isLocal == true,
-                        onClick = onOpenConnect,
-                    )
-                    Spacer(Modifier.width(4.dp))
+                // Header: wordmark + actions, one compact row.
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    BrandWordmark()
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = onLibrary) {
+                        BadgedBox(
+                            badge = {
+                                if (favEntriesHome.isNotEmpty()) {
+                                    // Offset into the icon corner: the scroll
+                                    // container clips badges that overflow.
+                                    Badge(
+                                        modifier = Modifier.offset(x = (-2).dp, y = 6.dp),
+                                    ) {
+                                        Text(
+                                            if (favEntriesHome.size > 99) "99+"
+                                            else favEntriesHome.size.toString(),
+                                        )
+                                    }
+                                }
+                            },
+                        ) {
+                            Icon(
+                                Icons.Filled.CollectionsBookmark,
+                                contentDescription = "My models",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                     val dark = LocalIsDarkTheme.current
                     IconButton(onClick = { vm.toggleTheme() }) {
                         Icon(
@@ -115,11 +147,26 @@ fun HomeScreen(
                         )
                     }
                 }
-                Text(
-                    "Slice with a little magic.",
-                    fontSize = 15.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                // Printer status takes the tagline's slot when connected —
+                // long names stay on one readable line, no extra header row.
+                val printerName =
+                    selectedPrinter?.name ?: if (vm.cloudLoggedIn) "Cloud" else null
+                if (printerName != null) {
+                    Row {
+                        PrinterStatusChip(
+                            modifier = Modifier.widthIn(max = 300.dp),
+                            name = printerName,
+                            isLocal = selectedPrinter?.isLocal == true,
+                            onClick = onOpenConnect,
+                        )
+                    }
+                } else {
+                    Text(
+                        "Slice with a little magic.",
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
 
                 if (!NativeLib.isLoaded) {
                     val ctx = LocalContext.current
@@ -174,7 +221,16 @@ fun HomeScreen(
                             onClick = onPickModel,
                         )
                     }
-                    PopularModelStrip(browser = browser, onOpen = { browser.openDetail(it) }, onBrowseAll = onBrowse)
+                    PopularModelStrip(
+                        browser = browser,
+                        favoritedListings = remember(favEntriesHome) {
+                            favEntriesHome.mapNotNull { e ->
+                                e.listingId.takeIf { it.isNotBlank() }?.let { "${e.source}|$it" }
+                            }.toSet()
+                        },
+                        onOpen = { browser.openDetail(it) },
+                        onBrowseAll = onBrowse,
+                    )
                 } else {
                     // States B/C: the loaded model is the hero — preview first.
                     if (mesh != null && !modelLoading) {
@@ -186,15 +242,64 @@ fun HomeScreen(
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
                         ) {
                             ModelPreviewCanvas(mesh = mesh, onError = { vm.reportModelLoadError("render", it) })
-                            FilledIconButton(
-                                onClick = onFullscreen,
-                                colors = IconButtonDefaults.filledIconButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-                                    contentColor = MaterialTheme.colorScheme.onSurface,
-                                ),
+                            Row(
                                 modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Icon(Icons.Filled.Fullscreen, "Fullscreen")
+                                val favEntries by favorites.entries.collectAsState()
+                                val modelFile = vm.modelPath?.let { java.io.File(it) }
+                                val favKey = modelFile?.name?.let { "file|$it" }
+                                // Match the key and the stored file name: favorites
+                                // dedupe same-named files as "name(2).ext", and loaded
+                                // paths carry that deduped name.
+                                fun isKept(e: world.yemyat.slicepilot.repo.FavoriteModel): Boolean =
+                                    modelFile != null && favKey != null &&
+                                        (e.key == favKey || java.io.File(e.path).name == modelFile.name)
+                                val favorited = favEntries.any { isKept(it) }
+                                val scope = androidx.compose.runtime.rememberCoroutineScope()
+                                FilledIconButton(
+                                    onClick = {
+                                        val f = modelFile ?: return@FilledIconButton
+                                        val k = favKey ?: return@FilledIconButton
+                                        val kept = favEntries.firstOrNull { isKept(it) }
+                                        if (kept != null) {
+                                            // Keep the file on disk when it is
+                                            // the loaded model (opened from the
+                                            // library) — un-starring must not
+                                            // empty the project.
+                                            favorites.remove(
+                                                kept.id,
+                                                deleteFile = kept.path != vm.modelPath,
+                                            )
+                                        } else {
+                                            scope.launch {
+                                                favorites.add(f, f.nameWithoutExtension, "local", k)
+                                            }
+                                        }
+                                    },
+                                    enabled = modelFile?.exists() == true,
+                                    colors = IconButtonDefaults.filledIconButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                                        contentColor = MaterialTheme.colorScheme.onSurface,
+                                    ),
+                                ) {
+                                    Icon(
+                                        if (favorited) Icons.Filled.Star else Icons.Outlined.StarBorder,
+                                        "Keep in My models",
+                                        tint = if (favorited) Color(0xFFFFC96B)
+                                        else MaterialTheme.colorScheme.onSurface,
+                                    )
+                                }
+                                Spacer(Modifier.width(6.dp))
+                                FilledIconButton(
+                                    onClick = onFullscreen,
+                                    colors = IconButtonDefaults.filledIconButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                                        contentColor = MaterialTheme.colorScheme.onSurface,
+                                    ),
+                                ) {
+                                    Icon(Icons.Filled.Fullscreen, "Fullscreen")
+                                }
                             }
                         }
                     } else if (modelLoading) {
@@ -275,6 +380,19 @@ fun HomeScreen(
                     ) {
                         Text("Printer", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         var printerMenu by remember { mutableStateOf(false) }
+                        if (!printerReady) {
+                            // Nothing to select before a printer is connected:
+                            // this row is the connect entry point, not a picker.
+                            OutlinedButton(
+                                onClick = onOpenConnect,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp),
+                            ) {
+                                Icon(Icons.Filled.CloudOff, null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Connect to printer")
+                            }
+                        } else
                         ExposedDropdownMenuBox(
                             expanded = printerMenu,
                             onExpandedChange = { if (availablePrinters.isNotEmpty()) printerMenu = it }
@@ -314,6 +432,20 @@ fun HomeScreen(
                                         label = { Text("$size mm", maxLines = 1) },
                                     )
                                 }
+                            }
+                            Spacer(Modifier.height(2.dp))
+                            OutlinedButton(
+                                onClick = { vm.openDeviceStatus() },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp),
+                            ) {
+                                Icon(
+                                    Icons.Filled.MonitorHeart,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text("Device status")
                             }
                         }
                         val curPrinter = selectedPrinter
@@ -445,9 +577,15 @@ private fun HomeCta(
 
 /** Compact printer status pill in the header; tap opens the Connect screen. */
 @Composable
-private fun PrinterStatusChip(name: String?, isLocal: Boolean, onClick: () -> Unit) {
+private fun PrinterStatusChip(
+    name: String?,
+    isLocal: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val connected = name != null
     Surface(
+        modifier = modifier,
         shape = CircleShape,
         color = if (connected) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.surfaceVariant,
         border = BorderStroke(1.dp, LanternGold.copy(alpha = 0.18f)),
@@ -473,6 +611,8 @@ private fun PrinterStatusChip(name: String?, isLocal: Boolean, onClick: () -> Un
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 220.dp),
                 color = if (connected) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -483,6 +623,7 @@ private fun PrinterStatusChip(name: String?, isLocal: Boolean, onClick: () -> Un
 @Composable
 private fun PopularModelStrip(
     browser: ModelBrowser,
+    favoritedListings: Set<String> = emptySet(),
     onOpen: (world.yemyat.slicepilot.repo.ModelListing) -> Unit,
     onBrowseAll: () -> Unit,
 ) {
@@ -513,7 +654,11 @@ private fun PopularModelStrip(
             } else if (section.results.isNotEmpty()) {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(section.results.take(10), key = { it.id }) { item ->
-                        ModelCard(item, Modifier.width(170.dp)) { onOpen(item) }
+                        ModelCard(
+                            item,
+                            Modifier.width(170.dp),
+                            favorited = "${item.source}|${item.id}" in favoritedListings,
+                        ) { onOpen(item) }
                     }
                 }
             }

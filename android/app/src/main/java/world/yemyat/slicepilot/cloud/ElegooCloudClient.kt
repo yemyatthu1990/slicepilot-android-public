@@ -116,6 +116,7 @@ class ElegooCloudClient(
         val username: String,
         val password: String,
         val topicFilter: String,
+        val extraTopicFilters: List<String> = emptyList(),
     )
 
     suspend fun getMqttConfig(): CloudResult<MqttConfig> = withContext(Dispatchers.IO) {
@@ -144,15 +145,30 @@ class ElegooCloudClient(
             if (username.isBlank() || password.isBlank()) {
                 return@withContext CloudResult.Err("mqtt: missing credentials")
             }
+            // `subscribeAuthorization` is a broker-side ACL *regex* applied to
+            // the subscribe filter itself: `\w*` does not match `+`, so MQTT
+            // wildcard filters like `+/+/user/#` are SUBACK-rejected while
+            // literal `app/v1/user/#` is allowed. The optional `-suffix` group
+            // covers the server-assigned (suffixed) clientId topic.
+            val clientIdValue = d.optString("mqttClientId", clientId)
+            val subs = mutableListOf("app/v1/$username/#")
+            if (clientIdValue.isNotBlank() && clientIdValue != username) {
+                subs += "app/v1/$clientIdValue/#"
+            }
+            android.util.Log.i(
+                "CloudClient",
+                "mqtt-client config: user=$username clientId=$clientIdValue subs=$subs",
+            )
             CloudResult.Ok(
                 MqttConfig(
                     host = host,
                     port = port,
                     path = path,
-                    clientId = d.optString("mqttClientId", clientId),
+                    clientId = clientIdValue,
                     username = username,
                     password = password,
-                    topicFilter = "app/v1/$username/#",
+                    topicFilter = subs.first(),
+                    extraTopicFilters = subs.drop(1),
                 )
             )
         } catch (e: Exception) {
@@ -160,8 +176,49 @@ class ElegooCloudClient(
         }
     }
 
-    suspend fun getFilament(deviceCode: String): FilamentInfo? = withContext(Dispatchers.IO) {
+    /**
+     * Snapshot of the last reported printer status (same report-data endpoint as filament).
+     * The cloud report stores each section as `[{reportLinkKey, reportValue}, …]`; sections
+     * are flattened and merged with [LanPrintMonitor.mergePrintStatus].
+     */
+    suspend fun getReportStatus(deviceCode: String): PrintStatus? = withContext(Dispatchers.IO) {
         if (!auth.tokenUsable()) auth.refreshTokens()
+        try {
+            val json = getRaw(
+                gateway + deviceApi + "/device/report-data/list?deviceCode=$deviceCode",
+                authed = true,
+            )
+            if (!isSuccess(json)) return@withContext null
+            val data = json.optJSONObject("data") ?: return@withContext null
+            val result = JSONObject()
+            for (section in listOf(
+                "machine_status", "print_status", "extruder", "heater_bed",
+                "ztemperature_sensor", "fans", "led",
+            )) {
+                val arr = data.optJSONArray(section) ?: continue
+                val obj = JSONObject()
+                for (i in 0 until arr.length()) {
+                    val e = arr.optJSONObject(i) ?: continue
+                    val key = e.optString("reportLinkKey", "")
+                    if (key.isBlank()) continue
+                    var value: Any? = e.opt("reportValue")
+                    // Nested sections (fans) arrive as JSON strings.
+                    if (value is String && value.startsWith("{")) {
+                        value = try { JSONObject(value) } catch (_: Exception) { value }
+                    }
+                    obj.put(key, value)
+                }
+                if (obj.length() > 0) result.put(section, obj)
+            }
+            if (result.length() == 0) return@withContext null
+            LanPrintMonitor.mergePrintStatus(PrintStatus(), result)
+        } catch (e: Exception) {
+            android.util.Log.w("CloudClient", "getReportStatus failed: ${e.message}")
+            null
+        }
+    }
+
+    suspend fun getFilament(deviceCode: String): FilamentInfo? = withContext(Dispatchers.IO) {        if (!auth.tokenUsable()) auth.refreshTokens()
         try {
             val json = getRaw(
                 gateway + deviceApi + "/device/report-data/list?deviceCode=$deviceCode",
@@ -359,9 +416,35 @@ class ElegooCloudClient(
         return if (text.isNotBlank()) JSONObject(text) else JSONObject()
     }
 
-    data class AgoraCredential(val userId: String, val rtmUserId: String, val rtmToken: String)
+    data class AgoraCredential(
+        val userId: String,
+        val rtmUserId: String,
+        val rtmToken: String,
+        /** RTC credentials for the cloud camera stream (same Agora project as RTM). */
+        val rtcToken: String? = null,
+        val rtcUserId: Int? = null,
+    )
 
     data class OssEntrypoint(val entrypoint: String, val accessUrl: String, val objectName: String)
+
+    /**
+     * Matrix `RtcHelper.join` pre-step: POST device-rpc/direct wakes the
+     * printer's cloud RTC bridge so it accepts the camera session.
+     */
+    suspend fun deviceRpcPrepare(serial: String): CloudResult<Unit> = withContext(Dispatchers.IO) {
+        if (!auth.tokenUsable()) auth.refreshTokens()
+        try {
+            val json = postRaw(
+                gateway + "/api/v1/device-server/device-rpc/direct",
+                org.json.JSONObject().put("serialNo", serial).put("data", ""),
+                authed = true,
+            )
+            if (isSuccess(json)) CloudResult.Ok(Unit)
+            else CloudResult.Err(json.optString("msg", "device-rpc/direct failed"))
+        } catch (e: Exception) {
+            CloudResult.Err(e.message ?: "device-rpc/direct failed")
+        }
+    }
 
     suspend fun getAgoraCredential(): CloudResult<AgoraCredential> = withContext(Dispatchers.IO) {
         if (!auth.tokenUsable()) auth.refreshTokens()
@@ -381,7 +464,9 @@ class ElegooCloudClient(
             if (userId.isBlank() || rtmUserId.isBlank() || rtmToken.isBlank()) {
                 return@withContext CloudResult.Err("agora: incomplete credential")
             }
-            CloudResult.Ok(AgoraCredential(userId, rtmUserId, rtmToken))
+            val rtcToken = token.optString("rtcToken", "").takeIf { it.isNotBlank() }
+            val rtcUserId = token.optInt("rtcUserId", 0).takeIf { it != 0 }
+            CloudResult.Ok(AgoraCredential(userId, rtmUserId, rtmToken, rtcToken, rtcUserId))
         } catch (e: Exception) {
             CloudResult.Err(e.message ?: "agora token failed")
         }

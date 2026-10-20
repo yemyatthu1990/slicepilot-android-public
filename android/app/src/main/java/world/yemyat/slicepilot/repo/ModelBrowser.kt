@@ -50,6 +50,11 @@ data class SourceSection(
     val source: ModelSource,
     val loading: Boolean = false,
     val results: List<ModelListing> = emptyList(),
+    /** Last fetched page (page 1 is loaded by search/loadHome). */
+    val page: Int = 1,
+    /** More pages may exist: the list grid auto-fetches them while scrolling. */
+    val hasMore: Boolean = false,
+    val loadingMore: Boolean = false,
 )
 
 data class BrowseState(
@@ -63,6 +68,8 @@ data class BrowseState(
     val detail: ModelDetail? = null,
     val loadingDetail: Boolean = false,
     val downloadingFile: String? = null,
+    /** File name whose star ("keep in My models") action is downloading. */
+    val favoritingFile: String? = null,
     val downloadProgress: Int = 0,
     val bambuSignedIn: Boolean = false,
     val bambuSigningIn: Boolean = false,
@@ -91,6 +98,7 @@ class ModelBrowser(
     private val prefs: SharedPreferences,
     private val cacheDir: File,
     private val cloudTokenProvider: () -> String? = { null },
+    val favorites: FavoritesStore,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val _state = MutableStateFlow(BrowseState())
@@ -171,22 +179,24 @@ class ModelBrowser(
         if (q.isBlank() && _state.value.hasSearched) loadHome()
     }
 
-    private fun searchSource(source: ModelSource, q: String): List<ModelListing> =
+    private fun searchSource(source: ModelSource, q: String, page: Int = 1): List<ModelListing> =
         when (source) {
-            ModelSource.PRINTABLES -> PrintablesApi.search(q)
+            ModelSource.PRINTABLES -> PrintablesApi.search(q, page)
             ModelSource.THINGIVERSE ->
-                if (thingiverseToken.isBlank()) emptyList() else ThingiverseApi.search(q, thingiverseToken)
-            ModelSource.NEXPRINT -> NexprintApi.search(q)
-            ModelSource.MAKERWORLD -> MakerworldApi.search(q)
+                if (thingiverseToken.isBlank()) emptyList()
+                else ThingiverseApi.search(q, thingiverseToken, page)
+            ModelSource.NEXPRINT -> NexprintApi.search(q, page)
+            ModelSource.MAKERWORLD -> MakerworldApi.search(q, page, bambuToken.takeIf { it.isNotBlank() })
         }
 
-    private fun popularSource(source: ModelSource): List<ModelListing> =
+    private fun popularSource(source: ModelSource, page: Int = 1): List<ModelListing> =
         when (source) {
-            ModelSource.PRINTABLES -> PrintablesApi.popular()
+            ModelSource.PRINTABLES -> PrintablesApi.popular(page)
             ModelSource.THINGIVERSE ->
-                if (thingiverseToken.isBlank()) emptyList() else ThingiverseApi.popular(thingiverseToken)
-            ModelSource.NEXPRINT -> NexprintApi.popular()
-            ModelSource.MAKERWORLD -> MakerworldApi.popular()
+                if (thingiverseToken.isBlank()) emptyList()
+                else ThingiverseApi.popular(thingiverseToken, page)
+            ModelSource.NEXPRINT -> NexprintApi.popular(page)
+            ModelSource.MAKERWORLD -> MakerworldApi.popular(page, bambuToken.takeIf { it.isNotBlank() })
         }
 
     /**
@@ -197,7 +207,9 @@ class ModelBrowser(
         val st = _state.value
         if (st.query.isNotBlank()) return
         val cached = ModelSource.entries.mapNotNull { src ->
-            resultsCache[homeKey(src)]?.let { SourceSection(src, results = it) }
+            resultsCache[homeKey(src)]?.let {
+                SourceSection(src, results = it, hasMore = homeHasMore(src, it))
+            }
         }
         if (cached.isNotEmpty()) {
             _state.value = st.copy(sections = cached, isHomeFeed = true, hasSearched = false, error = null)
@@ -222,7 +234,9 @@ class ModelBrowser(
                         updateSection(src) { null }
                     } else {
                         resultsCache[homeKey(src)] = results
-                        updateSection(src) { SourceSection(src, results = results) }
+                        updateSection(src) {
+                            SourceSection(src, results = results, hasMore = homeHasMore(src, results))
+                        }
                     }
                 }.onFailure {
                     android.util.Log.w("ModelBrowser", "${src.id} popular failed", it)
@@ -241,7 +255,9 @@ class ModelBrowser(
         EventNotifier.trackEvent("model_search", mapOf("sources" to "all", "query" to q))
         // Cached results show instantly; the rest stream in as they arrive.
         val cached = ModelSource.entries.mapNotNull { src ->
-            resultsCache["${src.id}|$q"]?.let { SourceSection(src, results = it) }
+            resultsCache["${src.id}|$q"]?.let {
+                SourceSection(src, results = it, hasMore = it.isNotEmpty())
+            }
         }
         _state.value = st.copy(sections = cached, hasSearched = true, isHomeFeed = false, error = null)
         for (src in ModelSource.entries) {
@@ -260,11 +276,55 @@ class ModelBrowser(
                         updateSection(src) { null } // empty → section disappears
                     } else {
                         resultsCache["${src.id}|$q"] = results
-                        updateSection(src) { SourceSection(src, results = results) }
+                        updateSection(src) {
+                            SourceSection(src, results = results, hasMore = results.isNotEmpty())
+                        }
                     }
                 }.onFailure {
                     android.util.Log.w("ModelBrowser", "${src.id} search failed", it)
                     updateSection(src) { null } // failed → section is hidden
+                }
+            }
+        }
+    }
+
+    /** Feeds with more pages: everything that returned a full first page. */
+    private fun homeHasMore(source: ModelSource, results: List<ModelListing>): Boolean =
+        results.isNotEmpty()
+
+    /** Fetches the next results page for a section and appends it (scroll pagination). */
+    fun loadMore(source: ModelSource) {
+        val st = _state.value
+        val section = st.sections.firstOrNull { it.source == source } ?: return
+        if (section.loading || section.loadingMore || !section.hasMore) return
+        val generation = searchGeneration
+        val page = section.page + 1
+        val q = st.query.trim()
+        val home = st.isHomeFeed
+        updateSection(source) { it?.copy(loadingMore = true) }
+        scope.launch {
+            val outcome: Result<List<ModelListing>> = try {
+                Result.success(
+                    withContext(Dispatchers.IO) {
+                        if (home) popularSource(source, page) else searchSource(source, q, page)
+                    },
+                )
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            if (generation != searchGeneration) return@launch
+            updateSection(source) { cur ->
+                cur ?: return@updateSection null
+                val more = outcome.getOrNull()
+                val merged = if (more == null) cur.results
+                    else cur.results + more.filter { n -> cur.results.none { it.id == n.id } }
+                when {
+                    more.isNullOrEmpty() || merged.size == cur.results.size ->
+                        // Empty, failed, or a repeat of page 1 (sources whose API
+                        // ignores paging): stop, don't spin forever.
+                        cur.copy(loadingMore = false, hasMore = false)
+                    else ->
+                        cur.copy(results = merged, page = page, loadingMore = false)
                 }
             }
         }
@@ -299,6 +359,42 @@ class ModelBrowser(
                 _state.value = _state.value.copy(loadingDetail = false, error = readable(e))
             }
         }
+    }
+
+    /** Keyed on the file name so the star is shared everywhere the file shows
+     * (browse detail, home preview of the loaded model). */
+    fun favoriteKey(detail: ModelDetail, file: ModelFile): String = "file|${file.name}"
+
+    /**
+     * "Keep in My models": download the file and copy it into private storage
+     * so it survives cache eviction, with a thumbnail for the library screen.
+     */
+    fun favoriteFile(detail: ModelDetail, file: ModelFile, onDone: (Boolean) -> Unit) {
+        val key = favoriteKey(detail, file)
+        if (favorites.isFavorited(key)) {
+            onDone(true)
+            return
+        }
+        if (_state.value.favoritingFile != null) return
+        _state.value = _state.value.copy(favoritingFile = file.name, downloadProgress = 0, error = null)
+        scope.launch {
+            try {
+                val path = withContext(Dispatchers.IO) { downloadToCache(file) }
+                val entry = favorites.add(File(path), file.name, detail.listing.source, key, detail.listing.id)
+                favorites.setThumb(entry, detail.listing.thumbnailUrl ?: detail.images.firstOrNull())
+                android.util.Log.i("ModelBrowser", "favorited ${file.name} (${entry.path})")
+                _state.value = _state.value.copy(favoritingFile = null)
+                onDone(true)
+            } catch (e: Exception) {
+                android.util.Log.w("ModelBrowser", "favorite failed", e)
+                _state.value = _state.value.copy(favoritingFile = null, error = readable(e))
+                onDone(false)
+            }
+        }
+    }
+
+    fun unfavoriteFile(key: String) {
+        favorites.entries.value.firstOrNull { it.key == key }?.let { favorites.remove(it.id) }
     }
 
     fun closeDetail() {
@@ -544,15 +640,15 @@ private object PrintablesApi {
         }
     }
 
-    fun search(q: String): List<ModelListing> = querySearch(q, "best_match")
+    fun search(q: String, page: Int = 1): List<ModelListing> = querySearch(q, "best_match", page)
 
     /** Popular prints (empty query + popularity ordering), used for the home feed. */
-    fun popular(): List<ModelListing> = querySearch("", "popular")
+    fun popular(page: Int = 1): List<ModelListing> = querySearch("", "popular", page)
 
-    private fun querySearch(q: String, ordering: String): List<ModelListing> {
+    private fun querySearch(q: String, ordering: String, page: Int = 1): List<ModelListing> {
         val query = """
-            query SearchModels(${'$'}q: String!) {
-              result: searchPrints2(query: ${'$'}q, printType: print, limit: 30, ordering: $ordering) {
+            query SearchModels(${'$'}q: String!, ${'$'}off: Int!) {
+              result: searchPrints2(query: ${'$'}q, printType: print, limit: 30, ordering: $ordering, offset: ${'$'}off) {
                 items {
                   id name slug downloadCount
                   user { publicUsername }
@@ -562,7 +658,7 @@ private object PrintablesApi {
               }
             }
         """.trimIndent()
-        val data = post("SearchModels", query, JSONObject().put("q", q))
+        val data = post("SearchModels", query, JSONObject().put("q", q).put("off", (page - 1) * 30))
         val items = data.getJSONObject("result").getJSONArray("items")
         val out = ArrayList<ModelListing>(items.length())
         for (i in 0 until items.length()) {
@@ -695,11 +791,12 @@ private object ThingiverseApi {
         )
     }
 
-    fun search(q: String, token: String): List<ModelListing> {
+    fun search(q: String, token: String, page: Int = 1): List<ModelListing> {
         // NOTE: /search?q=... is accepted but ignored (always returns the same generic list);
         // the term must go in the path.
         val term = URLEncoder.encode(q, "UTF-8").replace("+", "%20")
-        val url = "$BASE/search/$term?type=things&per_page=30&access_token=" + URLEncoder.encode(token, "UTF-8")
+        val url = "$BASE/search/$term?type=things&per_page=30&page=$page&access_token=" +
+            URLEncoder.encode(token, "UTF-8")
         val json = getJson(url, auth(token))
         val hits = json.optJSONArray("hits") ?: return emptyList()
         val out = ArrayList<ModelListing>(hits.length())
@@ -710,8 +807,9 @@ private object ThingiverseApi {
     }
 
     /** Popular things (the site's home feed). */
-    fun popular(token: String): List<ModelListing> {
-        val url = "$BASE/popular?per_page=30&access_token=" + URLEncoder.encode(token, "UTF-8")
+    fun popular(token: String, page: Int = 1): List<ModelListing> {
+        val url = "$BASE/popular?per_page=30&page=$page&access_token=" +
+            URLEncoder.encode(token, "UTF-8")
         val arr = getJsonArray(url, auth(token))
         val out = ArrayList<ModelListing>(arr.length())
         for (i in 0 until arr.length()) {
@@ -816,15 +914,15 @@ private object NexprintApi {
         }
     }
 
-    fun search(q: String): List<ModelListing> {
+    fun search(q: String, page: Int = 1): List<ModelListing> {
         val url = "$BASE/model-base-info/search?keyword=" + URLEncoder.encode(q, "UTF-8") +
-            "&pageNum=1&pageSize=30"
+            "&pageNo=$page&pageSize=30"
         return parseList(getData(url))
     }
 
     /** Empty keyword returns the site's front-page (popular) model list. */
-    fun popular(): List<ModelListing> {
-        val url = "$BASE/model-base-info/search?keyword=&pageNum=1&pageSize=30"
+    fun popular(page: Int = 1): List<ModelListing> {
+        val url = "$BASE/model-base-info/search?keyword=&pageNo=$page&pageSize=30"
         return parseList(getData(url))
     }
 
@@ -929,6 +1027,7 @@ private object NexprintApi {
  *  IPs; residential/mobile networks pass without a JS challenge. */private object MakerworldApi {
     private const val SITE = "https://makerworld.com"
     private const val GATEWAY = "https://api.bambulab.com/v1/design-service"
+    private const val SEARCH_SERVICE = "https://api.bambulab.com/v1/search-service"
 
     @Volatile private var cookieHeader: String? = null
 
@@ -967,11 +1066,83 @@ private object NexprintApi {
      * Cloudflare/signed-request gates, but the Next.js HTML response embeds the
      * full result list in its flight payload.
      */
-    fun search(q: String): List<ModelListing> =
-        scrape("$SITE/en/search/models?keyword=" + URLEncoder.encode(q, "UTF-8") + "&page=1", SEARCH_ENTRY)
+    /**
+     * Keyword search: the Bambu gateway search endpoint (paginates by offset)
+     * when signed in to Bambu; the SSR scrape otherwise, which only has page 1.
+     */
+    fun search(q: String, page: Int = 1, token: String? = null): List<ModelListing> {
+        if (!token.isNullOrBlank()) {
+            runCatching { return searchApi(q, page, token) }
+                .onFailure { android.util.Log.w("Makerworld", "search API failed, falling back to scrape", it) }
+        }
+        return if (page > 1) emptyList() else
+            scrape("$SITE/en/search/models?keyword=" + URLEncoder.encode(q, "UTF-8") + "&page=1", SEARCH_ENTRY)
+    }
 
-    /** Popular models: the "For You" design feed embedded in the home page's SSR payload. */
-    fun popular(): List<ModelListing> = scrape("$SITE/en/", FORYOU_ENTRY)
+    private fun searchApi(q: String, page: Int, token: String): List<ModelListing> {
+        val url = "$GATEWAY/design/search?keyword=" + URLEncoder.encode(q, "UTF-8") +
+            "&sortValue=relevant&sortState=0&type=0&offset=${'$'}{(page - 1) * 30}&limit=30"
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 20_000
+        conn.setRequestProperty("User-Agent", USER_AGENT)
+        conn.setRequestProperty("Authorization", "Bearer $token")
+        try {
+            val code = conn.responseCode
+            if (code !in 200..299) throw IOException("Bambu search returned HTTP $code")
+            return parseDesignHits(conn.inputStream.bufferedReader().use { it.readText() })
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /**
+     * Popular feed: the gateway's Trending nav (offset-paginated) when signed
+     * in to Bambu; the scraped home-page "For You" feed otherwise, page 1 only.
+     */
+    fun popular(page: Int = 1, token: String? = null): List<ModelListing> {
+        if (!token.isNullOrBlank()) {
+            runCatching { return navFeed(page) }
+                .onFailure { android.util.Log.w("Makerworld", "nav feed failed, falling back to scrape", it) }
+        }
+        return if (page > 1) emptyList() else scrape("$SITE/en/", FORYOU_ENTRY)
+    }
+
+    private fun navFeed(page: Int): List<ModelListing> {
+        val url = "$SEARCH_SERVICE/select/design/nav?navKey=Trending&offset=${'$'}{(page - 1) * 30}&limit=30"
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 20_000
+        conn.setRequestProperty("User-Agent", USER_AGENT)
+        try {
+            val code = conn.responseCode
+            if (code !in 200..299) throw IOException("MakerWorld feed returned HTTP $code")
+            return parseDesignHits(conn.inputStream.bufferedReader().use { it.readText() })
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** Shared `{total, hits[]}` design-list shape of the Bambu gateway feeds. */
+    private fun parseDesignHits(text: String): List<ModelListing> {
+        val hits = JSONObject(text).optJSONArray("hits") ?: return emptyList()
+        val out = ArrayList<ModelListing>(hits.length())
+        for (i in 0 until hits.length()) {
+            val o = hits.getJSONObject(i)
+            val id = o.opt("id")?.toString()?.takeIf { it.isNotBlank() && it != "0" } ?: continue
+            out.add(
+                ModelListing(
+                    source = ModelSource.MAKERWORLD.id,
+                    id = id,
+                    name = o.optString("title", "Untitled").ifBlank { "Untitled" },
+                    author = o.optJSONObject("designCreator")?.optString("name", "")?.takeIf { it.isNotBlank() },
+                    thumbnailUrl = o.optString("cover", "").takeIf { it.startsWith("http") },
+                    downloads = o.optInt("downloadCount").takeIf { it > 0 },
+                ),
+            )
+        }
+        return out
+    }
 
     /** Design entry as embedded in the search results flight payload. */
     private val SEARCH_ENTRY =

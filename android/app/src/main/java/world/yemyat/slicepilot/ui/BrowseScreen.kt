@@ -8,12 +8,16 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -22,6 +26,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.StarBorder
+import androidx.compose.material3.IconButton
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -61,6 +68,13 @@ import java.net.URL
 @Composable
 fun BrowseScreen(vm: AppViewModel, browser: ModelBrowser) {
     val st by browser.state.collectAsState()
+    // Listings the user kept ("My models") — cards show a filled star badge.
+    val favEntries by browser.favorites.entries.collectAsState()
+    val favListings = remember(favEntries) {
+        favEntries.mapNotNull { e ->
+            e.listingId.takeIf { it.isNotBlank() }?.let { "${e.source}|$it" }
+        }.toSet()
+    }
     var expandedSource by remember { mutableStateOf<ModelSource?>(null) }
     val focusManager = LocalFocusManager.current
 
@@ -78,6 +92,8 @@ fun BrowseScreen(vm: AppViewModel, browser: ModelBrowser) {
             SourceListScreen(
                 section = section,
                 onBack = { expandedSource = null },
+                favoritedListings = favListings,
+                onLoadMore = { browser.loadMore(src) },
                 onOpen = { browser.openDetail(it) },
             )
             return
@@ -158,7 +174,8 @@ fun BrowseScreen(vm: AppViewModel, browser: ModelBrowser) {
                         SourceSectionBlock(
                             section = section,
                             popular = st.isHomeFeed,
-                            onOpen = { browser.openDetail(it) },
+                            favoritedListings = favListings,
+                onOpen = { browser.openDetail(it) },
                             onSeeMore = { expandedSource = section.source },
                         )
                     }
@@ -187,9 +204,15 @@ fun ModelDetailHost(vm: AppViewModel, browser: ModelBrowser): Boolean {
     }
     if (detail != null) {
         var nexprintSigningIn by rememberSaveable { mutableStateOf(false) }
+        val favEntries by browser.favorites.entries.collectAsState()
         ModelDetailScreen(
             detail = detail,
             downloadingFile = st.downloadingFile,
+            favoritingFile = st.favoritingFile,
+            favoritedKeys = favEntries.map { it.key }.toSet(),
+            fileKey = { f -> browser.favoriteKey(detail, f) },
+            onFavorite = { f -> browser.favoriteFile(detail, f) {} },
+            onUnfavorite = { key -> browser.unfavoriteFile(key) },
             progress = st.downloadProgress,
             bambuSignedIn = st.bambuSignedIn,
             bambuSigningIn = st.bambuSigningIn,
@@ -217,6 +240,7 @@ fun ModelDetailHost(vm: AppViewModel, browser: ModelBrowser): Boolean {
 
 @Composable
 private fun SourceSectionBlock(
+    favoritedListings: Set<String> = emptySet(),
     section: SourceSection,
     popular: Boolean,
     onOpen: (ModelListing) -> Unit,
@@ -251,7 +275,11 @@ private fun SourceSectionBlock(
             section.results.take(4).chunked(2).forEach { rowItems ->
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     rowItems.forEach { item ->
-                        ModelCard(item, Modifier.weight(1f)) { onOpen(item) }
+                        ModelCard(
+                            item,
+                            Modifier.weight(1f),
+                            favorited = "${item.source}|${item.id}" in favoritedListings,
+                        ) { onOpen(item) }
                     }
                     if (rowItems.size == 1) Spacer(Modifier.weight(1f))
                 }
@@ -263,11 +291,25 @@ private fun SourceSectionBlock(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SourceListScreen(
+    favoritedListings: Set<String> = emptySet(),
     section: SourceSection,
     onBack: () -> Unit,
+    onLoadMore: () -> Unit = {},
     onOpen: (ModelListing) -> Unit,
 ) {
     BackHandler(onBack = onBack)
+    // Infinite scroll: near the grid's end, fetch the next page.
+    val gridState = rememberLazyGridState()
+    LaunchedEffect(gridState, section.hasMore, section.loadingMore, section.loading) {
+        snapshotFlow { gridState.layoutInfo }.collect { info ->
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            if (section.hasMore && !section.loadingMore && !section.loading &&
+                info.totalItemsCount > 0 && lastVisible >= info.totalItemsCount - 4
+            ) {
+                onLoadMore()
+            }
+        }
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -281,6 +323,7 @@ private fun SourceListScreen(
         }
     ) { padding ->
         LazyVerticalGrid(
+            state = gridState,
             columns = GridCells.Fixed(2),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -290,7 +333,24 @@ private fun SourceListScreen(
                 .fillMaxSize(),
         ) {
             items(section.results, key = { it.id }) { item ->
-                ModelCard(item) { onOpen(item) }
+                ModelCard(
+                    item,
+                    favorited = "${item.source}|${item.id}" in favoritedListings,
+                ) { onOpen(item) }
+            }
+            if (section.loadingMore) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Row(
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().padding(20.dp),
+                    ) {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Text("Loading more…", fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
         }
     }
@@ -331,7 +391,12 @@ private fun ThingiverseTokenField(browser: ModelBrowser) {
 }
 
 @Composable
-internal fun ModelCard(item: ModelListing, modifier: Modifier = Modifier, onClick: () -> Unit) {
+internal fun ModelCard(
+    item: ModelListing,
+    modifier: Modifier = Modifier,
+    favorited: Boolean = false,
+    onClick: () -> Unit,
+) {
     Card(
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -339,7 +404,22 @@ internal fun ModelCard(item: ModelListing, modifier: Modifier = Modifier, onClic
         modifier = modifier.clickable(onClick = onClick),
     ) {
         Column {
-            RemoteThumbnail(item.thumbnailUrl, Modifier.fillMaxWidth().height(120.dp))
+            Box {
+                RemoteThumbnail(item.thumbnailUrl, Modifier.fillMaxWidth().height(120.dp))
+                if (favorited) {
+                    Icon(
+                        Icons.Filled.Star,
+                        "In My models",
+                        tint = Color(0xFFFFC96B),
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp)
+                            .size(22.dp)
+                            .background(Color(0x99000000), CircleShape)
+                            .padding(3.dp),
+                    )
+                }
+            }
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
                     item.name,
@@ -379,6 +459,11 @@ private fun ModelDetailScreen(
     nexprintSigningIn: Boolean,
     onBack: () -> Unit,
     onDownload: (ModelFile) -> Unit,
+    favoritingFile: String?,
+    favoritedKeys: Set<String>,
+    fileKey: (ModelFile) -> String,
+    onFavorite: (ModelFile) -> Unit,
+    onUnfavorite: (String) -> Unit,
     onBambuSignIn: (String, String) -> Unit,
     onBambuVerify: (String) -> Unit,
     onNexprintSignIn: (String, String) -> Unit,
@@ -680,6 +765,30 @@ private fun ModelDetailScreen(
                                             .height(6.dp)
                                             .clip(RoundedCornerShape(3.dp)),
                                         color = Blue600,
+                                    )
+                                }
+                            }
+                            // Star: keep a permanent copy in "My models" (private
+                            // storage), distinct from downloading to slice now.
+                            val favKey = fileKey(file)
+                            val favorited = favKey in favoritedKeys
+                            IconButton(
+                                onClick = {
+                                    if (favorited) onUnfavorite(favKey) else onFavorite(file)
+                                },
+                                enabled = downloadingFile == null && favoritingFile == null,
+                            ) {
+                                if (favoritingFile == file.name) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        strokeWidth = 2.dp,
+                                    )
+                                } else {
+                                    Icon(
+                                        if (favorited) Icons.Filled.Star else Icons.Outlined.StarBorder,
+                                        if (favorited) "Remove from My models" else "Keep in My models",
+                                        tint = if (favorited) Color(0xFFFFC96B)
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
                             }
