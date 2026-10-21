@@ -55,7 +55,7 @@ class LanPrintManager {
         context: Context,
         gcode: File,
         target: DiscoveredPrinter? = null,
-        slot: PrintSlot? = null,
+        slots: List<PrintSlot> = emptyList(),
         accessCode: String = CC2_DEFAULT_TOKEN,
         onStatus: (String) -> Unit,
     ): CloudResult<Unit> =
@@ -74,7 +74,7 @@ class LanPrintManager {
                 return@withContext CloudResult.Err("Local printing supports Centauri series only (found ${printer.model})")
             }
             if (isCc1Model(printer.model)) {
-                return@withContext printCc1(printer, gcode, slot, onStatus)
+                return@withContext printCc1(printer, gcode, slots, onStatus)
             }
 
             onStatus("Uploading G-code to ${printer.name.ifBlank { printer.ip }}…")
@@ -125,7 +125,7 @@ class LanPrintManager {
                     "file" to gcode.name,
                 ),
             )
-            return@withContext startPrintCc2(printer.ip, printer.serial, gcode.name, slot, token)
+            return@withContext startPrintCc2(printer.ip, printer.serial, gcode.name, slots, token)
         }
 
     private val cc1Http by lazy {
@@ -139,7 +139,7 @@ class LanPrintManager {
     private suspend fun printCc1(
         printer: DiscoveredPrinter,
         gcode: File,
-        slot: PrintSlot?,
+        slots: List<PrintSlot>,
         onStatus: (String) -> Unit,
     ): CloudResult<Unit> {
         onStatus("Uploading G-code to ${printer.name.ifBlank { printer.ip }}…")
@@ -185,7 +185,7 @@ class LanPrintManager {
             .put("Tlp_Switch", 0)
             // Canvas/AMS: map the selected spool; an empty slot_map on a
             // Canvas-equipped CC1 starts the job paused for filament confirm.
-            .put("slot_map", slotMapJson(slot))
+            .put("slot_map", slotMapJson(slots))
         val ok = LanPrintMonitorCC1.oneShotCommand(
             printer.ip, printer.serial, LanPrintMonitorCC1.CMD_START_PRINT, params,
         )
@@ -605,21 +605,15 @@ class LanPrintManager {
 
     // ---------------- CC2 start print (LAN MQTT) ----------------
 
-    private fun slotMapJson(slot: PrintSlot?): org.json.JSONArray {
-        if (slot == null) return org.json.JSONArray()
-        return org.json.JSONArray().put(
-            JSONObject()
-                .put("t", slot.t)
-                .put("canvas_id", slot.canvasId)
-                .put("tray_id", slot.trayId),
-        )
+    private fun slotMapJson(slots: List<PrintSlot>): org.json.JSONArray = org.json.JSONArray().apply {
+        slots.forEach { put(JSONObject().put("t", it.t).put("canvas_id", it.canvasId).put("tray_id", it.trayId)) }
     }
 
     private fun startPrintCc2(
         ip: String,
         serial: String,
         fileName: String,
-        slot: PrintSlot?,
+        slots: List<PrintSlot>,
         token: String,
     ): CloudResult<Unit> {
         val clientId = "1_PC_" + (100000..999999).random()
@@ -683,7 +677,7 @@ class LanPrintManager {
                         .put("printer_check", false)
                         .put("print_layout", "A")
                         .put("bedlevel_force", false)
-                        .put("slot_map", slotMapJson(slot)),
+                        .put("slot_map", slotMapJson(slots)),
                 )
             val message = JSONObject()
                 .put("id", requestIdNum)

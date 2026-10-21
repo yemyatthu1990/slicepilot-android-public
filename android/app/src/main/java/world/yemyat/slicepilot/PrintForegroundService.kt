@@ -43,6 +43,9 @@ class PrintForegroundService : Service() {
         const val ACTION_RESUME = "world.yemyat.slicepilot.print.RESUME"
         const val ACTION_STOP = "world.yemyat.slicepilot.print.STOP"
 
+        /** MainActivity extra carrying a control action when no ViewModel collects [commands]. */
+        const val EXTRA_PRINT_ACTION = "print_action"
+
         private const val RESULT_CHANNEL_ID = "print_result"
         private const val PROGRESS_CHANNEL_ID = "print_progress"
         private const val PROGRESS_NOTIFICATION_ID = 4301
@@ -213,8 +216,22 @@ class PrintForegroundService : Service() {
             }
 
             ACTION_PAUSE, ACTION_RESUME, ACTION_STOP -> {
-                // Notification action buttons: forward to the ViewModel.
-                intent.action?.let { commands.tryEmit(it) }
+                // Notification action buttons: forward to the ViewModel. After a swipe-kill
+                // the ongoing notification survives (the service keeps the process alive)
+                // with no ViewModel collecting the flow: relaunch MainActivity and hand the
+                // action over as an extra (the restored monitor executes it on start).
+                val action = intent.action!!
+                if (commands.subscriptionCount.value > 0) {
+                    commands.tryEmit(action)
+                } else {
+                    runCatching {
+                        startActivity(
+                            Intent(this, MainActivity::class.java)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                .putExtra(EXTRA_PRINT_ACTION, action),
+                        )
+                    }
+                }
             }
         }
         return START_NOT_STICKY
@@ -222,7 +239,16 @@ class PrintForegroundService : Service() {
 
     private fun beginForeground() {
         if (!startedForeground) {
-            if (!notificationsUsable(this)) return // plain started service (see notificationsUsable)
+            if (!notificationsUsable(this)) {
+                // The service was reached through startForegroundService(): bailing out
+                // without startForeground() leaves the promise unresolved and the system
+                // kills the process ~10 s later (ForegroundServiceDidNotStartInTimeException).
+                // stopSelf() cancels the timeout; the monitor then runs as a plain
+                // started service (restarted by the status collector on the next tick
+                // once notifications are re-enabled).
+                stopSelf()
+                return
+            }
             ServiceCompat.startForeground(
                 this,
                 PROGRESS_NOTIFICATION_ID,

@@ -416,6 +416,9 @@ fun extruderCountForProfile(context: android.content.Context, profileName: Strin
                 continue
             }
             val obj = org.json.JSONObject(text)
+            // Canvas ("C") CC1 profile: one nozzle, multiple materials via
+            // mid-print Canvas swaps → model + support filament are selectable.
+            if (obj.optInt("single_extruder_multi_material", 0) == 1) return 2
             val nd = obj.optJSONArray("nozzle_diameter")
             if (nd != null && nd.length() > 0) return nd.length()
         }

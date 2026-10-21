@@ -68,6 +68,7 @@ class SliceForegroundService : Service() {
         const val EXTRA_FILAMENT = "filament"
         const val EXTRA_PROCESS = "process"
         const val EXTRA_OVERRIDES = "overrides"
+        const val EXTRA_SUPPORT_FILAMENT = "support_filament"
         const val EXTRA_OUT_PATH = "out_path"
         const val EXTRA_AUTO_PRINT = "auto_print"
         const val EXTRA_ROT_X = "rot_x"
@@ -96,6 +97,7 @@ class SliceForegroundService : Service() {
             filament: String,
             process: String,
             overrides: String,
+            supportFilament: String = "",
             outPath: String,
             autoPrint: Boolean,
             transform: SliceTransform,
@@ -108,6 +110,7 @@ class SliceForegroundService : Service() {
                 putExtra(EXTRA_FILAMENT, filament)
                 putExtra(EXTRA_PROCESS, process)
                 putExtra(EXTRA_OVERRIDES, overrides)
+                putExtra(EXTRA_SUPPORT_FILAMENT, supportFilament)
                 putExtra(EXTRA_OUT_PATH, outPath)
                 putExtra(EXTRA_AUTO_PRINT, autoPrint)
                 putExtra(EXTRA_ROT_X, transform.rotX)
@@ -137,6 +140,22 @@ class SliceForegroundService : Service() {
             }
         }
 
+        /** Create the notification channels (idempotent; also restores user-deleted ones). */
+        private fun ensureChannels(context: Context) {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(
+                NotificationChannel(CHANNEL_PROGRESS, "Slicing", NotificationManager.IMPORTANCE_LOW).apply {
+                    setShowBadge(false)
+                    description = "Shows slicing progress"
+                },
+            )
+            manager.createNotificationChannel(
+                NotificationChannel(CHANNEL_RESULT, "Slice results", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "Shows slice completion and errors"
+                },
+            )
+        }
+
         /**
          * True when the FGS progress notification can actually be posted. When the user
          * blocks the app's notifications the system refuses the startForeground
@@ -149,17 +168,23 @@ class SliceForegroundService : Service() {
         private fun notificationsUsable(context: Context): Boolean {
             val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
+            // A user-deleted channel reads back null and cannot host the FGS
+            // notification ("Bad notification" crash): recreate it first.
+            if (mgr.getNotificationChannel(CHANNEL_PROGRESS) == null) ensureChannels(context)
             val importance = mgr.getNotificationChannel(CHANNEL_PROGRESS)?.importance
                 ?: NotificationManager.IMPORTANCE_LOW
             return importance != NotificationManager.IMPORTANCE_NONE
         }
 
-        private fun startService(context: Context, intent: Intent) {
-            if (!notificationsUsable(context)) {
+        private fun startService(context: Context, intent: Intent) {            if (!notificationsUsable(context)) {
                 runCatching { context.startService(intent) }
                 return
             }
-            ContextCompat.startForegroundService(context, intent)
+            // Android 12+ throws ForegroundServiceStartNotAllowedException when a
+            // dataSync service is started from the background: slicing then runs as a
+            // plain started service (user-initiated; see notificationsUsable).
+            runCatching { ContextCompat.startForegroundService(context, intent) }
+                .onFailure { runCatching { context.startService(intent) } }
         }
     }
 
@@ -223,6 +248,7 @@ class SliceForegroundService : Service() {
         }
 
         val overrides = intent.getStringExtra(EXTRA_OVERRIDES).orEmpty()
+        val supportFilament = intent.getStringExtra(EXTRA_SUPPORT_FILAMENT).orEmpty()
         val autoPrint = intent.getBooleanExtra(EXTRA_AUTO_PRINT, false)
         val transform = SliceTransform(
             rotX = intent.getFloatExtra(EXTRA_ROT_X, 0f),
@@ -278,6 +304,7 @@ class SliceForegroundService : Service() {
                 filament,
                 process,
                 overrides,
+                supportFilament,
                 outPath,
                 object : NativeLib.SliceCallback {
                     override fun onProgress(step: Int, text: String, percent: Int) {
@@ -482,20 +509,7 @@ class SliceForegroundService : Service() {
         stopAndClear()
     }
 
-    private fun createNotificationChannels() {
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_PROGRESS, "Slicing", NotificationManager.IMPORTANCE_LOW).apply {
-                setShowBadge(false)
-                description = "Shows slicing progress"
-            },
-        )
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_RESULT, "Slice results", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Shows slice completion and errors"
-            },
-        )
-    }
+    private fun createNotificationChannels() = ensureChannels(this)
 
     private fun showProgressNotification(force: Boolean = false) {
         val now = SystemClock.elapsedRealtime()

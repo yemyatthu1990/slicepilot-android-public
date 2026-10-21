@@ -1,7 +1,6 @@
 package world.yemyat.slicepilot
 
 import android.Manifest
-import android.app.ActivityManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -30,14 +29,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.lang.ref.WeakReference
 import world.yemyat.slicepilot.model.ModelParser
 
 class MainActivity : ComponentActivity() {
-
-    companion object {
-        private var activeInstance: WeakReference<MainActivity>? = null
-    }
 
     private lateinit var cloud: ElegooCloudClient
     private lateinit var vm: AppViewModel
@@ -47,29 +41,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val existing = activeInstance?.get()?.takeIf { !it.isFinishing && it !== this }
-        if (existing != null) {
-            existing.handleExternalIntent(intent)
-            try {
-                if (checkSelfPermission(Manifest.permission.REORDER_TASKS) == PackageManager.PERMISSION_GRANTED) {
-                    val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-                    am.moveTaskToFront(existing.taskId, 0)
-                } else {
-                    startActivity(
-                        android.content.Intent(this, MainActivity::class.java)
-                            .addFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                    )
-                }
-            } catch (_: SecurityException) {
-                startActivity(
-                    android.content.Intent(this, MainActivity::class.java)
-                        .addFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                )
-            }
-            finish()
-            return
-        }
-        activeInstance = WeakReference(this)
         NativeLib.init(this)
         TrackingBootstrap.ensure(this)
         EventNotifier.trackEvent("app_opened")
@@ -95,6 +66,7 @@ class MainActivity : ComponentActivity() {
             initialOpenPreviewModelPath = if (openPreview) intent?.getStringExtra("model_path") else null,
             initialOpenPrintMonitor = openPrint,
             initialOpenDeviceStatus = openStatus,
+            initialPrintAction = intent?.getStringExtra(PrintForegroundService.EXTRA_PRINT_ACTION),
         )
         handleIncomingModel(intent)
         maybeRunHeadlessSlice()
@@ -123,6 +95,11 @@ class MainActivity : ComponentActivity() {
         if (intent.getBooleanExtra("open_device_status", false)) {
             vm.openDeviceStatus()
         }
+        when (intent.getStringExtra(PrintForegroundService.EXTRA_PRINT_ACTION)) {
+            PrintForegroundService.ACTION_PAUSE -> vm.pausePrint()
+            PrintForegroundService.ACTION_RESUME -> vm.resumePrint()
+            PrintForegroundService.ACTION_STOP -> vm.stopPrintJob()
+        }
         val data = intent.data
         android.util.Log.i("AuthCallback", "onNewIntent scheme=${intent.scheme} data=$data extras=${intent.extras?.keySet()?.joinToString()}")
         if (data != null) {
@@ -146,13 +123,6 @@ class MainActivity : ComponentActivity() {
             }
         }
         handleIncomingModel(intent)
-    }
-
-    override fun onDestroy() {
-        if (activeInstance?.get() === this) {
-            activeInstance = null
-        }
-        super.onDestroy()
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -204,14 +174,6 @@ class MainActivity : ComponentActivity() {
                 }
             }.start()
         }
-    }
-
-    fun handleExternalIntent(intent: android.content.Intent?) {
-        setIntent(intent)
-        if (intent?.getBooleanExtra("open_preview", false) == true) {
-            vm.openPreviewFromPaths(intent.getStringExtra("gcode_path"), intent.getStringExtra("model_path"))
-        }
-        handleIncomingModel(intent)
     }
 
     @Composable
@@ -487,13 +449,14 @@ class MainActivity : ComponentActivity() {
         val process = intent.getStringExtra("process") ?: return
         val out = intent.getStringExtra("out") ?: File(cacheDir, "headless.gcode").absolutePath
         val filamentColor = intent.getStringExtra("filament_color")
+        val supportFilament = intent.getStringExtra("support_filament") ?: ""
         val overrides = filamentColor?.let { c ->
             val color = if (c.startsWith("#")) c else "#$c"
             "filament_colour=$color\nfilament_multi_colour=$color\n"
         } ?: ""
         android.util.Log.i("SliceCore", "Headless slice start: printer=$printer filament=$filament process=$process")
         val ok = NativeLib.nativeSliceWithOverrides(
-            model, printer, filament, process, overrides, out,
+            model, printer, filament, process, overrides, supportFilament, out,
             object : NativeLib.SliceCallback {
                 override fun onProgress(step: Int, text: String, percent: Int) {
                     android.util.Log.i("SliceCore", "Headless progress $percent%: $text")

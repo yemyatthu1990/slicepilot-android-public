@@ -280,6 +280,30 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
                 LOGE("Failed to apply overrides: %s", e.what());
             }
         }
+        // ToolOrdering (flush-optimal nozzle assignment) indexes the flush
+        // matrix as filaments*filaments per nozzle; a dual-extruder support
+        // spool is appended as filament preset #2 (nativeSliceWithOverrides),
+        // which leaves the base preset's matrix undersized and crashes the
+        // slice. Resize (tile) it to shape.
+        const size_t n_active = g_preset_bundle ? g_preset_bundle->filament_presets.size() : 1;
+        if (n_active > 1) {
+            const size_t heads = config.option<ConfigOptionFloats>("nozzle_diameter")
+                ? std::max<size_t>(1, config.option<ConfigOptionFloats>("nozzle_diameter")->values.size()) : 1;
+            auto* mult = config.option<ConfigOptionFloats>("flush_multiplier");
+            std::vector<double> mults = mult ? mult->values : std::vector<double>{};
+            mults.resize(heads, 1.0);
+            config.set_key_value("flush_multiplier", new ConfigOptionFloats(mults));
+            auto* mat = config.option<ConfigOptionFloats>("flush_volumes_matrix");
+            std::vector<double> src = mat ? mat->values : std::vector<double>{};
+            const size_t need = n_active * n_active * heads;
+            if (src.size() != need) {
+                std::vector<double> fixed(need, 0.0);
+                if (!src.empty())
+                    for (size_t i = 0; i < need; ++i) fixed[i] = src[i % src.size()];
+                config.set_key_value("flush_volumes_matrix", new ConfigOptionFloats(fixed));
+                LOGI("Resized flush_volumes_matrix to %zu (%zu filaments x %zu nozzles)", need, n_active, heads);
+            }
+        }
         clamp_filament_selection(config);
         Vec3d bedCenter = bed_center_from_config(config);
         LOGI("Bed center: x=%.3f y=%.3f", bedCenter.x(), bedCenter.y());
@@ -558,12 +582,14 @@ JNIEXPORT jboolean JNICALL
 Java_world_yemyat_slicepilot_NativeLib_nativeSliceWithOverrides(JNIEnv *env, jclass, jstring modelPath,
                                                         jstring printerName, jstring filamentName,
                                                         jstring processName, jstring overridesIni,
+                                                        jstring supportFilamentName,
                                                         jstring outPath, jobject callback) {
     std::string model = jstring_to_string(env, modelPath);
     std::string printer = jstring_to_string(env, printerName);
     std::string filament = jstring_to_string(env, filamentName);
     std::string process = jstring_to_string(env, processName);
     std::string overrides = jstring_to_string(env, overridesIni);
+    std::string support_filament = supportFilamentName ? jstring_to_string(env, supportFilamentName) : "";
     std::string out = jstring_to_string(env, outPath);
 
     if (!g_preset_bundle) {
@@ -583,6 +609,17 @@ Java_world_yemyat_slicepilot_NativeLib_nativeSliceWithOverrides(JNIEnv *env, jcl
             return JNI_FALSE;
         }
         g_preset_bundle->filament_presets = { g_preset_bundle->filaments.get_selected_preset_name() };
+        // Dual-extruder support material (CC2): the support spool becomes filament
+        // #2, which the engine maps to nozzle 2; the machine profile's
+        // change_filament_gcode (M6211 + T1) performs the Canvas swap.
+        if (!support_filament.empty() && support_filament != filament) {
+            if (g_preset_bundle->filaments.select_preset_by_name(support_filament, true)) {
+                g_preset_bundle->filament_presets.push_back(support_filament);
+                LOGI("Dual-material slice: support filament #2 = %s", support_filament.c_str());
+            } else {
+                LOGE("Support filament preset not found: %s", support_filament.c_str());
+            }
+        }
         config = g_preset_bundle->full_config();
     } catch (const std::exception &e) {
         set_error(std::string("Slice config failed: ") + e.what());

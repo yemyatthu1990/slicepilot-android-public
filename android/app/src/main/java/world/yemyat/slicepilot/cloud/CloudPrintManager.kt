@@ -100,7 +100,7 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
     suspend fun print(
         printer: CloudPrinter,
         gcode: File,
-        slot: PrintSlot? = null,
+        slots: List<PrintSlot> = emptyList(),
         onStatus: (String) -> Unit,
     ): CloudResult<Unit> =
         withContext(Dispatchers.IO) {
@@ -171,7 +171,7 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
                                 .put("printer_check", false)
                                 .put("print_layout", "A")
                                 .put("bedlevel_force", false)
-                                .put("slot_map", slotMapJson(slot)),
+                                .put("slot_map", slotMapJson(slots)),
                         ),
                     20_000,
                 )
@@ -253,13 +253,8 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
             }
         }
 
-    private fun slotMapJson(slot: PrintSlot?): JSONArray {        if (slot == null) return JSONArray()
-        return JSONArray().put(
-            JSONObject()
-                .put("t", slot.t)
-                .put("canvas_id", slot.canvasId)
-                .put("tray_id", slot.trayId),
-        )
+    private fun slotMapJson(slots: List<PrintSlot>): JSONArray = JSONArray().apply {
+        slots.forEach { put(JSONObject().put("t", it.t).put("canvas_id", it.canvasId).put("tray_id", it.trayId)) }
     }
 
     private fun send(channel: String, method: Int, params: JSONObject, timeoutMs: Long): Res {

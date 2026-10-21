@@ -40,6 +40,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -106,6 +107,23 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.spacedBy(20.dp),
             ) {
                 Spacer(Modifier.height(8.dp))
+
+                // Print in progress (started by this app, e.g. before a swipe-away):
+                // the monitor is restored at startup, so this banner shows live
+                // status like the download bar. Tap opens the print monitor.
+                val printStatus by vm.printStatus.collectAsState()
+                printStatus?.let { st ->
+                    if (st.live && st.state in setOf(
+                            world.yemyat.slicepilot.cloud.PrintJobState.CONNECTING,
+                            world.yemyat.slicepilot.cloud.PrintJobState.PRINTING,
+                            world.yemyat.slicepilot.cloud.PrintJobState.PAUSING,
+                            world.yemyat.slicepilot.cloud.PrintJobState.PAUSED,
+                            world.yemyat.slicepilot.cloud.PrintJobState.RESUMING,
+                        )
+                    ) {
+                        PrintInProgressBanner(status = st, onClick = { vm.openPrintMonitor() })
+                    }
+                }
 
                 // Header: wordmark + actions, one compact row.
                 Row(
@@ -780,4 +798,105 @@ fun ModelPreviewCanvas(
         }
     }
     AndroidView(factory = { controller }, modifier = modifier)
+}
+
+/**
+ * Home banner for a live print (started via this app): state, progress, file and
+ * remaining time; tapping opens the print monitor screen. Styled like the
+ * model-download banner in Browse.
+ */
+@Composable
+private fun PrintInProgressBanner(
+    status: world.yemyat.slicepilot.cloud.PrintStatus,
+    onClick: () -> Unit,
+) {
+    val title = when (status.state) {
+        world.yemyat.slicepilot.cloud.PrintJobState.PAUSED -> "Print paused"
+        world.yemyat.slicepilot.cloud.PrintJobState.PAUSING -> "Pausing…"
+        world.yemyat.slicepilot.cloud.PrintJobState.RESUMING -> "Resuming…"
+        world.yemyat.slicepilot.cloud.PrintJobState.CONNECTING -> "Connecting to printer…"
+        else -> "Printing"
+    }
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.primaryContainer,
+        tonalElevation = 4.dp,
+        shadowElevation = 4.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    Icons.Filled.Print,
+                    null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Text(
+                    title,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Spacer(Modifier.weight(1f))
+                if (status.progress in 1..100) {
+                    Text(
+                        "${status.progress}%",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+            }
+            val detail = buildString {
+                if (status.filename.isNotBlank()) append(status.filename)
+                if (status.currentLayer > 0 && status.totalLayer > 0) {
+                    if (isNotEmpty()) append(" · ")
+                    append("Layer ${status.currentLayer}/${status.totalLayer}")
+                }
+                val rem = status.remainingSec
+                if (rem != null && rem > 0) {
+                    if (isNotEmpty()) append(" · ")
+                    append(
+                        if (rem >= 3600) "${rem / 3600}h ${(rem % 3600) / 60}m left"
+                        else "${rem / 60}m left",
+                    )
+                }
+            }
+            if (detail.isNotBlank()) {
+                Text(
+                    detail,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (status.state == world.yemyat.slicepilot.cloud.PrintJobState.CONNECTING) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                )
+            } else {
+                LinearProgressIndicator(
+                    progress = { (status.progress / 100f).coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                )
+            }
+        }
+    }
 }

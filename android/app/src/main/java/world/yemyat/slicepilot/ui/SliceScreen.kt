@@ -34,7 +34,6 @@ fun SliceScreen(vm: AppViewModel) {
     val printer by vm.selectedPrinterState.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     val nozzle by vm.selectedNozzle.collectAsState()
-    val extruderCount = remember(config.printer) { extruderCountForProfile(context, config.printer ?: "") }
     val materialLabel = remember(material) {
         material?.let { vm.printSetupMaterials().firstOrNull { o -> o.key == it }?.label } ?: "—"
     }
@@ -112,27 +111,31 @@ fun SliceScreen(vm: AppViewModel) {
                                 label = { Text("Trees") },
                             )
                         }
-                        Text("Support filament", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (extruderCount <= 1) {
+                        Text("Support material", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (!vm.supportMaterialAvailable()) {
                             Text(
                                 "Same as model (single extruder)",
                                 fontSize = 14.sp,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
                         } else {
-                            val opts = listOf("Same as model") + (1 until extruderCount).map { "Extruder ${it + 1}" }
-                            val selected = when (config.supportFilament) {
-                                null -> "Same as model"
-                                else -> "Extruder ${(config.supportFilament!!.toIntOrNull() ?: 0) + 1}"
-                            }
+                            // CC2 (dual nozzle) / CC1 + Canvas: supports can print
+                            // from a separate filament; the app switches the
+                            // machine profile to the matching multi-material variant.
+                            val materials = remember(config.printer, printer) { vm.printSetupMaterials() }
+                            fun labelOf(o: MaterialOption) =
+                                if (o.trayId != null) "${o.label} · Tray ${o.trayId + 1}" else o.label
+                            val opts = listOf<MaterialOption?>(null) + materials
+                            val labels = listOf("Same as model") + materials.map(::labelOf)
+                            val selected = config.supportFilamentPreset?.let { p ->
+                                materials.indexOfFirst { it.profile == p && it.trayId == config.supportFilamentTrayId }
+                                    .takeIf { it >= 0 }?.let { labels[it + 1] }
+                            } ?: "Same as model"
                             SliceDropdown(
-                                options = opts,
+                                options = labels,
                                 selected = selected,
                                 onSelect = { label ->
-                                    vm.setSupportFilament(
-                                        if (label == "Same as model") null
-                                        else label.filter { it.isDigit() }.let { if (it.isEmpty()) null else (it.toInt() - 1).toString() }
-                                    )
+                                    vm.setSupportMaterial(opts.getOrNull(labels.indexOf(label)))
                                 },
                             )
                         }

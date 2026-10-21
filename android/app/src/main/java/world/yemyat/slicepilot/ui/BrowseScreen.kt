@@ -820,6 +820,9 @@ private val thumbnailCache = object : android.util.LruCache<String, ImageBitmap>
         (value as? android.graphics.Bitmap)?.byteCount ?: 0
 }
 
+/** Cap for downloaded images; larger responses are dropped (an unbounded readBytes() OOMed). */
+private const val MAX_IMAGE_BYTES = 16L * 1024 * 1024
+
 /** Fetches and decodes an image, downsampled so its larger side is around [maxDim] pixels. */
 private fun loadBitmap(url: String, maxDim: Int): ImageBitmap? {
     val key = "$maxDim|$url"
@@ -832,7 +835,25 @@ private fun loadBitmap(url: String, maxDim: Int): ImageBitmap? {
         conn.setRequestProperty("User-Agent", "Mozilla/5.0 SlicePilot/1.0")
         try {
             if (conn.responseCode !in 200..299) return null
-            val bytes = conn.inputStream.use { it.readBytes() }
+            // Bounded read: MakerWorld originals can be tens of MB; the growth of an
+            // unbounded readBytes() allocation chain killed the app with a 256 MB heap.
+            val bytes = conn.inputStream.use { input ->
+                val out = java.io.ByteArrayOutputStream(64 * 1024)
+                val chunk = ByteArray(64 * 1024)
+                var total = 0L
+                var exceeded = false
+                while (true) {
+                    val n = input.read(chunk)
+                    if (n < 0) break
+                    total += n
+                    if (total > MAX_IMAGE_BYTES) {
+                        exceeded = true
+                        break
+                    }
+                    out.write(chunk, 0, n)
+                }
+                if (exceeded) null else out.toByteArray()
+            } ?: return null
             val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
             android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             var sample = 1

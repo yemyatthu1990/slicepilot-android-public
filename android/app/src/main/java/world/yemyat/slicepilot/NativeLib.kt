@@ -48,15 +48,23 @@ object NativeLib {
 
     private fun ensureProfilesCopied(context: Context, resDir: String, dataDir: String) {
         // resources_dir()/profiles is used by find_preset_vendor() and load_system_models_from_json().
-        copyProfilesOnce(context, File(resDir, "profiles"))
+        copyProfilesTo(context, File(resDir, "profiles"))
         // data_dir()/system is the canonical system preset location read by load_system_presets_from_json().
-        copyProfilesOnce(context, File(dataDir, "system"))
+        copyProfilesTo(context, File(dataDir, "system"))
     }
 
-    private fun copyProfilesOnce(context: Context, dest: File) {
-        if (dest.exists() && (dest.list()?.isNotEmpty() == true)) return
+    private fun copyProfilesTo(context: Context, dest: File) {
+        // Re-sync the bundled presets whenever the app updates: a one-time copy
+        // never delivers profiles added by a release (new machine types, dual-
+        // nozzle / Canvas variants) to upgrading installs.
+        val version = try {
+            context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode.toString()
+        } catch (e: Exception) { "0" }
+        val stamp = File(dest, ".presets-version")
+        if (runCatching { stamp.readText() }.getOrNull() == version) return
         dest.mkdirs()
         copyAssetDir(context.assets, "profiles", dest)
+        runCatching { stamp.writeText(version) }
     }
 
     private fun copyAssetDir(assets: android.content.res.AssetManager, assetPath: String, dest: File) {
@@ -100,6 +108,7 @@ object NativeLib {
         filamentName: String,
         processName: String,
         overridesIni: String,
+        supportFilamentName: String,
         outPath: String,
         callback: SliceCallback
     ): Boolean
