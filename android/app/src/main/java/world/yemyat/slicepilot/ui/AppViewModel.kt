@@ -705,6 +705,25 @@ class AppViewModel(
         if (!printMonitorActive) stopPrintMonitoring()
     }
 
+    /**
+     * App foregrounded: re-establish the print status the home banner shows.
+     * Backgrounding stops the idle monitor (onAppBackgrounded), and the init-time
+     * probe runs only once per process, so without this the banner disappears
+     * after a background/foreground round-trip. Mirrors the init-time logic:
+     * restore a known session, else probe the selected printer for prints
+     * started outside the app (Matrix, cloud).
+     */
+    fun onAppForegrounded() {
+        if (printMonitorActive || _demoMode.value) return
+        viewModelScope.launch {
+            if (prefs.getBoolean("print_session_active", false)) {
+                restorePrintSession(switchScreen = false)
+            } else {
+                probeSelectedPrinterStatus()
+            }
+        }
+    }
+
     /** Method 1028: manual nozzle target (°C; 0 = heater off). */
     fun setNozzleTarget(tempC: Int) = setPrinterTemperature(extruder = tempC, bed = null)
 

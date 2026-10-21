@@ -37,14 +37,31 @@ class MainActivity : ComponentActivity() {
     private lateinit var vm: AppViewModel
 
     private val notificationPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            // The system prompt has been seen (grant or deny): stop showing the
+            // rationale dialog; users who chose "Not now" keep seeing it until
+            // the system prompt appears.
+            getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE).edit()
+                .putBoolean("notifications_asked", true).apply()
+            if (!granted) {
+                getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE).edit()
+                    .putBoolean("notifications_denied", true).apply()
+            }
+        }
+
+    /** First launch on Android 13+ with notifications not granted and the system
+     *  prompt never shown: lead with a rationale dialog before asking. */
+    private fun needsNotificationRationale(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+            !getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE)
+                .getBoolean("notifications_asked", false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         NativeLib.init(this)
         TrackingBootstrap.ensure(this)
         EventNotifier.trackEvent("app_opened")
-        requestNotificationPermissionIfNeeded()
         cloud = ElegooCloudClient(this)
         val openPreview = intent?.getBooleanExtra("open_preview", false) == true
         // Any print-related notification tap lands on the device status screen.
@@ -125,13 +142,7 @@ class MainActivity : ComponentActivity() {
         handleIncomingModel(intent)
     }
 
-    private fun requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
-    }
+
 
     private fun handleIncomingModel(intent: android.content.Intent?) {
         if (intent == null) return
@@ -188,6 +199,7 @@ class MainActivity : ComponentActivity() {
         var showConfigure by remember { mutableStateOf(false) }
         var fullscreen by remember { mutableStateOf(false) }
         var showModelSource by remember { mutableStateOf(false) }
+        var showNotifRationale by remember { mutableStateOf(needsNotificationRationale()) }
         val favorites = remember { world.yemyat.slicepilot.repo.FavoritesStore(this) }
         val browser = remember {
             world.yemyat.slicepilot.repo.ModelBrowser(
@@ -207,6 +219,7 @@ class MainActivity : ComponentActivity() {
                 if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                     EventNotifier.trackEvent("app_resumed")
                     vm.checkSession()
+                    vm.onAppForegrounded()
                 } else if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
                     EventNotifier.trackEvent("app_backgrounded")
                     vm.onAppBackgrounded()
@@ -338,6 +351,18 @@ class MainActivity : ComponentActivity() {
                         modelPicker.launch(arrayOf("*/*"))
                     }) { androidx.compose.material3.Text("Choose a file") }
                 },
+            )
+        }
+
+        // Rationale before the Android 13+ notification prompt: explain the value,
+        // then ask — a bare system dialog on first launch gets reflexively denied.
+        if (showNotifRationale) {
+            world.yemyat.slicepilot.ui.components.NotificationRationaleDialog(
+                onAllow = {
+                    showNotifRationale = false
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                },
+                onNotNow = { showNotifRationale = false },
             )
         }
 
