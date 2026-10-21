@@ -1022,9 +1022,12 @@ private object NexprintApi {
     }
 }
 
-/** MakerWorld (makerworld.com, by Bambu Lab) GraphQL API. Mirrors the web frontend:
- *  CSRF cookie handshake, then POSTs to /en/api/graphql. Cloudflare blocks datacenter
- *  IPs; residential/mobile networks pass without a JS challenge. */private object MakerworldApi {
+/** MakerWorld (makerworld.com, by Bambu Lab) access. Primary route is the Bambu
+ *  gateway Bambu Handy itself uses (`api.bambulab.com/v1/search-service/...`,
+ *  offset-paginated, anonymous; Bambu bearer token attached when signed in).
+ *  Scraping the web frontend mirrors it: CSRF cookie handshake, then reading
+ *  the Next.js flight payload. Cloudflare blocks datacenter IPs; residential/mobile
+ *  networks pass without a JS challenge. */private object MakerworldApi {
     private const val SITE = "https://makerworld.com"
     private const val GATEWAY = "https://api.bambulab.com/v1/design-service"
     private const val SEARCH_SERVICE = "https://api.bambulab.com/v1/search-service"
@@ -1067,10 +1070,14 @@ private object NexprintApi {
      * full result list in its flight payload.
      */
     /**
-     * Keyword search: the Bambu gateway search endpoint (paginates by offset)
-     * when signed in to Bambu; the SSR scrape otherwise, which only has page 1.
+     * Keyword search: the gateway design search Bambu Handy uses
+     * (`search-service/select/design2`, offset-paginated, works anonymously),
+     * then the signed-in `design-service/design/search`, and the SSR scrape
+     * (page 1 only) as the last resort.
      */
     fun search(q: String, page: Int = 1, token: String? = null): List<ModelListing> {
+        runCatching { return designSearch(q, page, token) }
+            .onFailure { android.util.Log.w("Makerworld", "design2 search failed", it) }
         if (!token.isNullOrBlank()) {
             runCatching { return searchApi(q, page, token) }
                 .onFailure { android.util.Log.w("Makerworld", "search API failed, falling back to scrape", it) }
@@ -1079,9 +1086,28 @@ private object NexprintApi {
             scrape("$SITE/en/search/models?keyword=" + URLEncoder.encode(q, "UTF-8") + "&page=1", SEARCH_ENTRY)
     }
 
+    /** `search-service/select/design2` — Bambu Handy's design search; offset-paginated. */
+    private fun designSearch(q: String, page: Int, token: String?): List<ModelListing> {
+        val url = "$SEARCH_SERVICE/select/design2?keyword=" + URLEncoder.encode(q, "UTF-8") +
+            "&offset=${(page - 1) * 30}&limit=30"
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 20_000
+        conn.setRequestProperty("User-Agent", USER_AGENT)
+        token?.let { conn.setRequestProperty("Authorization", "Bearer $it") }
+        try {
+            val code = conn.responseCode
+            if (code !in 200..299)
+                throw IOException("MakerWorld search returned HTTP $code " + conn.errorStream?.bufferedReader()?.use { it.readText().take(200) })
+            return parseDesignHits(conn.inputStream.bufferedReader().use { it.readText() })
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     private fun searchApi(q: String, page: Int, token: String): List<ModelListing> {
         val url = "$GATEWAY/design/search?keyword=" + URLEncoder.encode(q, "UTF-8") +
-            "&sortValue=relevant&sortState=0&type=0&offset=${'$'}{(page - 1) * 30}&limit=30"
+            "&sortValue=relevant&sortState=0&type=0&offset=${(page - 1) * 30}&limit=30"
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 15_000
         conn.readTimeout = 20_000
@@ -1097,26 +1123,27 @@ private object NexprintApi {
     }
 
     /**
-     * Popular feed: the gateway's Trending nav (offset-paginated) when signed
-     * in to Bambu; the scraped home-page "For You" feed otherwise, page 1 only.
+     * Popular feed: the gateway's Trending nav (offset-paginated, works
+     * anonymously) that Bambu Handy browses; the scraped home-page "For You"
+     * feed (page 1 only) as fallback.
      */
     fun popular(page: Int = 1, token: String? = null): List<ModelListing> {
-        if (!token.isNullOrBlank()) {
-            runCatching { return navFeed(page) }
-                .onFailure { android.util.Log.w("Makerworld", "nav feed failed, falling back to scrape", it) }
-        }
+        runCatching { return navFeed(page, token) }
+            .onFailure { android.util.Log.w("Makerworld", "nav feed failed, falling back to scrape", it) }
         return if (page > 1) emptyList() else scrape("$SITE/en/", FORYOU_ENTRY)
     }
 
-    private fun navFeed(page: Int): List<ModelListing> {
-        val url = "$SEARCH_SERVICE/select/design/nav?navKey=Trending&offset=${'$'}{(page - 1) * 30}&limit=30"
+    private fun navFeed(page: Int, token: String?): List<ModelListing> {
+        val url = "$SEARCH_SERVICE/select/design/nav?navKey=Trending&offset=${(page - 1) * 30}&limit=30"
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 15_000
         conn.readTimeout = 20_000
         conn.setRequestProperty("User-Agent", USER_AGENT)
+        token?.let { conn.setRequestProperty("Authorization", "Bearer $it") }
         try {
             val code = conn.responseCode
-            if (code !in 200..299) throw IOException("MakerWorld feed returned HTTP $code")
+            if (code !in 200..299)
+                throw IOException("MakerWorld feed returned HTTP $code " + conn.errorStream?.bufferedReader()?.use { it.readText().take(200) })
             return parseDesignHits(conn.inputStream.bufferedReader().use { it.readText() })
         } finally {
             conn.disconnect()
