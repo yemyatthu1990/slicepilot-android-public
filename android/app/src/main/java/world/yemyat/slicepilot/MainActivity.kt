@@ -11,28 +11,31 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import world.yemyat.slicepilot.cloud.ElegooCloudClient
-import world.yemyat.slicepilot.tracking.EventNotifier
-import world.yemyat.slicepilot.tracking.TrackingBootstrap
-import world.yemyat.slicepilot.ui.*
-import world.yemyat.slicepilot.ui.components.SpiritedBackground
-import world.yemyat.slicepilot.ui.theme.ElegooSlicerTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
+import world.yemyat.slicepilot.cloud.ElegooCloudClient
 import world.yemyat.slicepilot.model.ModelParser
+import world.yemyat.slicepilot.tracking.EventNotifier
+import world.yemyat.slicepilot.tracking.TrackingBootstrap
+import world.yemyat.slicepilot.ui.*
+import world.yemyat.slicepilot.ui.components.AddPrinterDialog
+import world.yemyat.slicepilot.ui.components.QrScannerDialog
+import world.yemyat.slicepilot.ui.components.SpiritedBackground
+import world.yemyat.slicepilot.ui.theme.ElegooSlicerTheme
+import java.io.File
 
 class MainActivity : ComponentActivity() {
-
     private lateinit var cloud: ElegooCloudClient
     private lateinit var vm: AppViewModel
 
@@ -41,11 +44,15 @@ class MainActivity : ComponentActivity() {
             // The system prompt has been seen (grant or deny): stop showing the
             // rationale dialog; users who chose "Not now" keep seeing it until
             // the system prompt appears.
-            getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE).edit()
-                .putBoolean("notifications_asked", true).apply()
+            getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean("notifications_asked", true)
+                .apply()
             if (!granted) {
-                getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE).edit()
-                    .putBoolean("notifications_denied", true).apply()
+                getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean("notifications_denied", true)
+                    .apply()
             }
         }
 
@@ -69,22 +76,24 @@ class MainActivity : ComponentActivity() {
         // itself routes there too (covers the icon tap during printing as well).
         val openPrint = intent?.getBooleanExtra("open_print_monitor", false) == true
         val prefs = getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE)
-        val openStatus = intent?.getBooleanExtra("open_device_status", false) == true ||
-            prefs.getBoolean("print_session_active", false) ||
-            prefs.getBoolean("pending_device_status", false).also {
-                if (it) prefs.edit().remove("pending_device_status").apply()
-            }
-        vm = AppViewModel(
-            cloud = cloud,
-            cacheDir = cacheDir,
-            prefs = getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE),
-            context = this,
-            initialOpenPreviewGcodePath = if (openPreview) intent?.getStringExtra("gcode_path") else null,
-            initialOpenPreviewModelPath = if (openPreview) intent?.getStringExtra("model_path") else null,
-            initialOpenPrintMonitor = openPrint,
-            initialOpenDeviceStatus = openStatus,
-            initialPrintAction = intent?.getStringExtra(PrintForegroundService.EXTRA_PRINT_ACTION),
-        )
+        val openStatus =
+            intent?.getBooleanExtra("open_device_status", false) == true ||
+                prefs.getBoolean("print_session_active", false) ||
+                prefs.getBoolean("pending_device_status", false).also {
+                    if (it) prefs.edit().remove("pending_device_status").apply()
+                }
+        vm =
+            AppViewModel(
+                cloud = cloud,
+                cacheDir = cacheDir,
+                prefs = getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE),
+                context = this,
+                initialOpenPreviewGcodePath = if (openPreview) intent?.getStringExtra("gcode_path") else null,
+                initialOpenPreviewModelPath = if (openPreview) intent?.getStringExtra("model_path") else null,
+                initialOpenPrintMonitor = openPrint,
+                initialOpenDeviceStatus = openStatus,
+                initialPrintAction = intent?.getStringExtra(PrintForegroundService.EXTRA_PRINT_ACTION),
+            )
         handleIncomingModel(intent)
         maybeRunHeadlessSlice()
         setContent {
@@ -118,7 +127,10 @@ class MainActivity : ComponentActivity() {
             PrintForegroundService.ACTION_STOP -> vm.stopPrintJob()
         }
         val data = intent.data
-        android.util.Log.i("AuthCallback", "onNewIntent scheme=${intent.scheme} data=$data extras=${intent.extras?.keySet()?.joinToString()}")
+        android.util.Log.i(
+            "AuthCallback",
+            "onNewIntent scheme=${intent.scheme} data=$data extras=${intent.extras?.keySet()?.joinToString()}",
+        )
         if (data != null) {
             EventNotifier.trackEvent(
                 "deep_link_received",
@@ -129,9 +141,12 @@ class MainActivity : ComponentActivity() {
                 ),
             )
         }
-        if (data != null && data.scheme != null && data.scheme != "http" && data.scheme != "https" && data.scheme != "content" && data.scheme != "file") {
-            val token = listOf("token", "access_token", "accessToken", "code")
-                .firstNotNullOfOrNull { data.getQueryParameter(it) }
+        if (data != null && data.scheme != null && data.scheme != "http" && data.scheme != "https" && data.scheme != "content" &&
+            data.scheme != "file"
+        ) {
+            val token =
+                listOf("token", "access_token", "accessToken", "code")
+                    .firstNotNullOfOrNull { data.getQueryParameter(it) }
             android.util.Log.i("AuthCallback", "deep-link token=$token")
             if (!token.isNullOrBlank()) {
                 cloud.auth.saveSession(token, intent.getStringExtra("refresh_token"), cloud.auth.nickname, cloud.auth.email)
@@ -142,16 +157,15 @@ class MainActivity : ComponentActivity() {
         handleIncomingModel(intent)
     }
 
-
-
     private fun handleIncomingModel(intent: android.content.Intent?) {
         if (intent == null) return
         val openPreview = intent.getBooleanExtra("open_preview", false)
-        val path = if (openPreview) {
-            null
-        } else {
-            intent.getStringExtra("model_path") ?: intent.getStringExtra("model")
-        }
+        val path =
+            if (openPreview) {
+                null
+            } else {
+                intent.getStringExtra("model_path") ?: intent.getStringExtra("model")
+            }
         if (path != null) {
             val f = File(path)
             if (f.exists()) {
@@ -160,19 +174,36 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        val uri = when (intent.action) {
-            android.content.Intent.ACTION_VIEW -> intent.data ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
-            android.content.Intent.ACTION_SEND -> {
-                val stream = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM, Uri::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra<Uri>(android.content.Intent.EXTRA_STREAM)
+        val uri =
+            when (intent.action) {
+                android.content.Intent.ACTION_VIEW -> {
+                    intent.data ?: intent.clipData
+                        ?.takeIf { it.itemCount > 0 }
+                        ?.getItemAt(0)
+                        ?.uri
                 }
-                stream ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
+
+                android.content.Intent.ACTION_SEND -> {
+                    val stream =
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                            intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM, Uri::class.java)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            intent.getParcelableExtra<Uri>(android.content.Intent.EXTRA_STREAM)
+                        }
+                    stream ?: intent.clipData
+                        ?.takeIf { it.itemCount > 0 }
+                        ?.getItemAt(0)
+                        ?.uri
+                }
+
+                else -> {
+                    intent.data ?: intent.clipData
+                        ?.takeIf { it.itemCount > 0 }
+                        ?.getItemAt(0)
+                        ?.uri
+                }
             }
-            else -> intent.data ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
-        }
 
         if (uri != null && (uri.scheme == "content" || uri.scheme == "file")) {
             Thread {
@@ -193,82 +224,98 @@ class MainActivity : ComponentActivity() {
         val cloudMessage by vm.cloudMessage.collectAsState()
         val slicing by vm.slicing.collectAsState()
         val pendingModelPath by vm.pendingModelPath.collectAsState()
+        val askPrinterForModel by vm.askPrinterForModel.collectAsState()
         val accessCodePrompt by vm.accessCodePrompt.collectAsState()
+        val pairingAttempt by vm.pairingAttempt.collectAsState()
         androidx.activity.compose.BackHandler(enabled = screen != Screen.Home) { vm.goBack() }
         var showConnect by remember { mutableStateOf(false) }
+        var showAddPrinter by remember { mutableStateOf(false) }
+        var showQrScanner by remember { mutableStateOf(false) }
+        // The PIN is the only thing worth typing; the machine line keeps the pcode or serial a scan
+        // read, so the dialog can show which printer pairing would claim. Kept here because the
+        // scanner lives outside the dialog and writes into it.
+        var pairingPcode by remember { mutableStateOf("") }
+        var pairingPincode by remember { mutableStateOf("") }
+        var pairingVia by remember { mutableStateOf("pin") }
         var showConfigure by remember { mutableStateOf(false) }
-        var fullscreen by remember { mutableStateOf(false) }
-        var showModelSource by remember { mutableStateOf(false) }
         var showNotifRationale by remember { mutableStateOf(needsNotificationRationale()) }
-        val favorites = remember { world.yemyat.slicepilot.repo.FavoritesStore(this) }
-        val browser = remember {
-            world.yemyat.slicepilot.repo.ModelBrowser(
-                prefs = getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE),
-                cacheDir = cacheDir,
-                cloudTokenProvider = { cloud.auth.accessToken.takeIf { cloud.auth.isLoggedIn } },
-                favorites = favorites,
-            )
-        }
+        val favorites =
+            remember {
+                world.yemyat.slicepilot.repo
+                    .FavoritesStore(this)
+            }
+        val browser =
+            remember {
+                world.yemyat.slicepilot.repo.ModelBrowser(
+                    prefs = getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE),
+                    cacheDir = cacheDir,
+                    cloudTokenProvider = { cloud.auth.accessToken.takeIf { cloud.auth.isLoggedIn } },
+                    favorites = favorites,
+                )
+            }
         DisposableEffect(browser) { onDispose { browser.dispose() } }
 
         val scope = remember { CoroutineScope(Dispatchers.Main) }
 
         val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
         DisposableEffect(lifecycleOwner) {
-            val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
-                if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                    EventNotifier.trackEvent("app_resumed")
-                    vm.checkSession()
-                    vm.onAppForegrounded()
-                } else if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
-                    EventNotifier.trackEvent("app_backgrounded")
-                    vm.onAppBackgrounded()
+            val obs =
+                androidx.lifecycle.LifecycleEventObserver { _, event ->
+                    if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                        EventNotifier.trackEvent("app_resumed")
+                        vm.checkSession()
+                        vm.onAppForegrounded()
+                    } else if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+                        EventNotifier.trackEvent("app_backgrounded")
+                        vm.onAppBackgrounded()
+                    }
                 }
-            }
             lifecycleOwner.lifecycle.addObserver(obs)
             onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
         }
 
         val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
 
-        val modelPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-            if (uri != null) {
-                val name = queryName(this@MainActivity, uri) ?: uri.lastPathSegment.orEmpty()
-                if (!name.endsWith(".stl", ignoreCase = true) && !name.endsWith(".3mf", ignoreCase = true)) {
-                    scope.launch {
-                        snackbarHostState.showSnackbar("Only STL and 3MF files are supported")
-                    }
-                    return@rememberLauncherForActivityResult
-                }
-                scope.launch {
-                    try {
-                        val f = withContext(Dispatchers.IO) { copyToCache(this@MainActivity, uri) }
-                        vm.onModelPicked(f.absolutePath)
-                    } catch (e: Exception) {
-                        android.util.Log.e("MainActivity", "Failed to import model: $uri", e)
-                        EventNotifier.trackError("model_import_failed", e, mapOf("uri" to uri.toString()))
-                    }
-                }
-            }
-        }
-
-        val gcodeSaver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/x-gcode")) { uri: Uri? ->
-            val path = vm.gcodePath
-            if (uri != null && path != null) {
-                scope.launch {
-                    try {
-                        withContext(Dispatchers.IO) {
-                            contentResolver.openOutputStream(uri)?.use { out ->
-                                File(path).inputStream().use { it.copyTo(out) }
-                            }
+        val modelPicker =
+            rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+                if (uri != null) {
+                    val name = queryName(this@MainActivity, uri) ?: uri.lastPathSegment.orEmpty()
+                    if (!name.endsWith(".stl", ignoreCase = true) && !name.endsWith(".3mf", ignoreCase = true)) {
+                        scope.launch {
+                            snackbarHostState.showSnackbar("Only STL and 3MF files are supported")
                         }
-                    } catch (e: Exception) {
-                        android.util.Log.e("MainActivity", "Failed to save g-code: $uri", e)
-                        EventNotifier.trackError("gcode_save_failed", e, mapOf("uri" to uri.toString()))
+                        return@rememberLauncherForActivityResult
+                    }
+                    scope.launch {
+                        try {
+                            val f = withContext(Dispatchers.IO) { copyToCache(this@MainActivity, uri) }
+                            vm.onModelPicked(f.absolutePath)
+                        } catch (e: Exception) {
+                            android.util.Log.e("MainActivity", "Failed to import model: $uri", e)
+                            EventNotifier.trackError("model_import_failed", e, mapOf("uri" to uri.toString()))
+                        }
                     }
                 }
             }
-        }
+
+        val gcodeSaver =
+            rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/x-gcode")) { uri: Uri? ->
+                val path = vm.gcodePath
+                if (uri != null && path != null) {
+                    scope.launch {
+                        try {
+                            withContext(Dispatchers.IO) {
+                                contentResolver.openOutputStream(uri)?.use { out ->
+                                    File(path).inputStream().use { it.copyTo(out) }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("MainActivity", "Failed to save g-code: $uri", e)
+                            EventNotifier.trackError("gcode_save_failed", e, mapOf("uri" to uri.toString()))
+                        }
+                    }
+                }
+            }
 
         LaunchedEffect(cloudMessage) {
             cloudMessage?.let {
@@ -278,80 +325,95 @@ class MainActivity : ComponentActivity() {
 
         androidx.compose.material3.Scaffold(
             snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
-        ) { _ ->
+            // Each screen draws its own status-bar padding; taking the inset here
+            // too would stack a second status bar of space above every tab.
+            contentWindowInsets = WindowInsets(0),
+            bottomBar = { AppTabBar(vm) },
+        ) { frame ->
             val browse by browser.state.collectAsState()
-            Box(Modifier.fillMaxSize()) {
-            when (screen) {
-                is Screen.Home -> HomeScreen(
-                    vm = vm,
-                    onPickModel = { showModelSource = true },
-                    onFullscreen = { fullscreen = true },
-                    onOpenConnect = { showConnect = true },
-                    onOpenConfigure = { showConfigure = true },
-                    onBrowse = { vm.openBrowse() },
-                    onLibrary = { vm.openLibrary() },
-                    browser = browser,
-                    favorites = favorites,
-                )
-                is Screen.PrintSetup -> PrintSetupScreen(vm)
-                is Screen.Browse -> BrowseScreen(vm, browser)
-                is Screen.Library -> LibraryScreen(
-                    vm = vm,
-                    favorites = favorites,
-                    onBrowse = { vm.openBrowse() },
-                )
-                is Screen.Slice -> SliceScreen(vm)
-                is Screen.Slicing -> SlicingScreen(vm)
-                is Screen.Preview -> {
-                    val gp = vm.gcodePreview.collectAsState().value
-                    if (gp != null) {
-                        SlicePreviewScreen(
+            Box(Modifier.padding(frame).fillMaxSize()) {
+                when (screen) {
+                    is Screen.Home -> {
+                        HomeScreen(
                             vm = vm,
-                            preview = gp,
-                            onSaveGcode = { gcodeSaver.launch(vm.suggestedGcodeName) },
-                            onPrint = { vm.startPrint(this@MainActivity) },
+                            onPickLocalFile = { modelPicker.launch(arrayOf("*/*")) },
+                            onOpenConnect = { showConnect = true },
+                            onOpenConfigure = { showConfigure = true },
+                            browser = browser,
                         )
-                    } else {
-                        LaunchedEffect(Unit) { vm.backHome() }
+                    }
+
+                    is Screen.Printer -> {
+                        PrinterScreen(
+                            vm = vm,
+                            onOpenConnect = { showConnect = true },
+                        )
+                    }
+
+                    is Screen.PrintSetup -> {
+                        PrintSetupScreen(vm)
+                    }
+
+                    is Screen.Library -> {
+                        LibraryScreen(
+                            vm = vm,
+                            favorites = favorites,
+                            onFindModels = { vm.openScreen(Screen.Home) },
+                        )
+                    }
+
+                    is Screen.Slice -> {
+                        SliceScreen(vm)
+                    }
+
+                    is Screen.Slicing -> {
+                        SlicingScreen(vm)
+                    }
+
+                    is Screen.Preview -> {
+                        val gp = vm.gcodePreview.collectAsState().value
+                        if (gp != null) {
+                            SlicePreviewScreen(
+                                vm = vm,
+                                preview = gp,
+                                onSaveGcode = { gcodeSaver.launch(vm.suggestedGcodeName) },
+                                onPrint = { vm.startPrint(this@MainActivity) },
+                            )
+                        } else {
+                            LaunchedEffect(Unit) { vm.backHome() }
+                        }
+                    }
+
+                    is Screen.Printing -> {
+                        PrintingScreen(
+                            vm = vm,
+                            onBack = { vm.cancelPrint() },
+                        )
+                    }
+
+                    is Screen.DeviceStatus -> {
+                        DeviceStatusScreen(vm = vm)
+                    }
+
+                    is Screen.CameraFull -> {
+                        CameraFullscreen(
+                            vm = vm,
+                            onClose = { vm.closeCameraFull() },
+                        )
                     }
                 }
-                is Screen.Printing -> PrintingScreen(
-                    vm = vm,
-                    onBack = { vm.cancelPrint() },
-                )
-                is Screen.DeviceStatus -> DeviceStatusScreen(vm = vm)
+                val downloading = browse.downloadingFile
+                if (downloading != null) {
+                    DownloadProgressBanner(
+                        name = downloading,
+                        progress = browse.downloadProgress,
+                        modifier =
+                            Modifier
+                                .align(Alignment.TopCenter)
+                                .fillMaxWidth(),
+                    )
+                }
             }
-            val downloading = browse.downloadingFile
-            if (downloading != null) {
-                DownloadProgressBanner(
-                    name = downloading,
-                    progress = browse.downloadProgress,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .fillMaxWidth(),
-                )
-            }
-            }
-        }
-
-        if (showModelSource) {
-            androidx.compose.material3.AlertDialog(
-                onDismissRequest = { showModelSource = false },
-                title = { androidx.compose.material3.Text("Add a model") },
-                text = { androidx.compose.material3.Text("Find a model online, or choose a file from this device.") },
-                confirmButton = {
-                    androidx.compose.material3.TextButton(onClick = {
-                        showModelSource = false
-                        vm.openBrowse()
-                    }) { androidx.compose.material3.Text("Find models online") }
-                },
-                dismissButton = {
-                    androidx.compose.material3.TextButton(onClick = {
-                        showModelSource = false
-                        modelPicker.launch(arrayOf("*/*"))
-                    }) { androidx.compose.material3.Text("Choose a file") }
-                },
-            )
         }
 
         // Rationale before the Android 13+ notification prompt: explain the value,
@@ -377,7 +439,7 @@ class MainActivity : ComponentActivity() {
                             "A slicing or print job is active. Cancel it and load the new model?"
                         } else {
                             "Loading this model will leave the current screen. Continue?"
-                        }
+                        },
                     )
                 },
                 confirmButton = {
@@ -393,19 +455,78 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        if (fullscreen) {
-            androidx.compose.ui.window.Dialog(
-                onDismissRequest = { fullscreen = false },
-                properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-            ) {
-                FullscreenViewer(vm, onClose = { fullscreen = false })
-            }
+        // Answering the ask with "Connect" can land on PrintSetup while this sheet is still
+        // open (the sheet does not close itself when a printer is picked); close it so the
+        // page it just promised is what the user sees.
+        LaunchedEffect(screen) {
+            if (screen == Screen.PrintSetup) showConnect = false
         }
-        if (showConnect) ConnectSheet(
-            vm,
-            onDismiss = { showConnect = false },
-        )
+
+        // A model is loaded but nothing is connected to print it on: ask before the setup
+        // page (which needs a printer) and send the answer to the same sheet the tabs use.
+        askPrinterForModel?.let { model ->
+            world.yemyat.slicepilot.ui.components.ConnectPrinterDialog(
+                modelName = File(model).name,
+                onConnect = {
+                    vm.onConnectForPrint()
+                    showConnect = true
+                },
+                onLater = { vm.onLaterForPrint() },
+            )
+        }
+
+        if (showConnect) {
+            ConnectSheet(
+                vm,
+                onDismiss = { showConnect = false },
+                onAddPrinter = {
+                    pairingVia = "pin"
+                    showAddPrinter = true
+                },
+            )
+        }
         if (showConfigure) ConfigureSheet(vm, onDismiss = { showConfigure = false })
+
+        // Pairing lives above the sheet rather than inside it: the QR scanner needs a full-screen
+        // camera surface, and a dialog stacked on a bottom sheet renders badly.
+        if (showAddPrinter) {
+            AddPrinterDialog(
+                account = vm.cloudUser,
+                attempt = pairingAttempt,
+                machine = pairingPcode,
+                pincode = pairingPincode,
+                onPincodeChange = { pairingPincode = it },
+                onDismiss = {
+                    vm.dismissPairing()
+                    showAddPrinter = false
+                },
+                onSubmit = { vm.pairPrinter(pairingPincode, pairingPcode, pairingVia) },
+                onScanQr = { showQrScanner = true },
+            )
+        }
+        if (showQrScanner) {
+            QrScannerDialog(
+                onCode = { raw ->
+                    showQrScanner = false
+                    // A printer's QR carries the cloud's identifiers — pcode and serialNo, and often
+                    // the model — but never the PIN, so a scan fills the machine and leaves the PIN
+                    // to be typed. The older QR wrote the printer's id as `pcode`, hence the order.
+                    world.yemyat.slicepilot.cloud.PairingCode.fromQr(raw)?.let { scanned ->
+                        val machine = scanned.pcode.ifBlank { scanned.serialNo }
+                        if (machine.isNotBlank()) pairingPcode = machine
+                        if (scanned.pincode.isNotBlank()) pairingPincode = scanned.pincode
+                        pairingVia = "qr"
+                    }
+                },
+                onDismiss = { showQrScanner = false },
+            )
+        }
+        // A successful pair selects the printer, which can move the app to Print setup while the
+        // Add dialog is still up: close the dialog so what's left on screen is the page the
+        // pairing promised, not a form for a printer that is already added.
+        LaunchedEffect(pairingAttempt?.printerName) {
+            if (pairingAttempt?.printerName != null) showAddPrinter = false
+        }
 
         // Shown from the root so it also appears over the print screen when a print is rejected.
         accessCodePrompt?.let { printer ->
@@ -426,16 +547,24 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun sanitizeName(name: String): String {
-        val decoded = try { Uri.decode(name) } catch (_: Exception) { name }
+        val decoded =
+            try {
+                Uri.decode(name)
+            } catch (_: Exception) {
+                name
+            }
         val base = decoded.substringAfterLast('/').substringAfterLast('\\').trim()
         val safe = base.replace(Regex("[^a-zA-Z0-9._-]"), "_")
         return safe.ifBlank { "model" }
     }
 
-    private fun copyToCache(context: Context, uri: Uri): File {
+    private fun copyToCache(
+        context: Context,
+        uri: Uri,
+    ): File {
         val rawName = queryName(context, uri) ?: uri.lastPathSegment ?: "model"
         val safeName = sanitizeName(rawName)
-        val temp = File(context.cacheDir, "temp_${System.currentTimeMillis()}_${safeName}")
+        val temp = File(context.cacheDir, "temp_${System.currentTimeMillis()}_$safeName")
         context.contentResolver.openInputStream(uri)?.use { input ->
             temp.outputStream().use { input.copyTo(it) }
         } ?: throw IllegalStateException("Cannot open $uri")
@@ -443,11 +572,12 @@ class MainActivity : ComponentActivity() {
         val isZip = ModelParser.isZip(temp)
 
         val cleanBase = safeName.substringBeforeLast('.').ifBlank { "model" }
-        val finalName = if (isZip || safeName.endsWith(".3mf", ignoreCase = true)) {
-            if (safeName.endsWith(".3mf", ignoreCase = true)) safeName else "$cleanBase.3mf"
-        } else {
-            if (safeName.endsWith(".stl", ignoreCase = true)) safeName else "$cleanBase.stl"
-        }
+        val finalName =
+            if (isZip || safeName.endsWith(".3mf", ignoreCase = true)) {
+                if (safeName.endsWith(".3mf", ignoreCase = true)) safeName else "$cleanBase.3mf"
+            } else {
+                if (safeName.endsWith(".stl", ignoreCase = true)) safeName else "$cleanBase.stl"
+            }
 
         val out = File(context.cacheDir, finalName)
         if (out.exists()) out.delete()
@@ -458,7 +588,10 @@ class MainActivity : ComponentActivity() {
         return out
     }
 
-    private fun queryName(context: Context, uri: Uri): String? {
+    private fun queryName(
+        context: Context,
+        uri: Uri,
+    ): String? {
         var name: String? = null
         context.contentResolver.query(uri, null, null, null, null)?.use { c ->
             val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
@@ -475,18 +608,31 @@ class MainActivity : ComponentActivity() {
         val out = intent.getStringExtra("out") ?: File(cacheDir, "headless.gcode").absolutePath
         val filamentColor = intent.getStringExtra("filament_color")
         val supportFilament = intent.getStringExtra("support_filament") ?: ""
-        val overrides = filamentColor?.let { c ->
-            val color = if (c.startsWith("#")) c else "#$c"
-            "filament_colour=$color\nfilament_multi_colour=$color\n"
-        } ?: ""
+        val overrides =
+            filamentColor?.let { c ->
+                val color = if (c.startsWith("#")) c else "#$c"
+                "filament_colour=$color\nfilament_multi_colour=$color\n"
+            } ?: ""
         android.util.Log.i("SliceCore", "Headless slice start: printer=$printer filament=$filament process=$process")
-        val ok = NativeLib.nativeSliceWithOverrides(
-            model, printer, filament, process, overrides, supportFilament, out,
-            object : NativeLib.SliceCallback {
-                override fun onProgress(step: Int, text: String, percent: Int) {
-                    android.util.Log.i("SliceCore", "Headless progress $percent%: $text")
-                }
-            })
+        val ok =
+            NativeLib.nativeSliceWithOverrides(
+                model,
+                printer,
+                filament,
+                process,
+                overrides,
+                supportFilament,
+                out,
+                object : NativeLib.SliceCallback {
+                    override fun onProgress(
+                        step: Int,
+                        text: String,
+                        percent: Int,
+                    ) {
+                        android.util.Log.i("SliceCore", "Headless progress $percent%: $text")
+                    }
+                },
+            )
         if (!ok) {
             android.util.Log.e("SliceCore", "Headless slice launch failed: ${NativeLib.nativeGetError()}")
             return

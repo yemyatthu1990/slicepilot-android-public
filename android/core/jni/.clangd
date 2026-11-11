@@ -1,0 +1,27 @@
+# clangd config for the native layer (android/core/jni).
+#
+# Problem this fixes: with no compilation database, clangd had no include paths at all,
+# so `#include <jni.h>` failed and every JNI file reported a cascade of ~21 false errors
+# ("Unknown type name 'jobject'", "'JNIEnv'", "'Print'", ...).
+#
+# The app pins ndkVersion = "27.0.12077973" (android/app/build.gradle.kts:72), so the
+# sysroot below is the exact one the build uses. The app's own headers live in <repo>/src
+# (that is where src/libslic3r/Model.hpp, AppConfig.hpp, ... sit), which is why the JNI
+# file's `#include "libslic3r/Model.hpp"` resolves during the build.
+#
+# Prefer the database AGP generates when you build:
+#   ./gradlew :app:externalNativeBuildDebug
+#   -> android/app/.cxx/Debug/<hash>/arm64-v8a/compile_commands.json
+# and, if that exists, replace the Add: block with
+#   CompileFlags: { CompilationDatabase: ../../app/.cxx/Debug/<hash>/arm64-v8a }
+# Absolute paths are used here on purpose: relative -I entries in a .clangd file are
+# resolved against the file's own directory, not the repository root.
+CompileFlags:
+  Compiler: clang
+  Add:
+    - --target=aarch64-none-linux-android24
+    - -std=c++17
+    - -D__ANDROID_API__=24
+    - -isystem/home/ymt/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include
+    - -I/home/ymt/Work/slicepilot-android/src
+    - -I/home/ymt/Work/slicepilot-android/android/core/jni

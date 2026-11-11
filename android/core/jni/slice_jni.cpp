@@ -18,6 +18,7 @@
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/AppConfig.hpp"
+#include "libslic3r/Exception.hpp"
 
 #include "preview_parse.h"
 
@@ -125,12 +126,18 @@ void apply_model_transform(Model &model, const Vec3d &bedCenter) {
     // requested offset (bed center by default) and its lowest point is on the bed.
     // Moving instances is required for 3MF files, whose placement lives in the
     // object instance transform rather than the mesh.
+    //
+    // Measure the meshes just transformed. ModelObject::instance_bounding_box() was
+    // used here before and it returns the *cached* instance mesh, which does not
+    // reflect the volume edit above: on ipadmini.stl (mesh 54.853 x 17.374 x
+    // 75.000 mm) rot=(270,720,630) puts the lowest point 8.687 mm under the mesh
+    // center, while the cached box logged dz=15.107 - so the part landed off the
+    // plate and the slicer rejected the print ("One object has an empty first layer
+    // and can't be printed."), i.e. the UI rotation appeared to be ignored.
     BoundingBoxf3 global_bb;
     for (ModelObject *obj : model.objects) {
-        for (size_t i = 0; i < obj->instances.size(); ++i) {
-            BoundingBoxf3 bb = obj->instance_bounding_box(i);
-            if (bb.defined) global_bb.merge(bb);
-        }
+        BoundingBoxf3 bb = obj->raw_mesh_bounding_box();
+        if (bb.defined) global_bb.merge(bb);
     }
     if (global_bb.defined) {
         const Vec3d center = global_bb.center();
@@ -349,6 +356,26 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
         LOGI("Slice cancelled");
         std::lock_guard<std::mutex> lock(g_state.mutex);
         g_state.cancelled = true;
+    } catch (const Slic3r::SlicingErrors &e) {
+        // GCode.cpp re-throws every per-object Slic3r::SlicingError as one
+        // Slic3r::SlicingErrors, whose what() is the literal "Errors"
+        // (libslic3r/Exception.hpp). Catching it here is the only way to keep the
+        // real reason - otherwise the UI shows "Error: Errors" and the actionable
+        // text ("One object has an empty first layer and can't be printed. Please
+        // Cut the bottom or enable supports.") is thrown away.
+        constexpr size_t kMaxMessages = 3;
+        std::string reason;
+        size_t shown = 0;
+        for (const auto &err : e.errors_) {
+            if (shown > 0) reason += "; ";
+            reason += err.what();
+            if (++shown >= kMaxMessages) break;
+        }
+        if (e.errors_.size() > kMaxMessages)
+            reason += "; +" + std::to_string(e.errors_.size() - kMaxMessages) + " more";
+        LOGE("Slice failed (Slic3r::SlicingErrors): %s", reason.c_str());
+        std::lock_guard<std::mutex> lock(g_state.mutex);
+        g_state.error = reason;
     } catch (const std::exception &e) {
         LOGE("Slice failed (%s): %s", typeid(e).name(), e.what());
         std::lock_guard<std::mutex> lock(g_state.mutex);

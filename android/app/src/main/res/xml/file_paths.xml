@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What the FileProvider may hand to other apps: the app's cache (exported
+     models, previews) and its own Pictures folder (camera photos). -->
+<paths>
+    <cache-path
+        name="cache"
+        path="." />
+    <external-files-path
+        name="pictures"
+        path="Pictures/" />
+    <external-path
+        name="external"
+        path="." />
+</paths>

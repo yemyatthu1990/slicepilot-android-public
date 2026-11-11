@@ -1,11 +1,12 @@
 package world.yemyat.slicepilot.cloud
 
 import android.content.Context
-import world.yemyat.slicepilot.cloud.auth.CloudAuthClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import world.yemyat.slicepilot.BuildConfig
+import world.yemyat.slicepilot.cloud.auth.CloudAuthClient
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -14,7 +15,6 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.security.SecureRandom
-import world.yemyat.slicepilot.BuildConfig
 
 data class CloudPrinter(
     val id: String,
@@ -23,90 +23,226 @@ data class CloudPrinter(
     val online: Boolean,
 )
 
-class CloudUser(val nickname: String, val email: String, val region: String)
+class CloudUser(
+    val nickname: String,
+    val email: String,
+    val region: String,
+)
 
 sealed class CloudResult<out T> {
-    data class Ok<T>(val value: T) : CloudResult<T>()
-    data class Err(val message: String) : CloudResult<Nothing>()
+    data class Ok<T>(
+        val value: T,
+    ) : CloudResult<T>()
+
+    data class Err(
+        val message: String,
+    ) : CloudResult<Nothing>()
 }
 
 class ElegooCloudClient(
     context: Context,
     val auth: CloudAuthClient = CloudAuthClient(context),
 ) {
-
     private val gateway: String
-        get() = if (auth.region == "china")
-            BuildConfig.CLOUD_GATEWAY_CHINA
-        else
-            BuildConfig.CLOUD_GATEWAY_GLOBAL
+        get() =
+            if (auth.region == "china") {
+                BuildConfig.CLOUD_GATEWAY_CHINA
+            } else {
+                BuildConfig.CLOUD_GATEWAY_GLOBAL
+            }
 
     private val deviceApi = "/api/v1/device-management-server"
 
+    /** Matrix's other device service: the bind/unbind/rename endpoints live here, not under device-management-server. */
+    private val deviceServerApi = "/api/v1/device-server"
+
     val isLoggedIn: Boolean get() = auth.isLoggedIn
 
-    suspend fun validateSession(): CloudResult<CloudUser> = withContext(Dispatchers.IO) {
-        if (!auth.isLoggedIn) {
-            return@withContext CloudResult.Err("not logged in")
-        }
-        if (!auth.refreshIfNeeded()) {
-            auth.logout()
-            return@withContext CloudResult.Err("session expired")
-        }
-        when (val r = listPrinters()) {
-            is CloudResult.Ok -> CloudResult.Ok(CloudUser(auth.nickname, auth.email, auth.region))
-            is CloudResult.Err -> {
-                android.util.Log.w("ElegooCloud", "validateSession failed: ${r.message}")
-                if (auth.isAuthFailure(r.message)) {
-                    auth.logout()
-                    CloudResult.Err("signed out")
-                } else {
-                    CloudResult.Err(r.message)
+    suspend fun validateSession(): CloudResult<CloudUser> =
+        withContext(Dispatchers.IO) {
+            if (!auth.isLoggedIn) {
+                return@withContext CloudResult.Err("not logged in")
+            }
+            if (!auth.refreshIfNeeded()) {
+                auth.logout()
+                return@withContext CloudResult.Err("session expired")
+            }
+            when (val r = listPrinters()) {
+                is CloudResult.Ok -> {
+                    CloudResult.Ok(CloudUser(auth.nickname, auth.email, auth.region))
+                }
+
+                is CloudResult.Err -> {
+                    android.util.Log.w("ElegooCloud", "validateSession failed: ${r.message}")
+                    if (auth.isAuthFailure(r.message)) {
+                        auth.logout()
+                        CloudResult.Err("signed out")
+                    } else {
+                        CloudResult.Err(r.message)
+                    }
                 }
             }
         }
-    }
 
-    private suspend fun apiPost(path: String, body: JSONObject, authed: Boolean): JSONObject {
-        return postRaw(gateway + path, body, authed)
-    }
+    private suspend fun apiPost(
+        path: String,
+        body: JSONObject,
+        authed: Boolean,
+    ): JSONObject = postRaw(gateway + path, body, authed)
 
-    suspend fun listPrinters(): CloudResult<List<CloudPrinter>> = withContext(Dispatchers.IO) {
-        if (!auth.tokenUsable()) auth.refreshTokens()
-        try {
-            val json = apiPost(
-                deviceApi + "/device/list/query",
-                JSONObject().put("pageNum", 1).put("pageSize", 50),
-                authed = true,
-            )
-            if (!isSuccess(json)) {
-                return@withContext CloudResult.Err(json.optString("msg", "device list failed (code ${json.optInt("code")})"))
-            }
-            android.util.Log.i("CloudClient", "device list raw: ${json.toString().take(1500)}")
-            val arr = when (val d = json.opt("data")) {
-                is org.json.JSONArray -> d
-                is JSONObject -> d.optJSONArray("list") ?: d.optJSONArray("records") ?: d.optJSONArray("devices")
-                else -> null
-            } ?: return@withContext CloudResult.Ok(emptyList())
-            val printers = ArrayList<CloudPrinter>()
-            for (i in 0 until arr.length()) {
-                val dd = arr.getJSONObject(i)
-                val uid = dd.optString("userId", "")
-                if (uid.isNotBlank()) auth.userId = uid
-                printers.add(
-                    CloudPrinter(
-                        id = firstNonBlank(dd, "serialNo", "pcode", "deviceCode", "id"),
-                        name = firstNonBlank(dd, "deviceName", "name", "productName"),
-                        model = firstNonBlank(dd, "productName", "deviceModel", "model"),
-                        online = parseOnline(dd.opt("onlineStatus")),
+    suspend fun listPrinters(): CloudResult<List<CloudPrinter>> =
+        withContext(Dispatchers.IO) {
+            if (!auth.tokenUsable()) auth.refreshTokens()
+            try {
+                val json =
+                    apiPost(
+                        deviceApi + "/device/list/query",
+                        JSONObject().put("pageNum", 1).put("pageSize", 50),
+                        authed = true,
                     )
-                )
+                if (!isSuccess(json)) {
+                    return@withContext CloudResult.Err(json.optString("msg", "device list failed (code ${json.optInt("code")})"))
+                }
+                android.util.Log.i("CloudClient", "device list raw: ${json.toString().take(1500)}")
+                val arr =
+                    when (val d = json.opt("data")) {
+                        is org.json.JSONArray -> d
+                        is JSONObject -> d.optJSONArray("list") ?: d.optJSONArray("records") ?: d.optJSONArray("devices")
+                        else -> null
+                    } ?: return@withContext CloudResult.Ok(emptyList())
+                val printers = ArrayList<CloudPrinter>()
+                for (i in 0 until arr.length()) {
+                    val dd = arr.getJSONObject(i)
+                    val uid = dd.optString("userId", "")
+                    if (uid.isNotBlank()) auth.userId = uid
+                    printers.add(
+                        CloudPrinter(
+                            id = firstNonBlank(dd, "serialNo", "pcode", "deviceCode", "id"),
+                            name = firstNonBlank(dd, "deviceName", "name", "productName"),
+                            model = firstNonBlank(dd, "productName", "deviceModel", "model"),
+                            online = parseOnline(dd.opt("onlineStatus")),
+                        ),
+                    )
+                }
+                CloudResult.Ok(printers)
+            } catch (e: Exception) {
+                CloudResult.Err(e.message ?: "device list failed")
             }
-            CloudResult.Ok(printers)
-        } catch (e: Exception) {
-            CloudResult.Err(e.message ?: "device list failed")
         }
+
+    /**
+     * The printer a cloud answer describes, falling back to the pairing [values] for whatever the
+     * answer leaves out: a bind can answer with nothing but a status, and the caller still needs a
+     * selectable printer. The model falls back to the product code, which is the closest thing to a
+     * product name that [PairingValues] carries.
+     */
+    private fun printerFrom(
+        json: JSONObject,
+        values: PairingValues,
+    ): CloudPrinter {
+        val data = json.optJSONObject("data")
+        val pick = { keys: List<String>, fallback: String ->
+            if (data == null) fallback else firstNonBlank(data, *keys.toTypedArray()).ifBlank { fallback }
+        }
+        return CloudPrinter(
+            id = pick(listOf("serialNo", "pcode", "deviceCode", "id"), values.printerId),
+            name = pick(listOf("deviceName", "name", "productName"), values.printerId),
+            model = pick(listOf("productName", "deviceModel", "model"), values.pcode),
+            online = data?.let { parseOnline(it.opt("onlineStatus")) } ?: false,
+        )
     }
+
+    /**
+     * Which printer a PIN belongs to (`device-management-server/device/pincode/detail`). Matrix's
+     * `pincode_input_controller` asks this the moment the PIN is entered, because the answer is
+     * where the pcode and the serial both come from — neither of them is something to type by hand.
+     */
+    suspend fun pincodeDetail(pincode: String): CloudResult<PairingValues> =
+        withContext(Dispatchers.IO) {
+            if (!auth.tokenUsable()) auth.refreshTokens()
+            try {
+                val json =
+                    getRaw(
+                        "$gateway$deviceApi/device/pincode/detail?pincode=" +
+                            URLEncoder.encode(pincode, "UTF-8"),
+                        authed = true,
+                    )
+                if (!isSuccess(json)) {
+                    return@withContext CloudResult.Err(
+                        json.optString("msg", "The cloud does not know this PIN code (code ${json.optInt("code")})"),
+                    )
+                }
+                val detail = PairingCode.fromApi(json, PairingValues(pincode = pincode))
+                if (detail.pcode.isBlank() && detail.serialNo.isBlank()) {
+                    return@withContext CloudResult.Err("The cloud knows this PIN but not its printer")
+                }
+                CloudResult.Ok(detail)
+            } catch (e: Exception) {
+                CloudResult.Err(e.message ?: "PIN code lookup failed")
+            }
+        }
+
+    /**
+     * Matrix's `serverCheckPincode`: `check-pincode?pcode=<pcode>&pincode=<pincode>` — the two
+     * fields `PincodeDetail` keeps apart, taken verbatim from [values]. An answer that names the
+     * printer again ([PairingCode.fromApi]) wins, so a later bind cannot be handed a stale half.
+     */
+    suspend fun checkPincode(values: PairingValues): CloudResult<PairingValues> =
+        withContext(Dispatchers.IO) {
+            if (!auth.tokenUsable()) auth.refreshTokens()
+            try {
+                val json =
+                    getRaw(
+                        "$gateway$deviceServerApi/device/check-pincode" +
+                            "?pcode=" + URLEncoder.encode(values.pcode, "UTF-8") +
+                            "&pincode=" + URLEncoder.encode(values.pincode, "UTF-8"),
+                        authed = true,
+                    )
+                if (!isSuccess(json)) {
+                    return@withContext CloudResult.Err(
+                        json.optString("msg", "Pairing failed (code ${json.optInt("code")})"),
+                    )
+                }
+                CloudResult.Ok(PairingCode.fromApi(json, values))
+            } catch (e: Exception) {
+                CloudResult.Err(e.message ?: "PIN code check failed")
+            }
+        }
+
+    /**
+     * Claim a checked printer for the signed-in account. Matrix's `HttpClient.bindDevice` posts
+     * exactly `{serialNo, pcode, pincode, manualConfirm}` — all four `PincodeDetail` values, the
+     * fourth being whether the printer's own screen was asked to confirm — so all four go out.
+     * Bind answers with the device record; fall back to [values] when it answers with only a
+     * status, which is what keeps a freshly paired printer listable and printable.
+     */
+    suspend fun bindPrinter(
+        values: PairingValues,
+        manualConfirm: Boolean = false,
+    ): CloudResult<CloudPrinter> =
+        withContext(Dispatchers.IO) {
+            if (!auth.tokenUsable()) auth.refreshTokens()
+            try {
+                val json =
+                    apiPost(
+                        deviceServerApi + "/device/bind",
+                        JSONObject()
+                            .put("serialNo", values.serialNo)
+                            .put("pcode", values.pcode)
+                            .put("pincode", values.pincode)
+                            .put("manualConfirm", manualConfirm),
+                        authed = true,
+                    )
+                if (!isSuccess(json)) {
+                    return@withContext CloudResult.Err(
+                        json.optString("msg", "pairing failed (code ${json.optInt("code")})"),
+                    )
+                }
+                CloudResult.Ok(printerFrom(json, values))
+            } catch (e: Exception) {
+                CloudResult.Err(e.message ?: "pairing failed")
+            }
+        }
 
     data class MqttConfig(
         val host: String,
@@ -119,119 +255,137 @@ class ElegooCloudClient(
         val extraTopicFilters: List<String> = emptyList(),
     )
 
-    suspend fun getMqttConfig(): CloudResult<MqttConfig> = withContext(Dispatchers.IO) {
-        if (!auth.tokenUsable()) auth.refreshTokens()
-        try {
-            val userId = auth.userId
-            if (userId.isBlank()) return@withContext CloudResult.Err("mqtt: no userId")
-            val clientId = "elegooapp$userId-${System.currentTimeMillis()}"
-            val json = getRaw(
-                gateway + deviceApi + "/mqtt-link/mqtt-client?mqttClientId=$clientId",
-                authed = true,
-            )
-            if (!isSuccess(json)) {
-                return@withContext CloudResult.Err(json.optString("msg", "mqtt config failed (code ${json.optInt("code")})"))
-            }
-            val d = json.optJSONObject("data")
-                ?: return@withContext CloudResult.Err("mqtt: no data")
-            val hostUrl = d.optString("host", "")
-            if (hostUrl.isBlank()) return@withContext CloudResult.Err("mqtt: no host")
-            val uri = java.net.URI(hostUrl)
-            val host = uri.host ?: hostUrl.substringAfter("://").substringBefore(":")
-            val port = if (uri.port > 0) uri.port else 8085
-            val path = uri.path.ifBlank { "/mqtt" }
-            val username = d.optString("mqttUserName", "")
-            val password = d.optString("mqttPassword", "")
-            if (username.isBlank() || password.isBlank()) {
-                return@withContext CloudResult.Err("mqtt: missing credentials")
-            }
-            // `subscribeAuthorization` is a broker-side ACL *regex* applied to
-            // the subscribe filter itself: `\w*` does not match `+`, so MQTT
-            // wildcard filters like `+/+/user/#` are SUBACK-rejected while
-            // literal `app/v1/user/#` is allowed. The optional `-suffix` group
-            // covers the server-assigned (suffixed) clientId topic.
-            val clientIdValue = d.optString("mqttClientId", clientId)
-            val subs = mutableListOf("app/v1/$username/#")
-            if (clientIdValue.isNotBlank() && clientIdValue != username) {
-                subs += "app/v1/$clientIdValue/#"
-            }
-            android.util.Log.i(
-                "CloudClient",
-                "mqtt-client config: user=$username clientId=$clientIdValue subs=$subs",
-            )
-            CloudResult.Ok(
-                MqttConfig(
-                    host = host,
-                    port = port,
-                    path = path,
-                    clientId = clientIdValue,
-                    username = username,
-                    password = password,
-                    topicFilter = subs.first(),
-                    extraTopicFilters = subs.drop(1),
+    suspend fun getMqttConfig(): CloudResult<MqttConfig> =
+        withContext(Dispatchers.IO) {
+            if (!auth.tokenUsable()) auth.refreshTokens()
+            try {
+                val userId = auth.userId
+                if (userId.isBlank()) return@withContext CloudResult.Err("mqtt: no userId")
+                val clientId = "elegooapp$userId-${System.currentTimeMillis()}"
+                val json =
+                    getRaw(
+                        gateway + deviceApi + "/mqtt-link/mqtt-client?mqttClientId=$clientId",
+                        authed = true,
+                    )
+                if (!isSuccess(json)) {
+                    return@withContext CloudResult.Err(json.optString("msg", "mqtt config failed (code ${json.optInt("code")})"))
+                }
+                val d =
+                    json.optJSONObject("data")
+                        ?: return@withContext CloudResult.Err("mqtt: no data")
+                val hostUrl = d.optString("host", "")
+                if (hostUrl.isBlank()) return@withContext CloudResult.Err("mqtt: no host")
+                val uri = java.net.URI(hostUrl)
+                val host = uri.host ?: hostUrl.substringAfter("://").substringBefore(":")
+                val port = if (uri.port > 0) uri.port else 8085
+                val path = uri.path.ifBlank { "/mqtt" }
+                val username = d.optString("mqttUserName", "")
+                val password = d.optString("mqttPassword", "")
+                if (username.isBlank() || password.isBlank()) {
+                    return@withContext CloudResult.Err("mqtt: missing credentials")
+                }
+                // `subscribeAuthorization` is a broker-side ACL *regex* applied to
+                // the subscribe filter itself: `\w*` does not match `+`, so MQTT
+                // wildcard filters like `+/+/user/#` are SUBACK-rejected while
+                // literal `app/v1/user/#` is allowed. The optional `-suffix` group
+                // covers the server-assigned (suffixed) clientId topic.
+                val clientIdValue = d.optString("mqttClientId", clientId)
+                val subs = mutableListOf("app/v1/$username/#")
+                if (clientIdValue.isNotBlank() && clientIdValue != username) {
+                    subs += "app/v1/$clientIdValue/#"
+                }
+                android.util.Log.i(
+                    "CloudClient",
+                    "mqtt-client config: user=$username clientId=$clientIdValue subs=$subs",
                 )
-            )
-        } catch (e: Exception) {
-            CloudResult.Err(e.message ?: "mqtt config failed")
+                CloudResult.Ok(
+                    MqttConfig(
+                        host = host,
+                        port = port,
+                        path = path,
+                        clientId = clientIdValue,
+                        username = username,
+                        password = password,
+                        topicFilter = subs.first(),
+                        extraTopicFilters = subs.drop(1),
+                    ),
+                )
+            } catch (e: Exception) {
+                CloudResult.Err(e.message ?: "mqtt config failed")
+            }
         }
-    }
 
     /**
      * Snapshot of the last reported printer status (same report-data endpoint as filament).
      * The cloud report stores each section as `[{reportLinkKey, reportValue}, …]`; sections
      * are flattened and merged with [LanPrintMonitor.mergePrintStatus].
      */
-    suspend fun getReportStatus(deviceCode: String): PrintStatus? = withContext(Dispatchers.IO) {
-        if (!auth.tokenUsable()) auth.refreshTokens()
-        try {
-            val json = getRaw(
-                gateway + deviceApi + "/device/report-data/list?deviceCode=$deviceCode",
-                authed = true,
-            )
-            if (!isSuccess(json)) return@withContext null
-            val data = json.optJSONObject("data") ?: return@withContext null
-            val result = JSONObject()
-            for (section in listOf(
-                "machine_status", "print_status", "extruder", "heater_bed",
-                "ztemperature_sensor", "fans", "led",
-            )) {
-                val arr = data.optJSONArray(section) ?: continue
-                val obj = JSONObject()
-                for (i in 0 until arr.length()) {
-                    val e = arr.optJSONObject(i) ?: continue
-                    val key = e.optString("reportLinkKey", "")
-                    if (key.isBlank()) continue
-                    var value: Any? = e.opt("reportValue")
-                    // Nested sections (fans) arrive as JSON strings.
-                    if (value is String && value.startsWith("{")) {
-                        value = try { JSONObject(value) } catch (_: Exception) { value }
+    suspend fun getReportStatus(deviceCode: String): PrintStatus? =
+        withContext(Dispatchers.IO) {
+            if (!auth.tokenUsable()) auth.refreshTokens()
+            try {
+                val json =
+                    getRaw(
+                        gateway + deviceApi + "/device/report-data/list?deviceCode=$deviceCode",
+                        authed = true,
+                    )
+                if (!isSuccess(json)) return@withContext null
+                val data = json.optJSONObject("data") ?: return@withContext null
+                val result = JSONObject()
+                for (section in listOf(
+                    "machine_status",
+                    "print_status",
+                    "extruder",
+                    "heater_bed",
+                    "ztemperature_sensor",
+                    "fans",
+                    "led",
+                )) {
+                    val arr = data.optJSONArray(section) ?: continue
+                    val obj = JSONObject()
+                    for (i in 0 until arr.length()) {
+                        val e = arr.optJSONObject(i) ?: continue
+                        val key = e.optString("reportLinkKey", "")
+                        if (key.isBlank()) continue
+                        var value: Any? = e.opt("reportValue")
+                        // Nested sections (fans) arrive as JSON strings.
+                        if (value is String && value.startsWith("{")) {
+                            value =
+                                try {
+                                    JSONObject(value)
+                                } catch (_: Exception) {
+                                    value
+                                }
+                        }
+                        obj.put(key, value)
                     }
-                    obj.put(key, value)
+                    if (obj.length() > 0) result.put(section, obj)
                 }
-                if (obj.length() > 0) result.put(section, obj)
+                if (result.length() == 0) return@withContext null
+                LanPrintMonitor.mergePrintStatus(PrintStatus(), result)
+            } catch (e: Exception) {
+                android.util.Log.w("CloudClient", "getReportStatus failed: ${e.message}")
+                null
             }
-            if (result.length() == 0) return@withContext null
-            LanPrintMonitor.mergePrintStatus(PrintStatus(), result)
-        } catch (e: Exception) {
-            android.util.Log.w("CloudClient", "getReportStatus failed: ${e.message}")
-            null
         }
-    }
 
-    suspend fun getFilament(deviceCode: String): FilamentInfo? = withContext(Dispatchers.IO) {        if (!auth.tokenUsable()) auth.refreshTokens()
-        try {
-            val json = getRaw(
-                gateway + deviceApi + "/device/report-data/list?deviceCode=$deviceCode",
-                authed = true,
-            )
-            if (!isSuccess(json)) return@withContext null
-            android.util.Log.i("CloudClient", "report-data $deviceCode: ${json.optJSONObject("data")?.toString()?.take(2500)}")
-            parseFilament(json.optJSONObject("data"))
-        } catch (e: Exception) {
-            android.util.Log.w("CloudClient", "getFilament failed: ${e.message}")
-            null
+    suspend fun getFilament(deviceCode: String): FilamentInfo? =
+        withContext(Dispatchers.IO) {
+            if (!auth.tokenUsable()) auth.refreshTokens()
+            try {
+                val json =
+                    getRaw(
+                        gateway + deviceApi + "/device/report-data/list?deviceCode=$deviceCode",
+                        authed = true,
+                    )
+                if (!isSuccess(json)) return@withContext null
+                android.util.Log.i("CloudClient", "report-data $deviceCode: ${json.optJSONObject("data")?.toString()?.take(2500)}")
+                parseFilament(json.optJSONObject("data"))
+            } catch (e: Exception) {
+                android.util.Log.w("CloudClient", "getFilament failed: ${e.message}")
+                null
+            }
         }
-    }
 
     private fun parseFilament(data: JSONObject?): FilamentInfo? {
         if (data == null) return null
@@ -275,7 +429,7 @@ class ElegooCloudClient(
                                     type = t.optString("filament_type", ""),
                                     colorHex = normColor(t.optString("filament_color", "")),
                                     canvasId = canvasId,
-                                )
+                                ),
                             )
                         }
                     }
@@ -296,7 +450,10 @@ class ElegooCloudClient(
         return null
     }
 
-    private fun reportVal(arr: JSONArray, linkKey: String): String? {
+    private fun reportVal(
+        arr: JSONArray,
+        linkKey: String,
+    ): String? {
         for (i in 0 until arr.length()) {
             val e = arr.optJSONObject(i) ?: continue
             if (e.optString("reportLinkKey") == linkKey) return e.optString("reportValue", null)
@@ -317,24 +474,32 @@ class ElegooCloudClient(
         }
     }
 
-    suspend fun sendPrintTask(deviceCode: String, fileName: String): CloudResult<Boolean> = withContext(Dispatchers.IO) {
-        try {
-            val body = JSONObject()
-                .put("deviceCode", deviceCode)
-                .put("fileName", fileName)
-            apiPost(deviceApi + "/device/print-task", body, authed = true)
-            CloudResult.Ok(true)
-        } catch (e: Exception) {
-            CloudResult.Err(e.message ?: "print task failed")
+    suspend fun sendPrintTask(
+        deviceCode: String,
+        fileName: String,
+    ): CloudResult<Boolean> =
+        withContext(Dispatchers.IO) {
+            try {
+                val body =
+                    JSONObject()
+                        .put("deviceCode", deviceCode)
+                        .put("fileName", fileName)
+                apiPost(deviceApi + "/device/print-task", body, authed = true)
+                CloudResult.Ok(true)
+            } catch (e: Exception) {
+                CloudResult.Err(e.message ?: "print task failed")
+            }
         }
-    }
 
     private fun isSuccess(json: JSONObject): Boolean {
         val code = json.optInt("code", 200)
         return code == 200 || code == 0
     }
 
-    private fun firstNonBlank(o: JSONObject, vararg keys: String): String {
+    private fun firstNonBlank(
+        o: JSONObject,
+        vararg keys: String,
+    ): String {
         for (k in keys) {
             val v = o.optString(k, "")
             if (v.isNotBlank()) return v
@@ -342,21 +507,23 @@ class ElegooCloudClient(
         return ""
     }
 
-    private fun parseOnline(v: Any?): Boolean {
-        return when (v) {
+    private fun parseOnline(v: Any?): Boolean =
+        when (v) {
             null, JSONObject.NULL -> false
             is Boolean -> v
             is Number -> v.toInt() == 1
             is String -> v == "1" || v.equals("online", ignoreCase = true) || v.equals("true", ignoreCase = true)
             else -> false
         }
-    }
 
     private fun baseHeaders(authed: Boolean): Map<String, String> {
         val h = HashMap<String, String>()
         h["Accept"] = "application/json"
         h["User-Lang"] = "en"
-        h["X-Client-Request-Id"] = java.util.UUID.randomUUID().toString()
+        h["X-Client-Request-Id"] =
+            java.util.UUID
+                .randomUUID()
+                .toString()
         h["User-Agent"] =
             "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         if (authed) {
@@ -369,7 +536,9 @@ class ElegooCloudClient(
     private fun applyTls(conn: HttpURLConnection) {
         if (conn is javax.net.ssl.HttpsURLConnection) {
             try {
-                val ctx = javax.net.ssl.SSLContext.getInstance("TLSv1.2")
+                val ctx =
+                    javax.net.ssl.SSLContext
+                        .getInstance("TLSv1.2")
                 ctx.init(null, null, SecureRandom())
                 conn.sslSocketFactory = ctx.socketFactory
             } catch (e: Exception) {
@@ -378,7 +547,11 @@ class ElegooCloudClient(
         }
     }
 
-    private fun postRaw(url: String, body: JSONObject, authed: Boolean): JSONObject {
+    private fun postRaw(
+        url: String,
+        body: JSONObject,
+        authed: Boolean,
+    ): JSONObject {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.connectTimeout = 15000
@@ -396,7 +569,10 @@ class ElegooCloudClient(
         return readJson(conn)
     }
 
-    private fun getRaw(url: String, authed: Boolean): JSONObject {
+    private fun getRaw(
+        url: String,
+        authed: Boolean,
+    ): JSONObject {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.requestMethod = "GET"
         conn.connectTimeout = 15000
@@ -410,6 +586,10 @@ class ElegooCloudClient(
         val code = conn.responseCode
         val stream = if (code in 200..299) conn.inputStream else conn.errorStream
         val text = stream?.let { BufferedReader(InputStreamReader(it, Charsets.UTF_8)).useLines { ls -> ls.joinToString("") } } ?: ""
+        // Every cloud call's answer in one place: the messages the cloud returns are the only
+        // record of which field names it wanted, and they are often the difference between a
+        // pairing that works and one that says "incorrect" for a code that is printed correctly.
+        android.util.Log.d("ElegooCloud", "${conn.requestMethod} ${conn.url} -> HTTP $code ${text.take(300)}")
         if (code !in 200..299) {
             throw RuntimeException("HTTP $code: ${text.take(200)}")
         }
@@ -425,65 +605,86 @@ class ElegooCloudClient(
         val rtcUserId: Int? = null,
     )
 
-    data class OssEntrypoint(val entrypoint: String, val accessUrl: String, val objectName: String)
+    data class OssEntrypoint(
+        val entrypoint: String,
+        val accessUrl: String,
+        val objectName: String,
+    )
 
     /**
      * Matrix `RtcHelper.join` pre-step: POST device-rpc/direct wakes the
      * printer's cloud RTC bridge so it accepts the camera session.
      */
-    suspend fun deviceRpcPrepare(serial: String): CloudResult<Unit> = withContext(Dispatchers.IO) {
-        if (!auth.tokenUsable()) auth.refreshTokens()
-        try {
-            val json = postRaw(
-                gateway + "/api/v1/device-server/device-rpc/direct",
-                org.json.JSONObject().put("serialNo", serial).put("data", ""),
-                authed = true,
-            )
-            if (isSuccess(json)) CloudResult.Ok(Unit)
-            else CloudResult.Err(json.optString("msg", "device-rpc/direct failed"))
-        } catch (e: Exception) {
-            CloudResult.Err(e.message ?: "device-rpc/direct failed")
-        }
-    }
-
-    suspend fun getAgoraCredential(): CloudResult<AgoraCredential> = withContext(Dispatchers.IO) {
-        if (!auth.tokenUsable()) auth.refreshTokens()
-        try {
-            val json = getRaw(gateway + deviceApi + "/device/list/agora-token?source=slicer", authed = true)
-            if (!isSuccess(json)) {
-                return@withContext CloudResult.Err(json.optString("message", "agora token failed"))
-            }
-            val data = json.optJSONObject("data")
-                ?: return@withContext CloudResult.Err("agora: no data")
-            val token = data.optJSONObject("agoraToken")
-                ?: return@withContext CloudResult.Err("agora: no agoraToken")
-            val userId = token.opt("userId")?.toString()?.takeIf { it.isNotBlank() && it != "null" }
-                ?: token.optString("rtmUserId", "")
-            val rtmUserId = token.optString("rtmUserId", "")
-            val rtmToken = token.optString("rtmToken", "")
-            if (userId.isBlank() || rtmUserId.isBlank() || rtmToken.isBlank()) {
-                return@withContext CloudResult.Err("agora: incomplete credential")
-            }
-            val rtcToken = token.optString("rtcToken", "").takeIf { it.isNotBlank() }
-            val rtcUserId = token.optInt("rtcUserId", 0).takeIf { it != 0 }
-            CloudResult.Ok(AgoraCredential(userId, rtmUserId, rtmToken, rtcToken, rtcUserId))
-        } catch (e: Exception) {
-            CloudResult.Err(e.message ?: "agora token failed")
-        }
-    }
-
-    suspend fun getOssEntrypoint(fileName: String, fileMd5Base64: String): CloudResult<OssEntrypoint> =
+    suspend fun deviceRpcPrepare(serial: String): CloudResult<Unit> =
         withContext(Dispatchers.IO) {
             if (!auth.tokenUsable()) auth.refreshTokens()
             try {
-                val path = deviceApi + "/oss/biz-entrypoint?filename=" + URLEncoder.encode(fileName, "UTF-8") +
-                    "&bucketAlias=iot-private&module=gcode&fileMd5=" + URLEncoder.encode(fileMd5Base64, "UTF-8")
+                val json =
+                    postRaw(
+                        gateway + "/api/v1/device-server/device-rpc/direct",
+                        org.json
+                            .JSONObject()
+                            .put("serialNo", serial)
+                            .put("data", ""),
+                        authed = true,
+                    )
+                if (isSuccess(json)) {
+                    CloudResult.Ok(Unit)
+                } else {
+                    CloudResult.Err(json.optString("msg", "device-rpc/direct failed"))
+                }
+            } catch (e: Exception) {
+                CloudResult.Err(e.message ?: "device-rpc/direct failed")
+            }
+        }
+
+    suspend fun getAgoraCredential(): CloudResult<AgoraCredential> =
+        withContext(Dispatchers.IO) {
+            if (!auth.tokenUsable()) auth.refreshTokens()
+            try {
+                val json = getRaw(gateway + deviceApi + "/device/list/agora-token?source=slicer", authed = true)
+                if (!isSuccess(json)) {
+                    return@withContext CloudResult.Err(json.optString("message", "agora token failed"))
+                }
+                val data =
+                    json.optJSONObject("data")
+                        ?: return@withContext CloudResult.Err("agora: no data")
+                val token =
+                    data.optJSONObject("agoraToken")
+                        ?: return@withContext CloudResult.Err("agora: no agoraToken")
+                val userId =
+                    token.opt("userId")?.toString()?.takeIf { it.isNotBlank() && it != "null" }
+                        ?: token.optString("rtmUserId", "")
+                val rtmUserId = token.optString("rtmUserId", "")
+                val rtmToken = token.optString("rtmToken", "")
+                if (userId.isBlank() || rtmUserId.isBlank() || rtmToken.isBlank()) {
+                    return@withContext CloudResult.Err("agora: incomplete credential")
+                }
+                val rtcToken = token.optString("rtcToken", "").takeIf { it.isNotBlank() }
+                val rtcUserId = token.optInt("rtcUserId", 0).takeIf { it != 0 }
+                CloudResult.Ok(AgoraCredential(userId, rtmUserId, rtmToken, rtcToken, rtcUserId))
+            } catch (e: Exception) {
+                CloudResult.Err(e.message ?: "agora token failed")
+            }
+        }
+
+    suspend fun getOssEntrypoint(
+        fileName: String,
+        fileMd5Base64: String,
+    ): CloudResult<OssEntrypoint> =
+        withContext(Dispatchers.IO) {
+            if (!auth.tokenUsable()) auth.refreshTokens()
+            try {
+                val path =
+                    deviceApi + "/oss/biz-entrypoint?filename=" + URLEncoder.encode(fileName, "UTF-8") +
+                        "&bucketAlias=iot-private&module=gcode&fileMd5=" + URLEncoder.encode(fileMd5Base64, "UTF-8")
                 val json = getRaw(gateway + path, authed = true)
                 if (!isSuccess(json)) {
                     return@withContext CloudResult.Err(json.optString("message", "oss entrypoint failed"))
                 }
-                val data = json.optJSONObject("data")
-                    ?: return@withContext CloudResult.Err("oss: no data")
+                val data =
+                    json.optJSONObject("data")
+                        ?: return@withContext CloudResult.Err("oss: no data")
                 val entrypoint = data.optString("entrypoint", "")
                 val accessUrl = data.optString("accessUrl", "")
                 if (entrypoint.isBlank() || accessUrl.isBlank()) {
@@ -495,7 +696,11 @@ class ElegooCloudClient(
             }
         }
 
-    suspend fun uploadToOss(entrypoint: String, file: File, fileMd5Base64: String): CloudResult<Unit> =
+    suspend fun uploadToOss(
+        entrypoint: String,
+        file: File,
+        fileMd5Base64: String,
+    ): CloudResult<Unit> =
         withContext(Dispatchers.IO) {
             try {
                 val conn = URL(entrypoint).openConnection() as HttpURLConnection
@@ -508,11 +713,17 @@ class ElegooCloudClient(
                 conn.setFixedLengthStreamingMode(file.length())
                 file.inputStream().use { input -> conn.outputStream.use { out -> input.copyTo(out) } }
                 val code = conn.responseCode
-                val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
-                    ?.bufferedReader()?.use { it.readText() }.orEmpty()
+                val body =
+                    (if (code in 200..299) conn.inputStream else conn.errorStream)
+                        ?.bufferedReader()
+                        ?.use { it.readText() }
+                        .orEmpty()
                 conn.disconnect()
-                if (code in 200..299) CloudResult.Ok(Unit)
-                else CloudResult.Err("OSS upload HTTP $code: ${body.take(200)}")
+                if (code in 200..299) {
+                    CloudResult.Ok(Unit)
+                } else {
+                    CloudResult.Err("OSS upload HTTP $code: ${body.take(200)}")
+                }
             } catch (e: Exception) {
                 CloudResult.Err(e.message ?: "OSS upload failed")
             }

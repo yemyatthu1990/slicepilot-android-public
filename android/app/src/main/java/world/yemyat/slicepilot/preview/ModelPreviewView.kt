@@ -11,8 +11,9 @@ import world.yemyat.slicepilot.model.MeshData
 import kotlin.math.max
 import kotlin.math.sqrt
 
-class ModelPreviewView(context: Context) : GLSurfaceView(context) {
-
+class ModelPreviewView(
+    context: Context,
+) : GLSurfaceView(context) {
     private val scene = PreviewScene()
     private val renderer = PreviewRenderer(scene)
     private val camera = OrbitCamera()
@@ -37,47 +38,62 @@ class ModelPreviewView(context: Context) : GLSurfaceView(context) {
     private var frameScheduled = false
 
     private val choreographer = Choreographer.getInstance()
-    private val frameCallback = object : Choreographer.FrameCallback {
-        override fun doFrame(frameTimeNanos: Long) {
-            frameScheduled = false
-            if (paused || destroyed || !autoRotate) return
-            camera.theta += AUTO_ROTATE_STEP
-            publishCamera()
-            frameScheduled = true
-            choreographer.postFrameCallback(this)
-        }
-    }
-
-    private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-        override fun onScale(detector: ScaleGestureDetector): Boolean {
-            if (destroyed) return false
-            camera.zoomBy(detector.scaleFactor, effectiveRadius())
-            publishCamera()
-            return true
-        }
-    })
-
-    private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
-        override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
-            if (destroyed) return false
-            if (e2.pointerCount >= 2) {
-                camera.pan(distanceX, distanceY, height.toFloat(), effectiveRadius(), FIELD_OF_VIEW_DEGREES)
-            } else {
-                camera.theta += distanceX * ROTATE_SENSITIVITY
-                camera.phi = (camera.phi + distanceY * ROTATE_SENSITIVITY)
-                    .coerceIn(OrbitCamera.PHI_MIN, OrbitCamera.PHI_MAX)
+    private val frameCallback =
+        object : Choreographer.FrameCallback {
+            override fun doFrame(frameTimeNanos: Long) {
+                frameScheduled = false
+                if (paused || destroyed || !autoRotate) return
+                camera.theta += AUTO_ROTATE_STEP
+                publishCamera()
+                frameScheduled = true
+                choreographer.postFrameCallback(this)
             }
-            publishCamera()
-            return true
         }
 
-        override fun onDoubleTap(e: MotionEvent): Boolean {
-            if (destroyed) return false
-            camera.reframe()
-            publishCamera()
-            return true
-        }
-    })
+    private val scaleDetector =
+        ScaleGestureDetector(
+            context,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    if (destroyed) return false
+                    camera.zoomBy(detector.scaleFactor, effectiveRadius())
+                    publishCamera()
+                    return true
+                }
+            },
+        )
+
+    private val gestureDetector =
+        GestureDetector(
+            context,
+            object : GestureDetector.SimpleOnGestureListener() {
+                override fun onScroll(
+                    e1: MotionEvent?,
+                    e2: MotionEvent,
+                    distanceX: Float,
+                    distanceY: Float,
+                ): Boolean {
+                    if (destroyed) return false
+                    if (e2.pointerCount >= 2) {
+                        camera.pan(distanceX, distanceY, height.toFloat(), effectiveRadius(), FIELD_OF_VIEW_DEGREES)
+                    } else {
+                        camera.theta += distanceX * ROTATE_SENSITIVITY
+                        camera.phi =
+                            (camera.phi + distanceY * ROTATE_SENSITIVITY)
+                                .coerceIn(OrbitCamera.PHI_MIN, OrbitCamera.PHI_MAX)
+                    }
+                    publishCamera()
+                    return true
+                }
+
+                override fun onDoubleTap(e: MotionEvent): Boolean {
+                    if (destroyed) return false
+                    camera.reframe()
+                    publishCamera()
+                    return true
+                }
+            },
+        )
 
     init {
         setEGLContextClientVersion(3)
@@ -134,13 +150,17 @@ class ModelPreviewView(context: Context) : GLSurfaceView(context) {
         scene.clearGeometry()
         baseMesh = mesh
         transform = ModelTransform()
-        pivotX = mesh.centerX; pivotY = mesh.centerY; pivotZ = mesh.centerZ
+        pivotX = mesh.centerX
+        pivotY = mesh.centerY
+        pivotZ = mesh.centerZ
         dropZ = 0f
         halfX = (mesh.maxX - mesh.minX) / 2f
         halfY = (mesh.maxY - mesh.minY) / 2f
         halfZ = (mesh.maxZ - mesh.minZ) / 2f
-        plateCenterX = bedHalfX; plateCenterY = bedHalfY
-        plateHalfX = bedHalfX; plateHalfY = bedHalfY
+        plateCenterX = bedHalfX
+        plateCenterY = bedHalfY
+        plateHalfX = bedHalfX
+        plateHalfY = bedHalfY
         scene.model = MeshGeometry(PreviewGeometry.interleave(mesh.positions, mesh.normals), mesh.indices)
         scene.modelColor = PreviewGeometry.parseColor(modelColorHex) ?: PreviewGeometry.DEFAULT_MODEL_COLOR
         scene.plate = PreviewGeometry.plate(bedHalfX, bedHalfY, -0.5f, bedHalfX, bedHalfY)
@@ -183,18 +203,27 @@ class ModelPreviewView(context: Context) : GLSurfaceView(context) {
         publishCamera()
     }
 
-    fun setMeshSlabs(mesh: MeshData, transform: FloatArray, bedHalfX: Float = 128f, bedHalfY: Float = 128f) {
+    fun setMeshSlabs(
+        mesh: MeshData,
+        transform: FloatArray,
+        bedHalfX: Float = 128f,
+        bedHalfY: Float = 128f,
+    ) {
         if (destroyed) return
         scene.clearGeometry()
         baseMesh = mesh
         this.transform = ModelTransform.fromArray(transform)
-        pivotX = mesh.centerX; pivotY = mesh.centerY; pivotZ = mesh.centerZ
+        pivotX = mesh.centerX
+        pivotY = mesh.centerY
+        pivotZ = mesh.centerZ
         dropZ = 0f
         halfX = (mesh.maxX - mesh.minX) / 2f
         halfY = (mesh.maxY - mesh.minY) / 2f
         halfZ = (mesh.maxZ - mesh.minZ) / 2f
-        plateCenterX = bedHalfX; plateCenterY = bedHalfY
-        plateHalfX = bedHalfX; plateHalfY = bedHalfY
+        plateCenterX = bedHalfX
+        plateCenterY = bedHalfY
+        plateHalfX = bedHalfX
+        plateHalfY = bedHalfY
         val extZ = this.transform.extents(halfX, halfY, halfZ)[2]
         scene.model = MeshGeometry(PreviewGeometry.interleave(mesh.positions, mesh.normals), mesh.indices)
         scene.modelColor = PreviewGeometry.REVEAL_COLOR
@@ -223,7 +252,11 @@ class ModelPreviewView(context: Context) : GLSurfaceView(context) {
         requestRender()
     }
 
-    fun setSceneBackground(r: Float, g: Float, b: Float) {
+    fun setSceneBackground(
+        r: Float,
+        g: Float,
+        b: Float,
+    ) {
         scene.background = floatArrayOf(r, g, b)
         requestRender()
     }
@@ -243,28 +276,52 @@ class ModelPreviewView(context: Context) : GLSurfaceView(context) {
         if (enabled) startAutoRotate() else stopAutoRotate()
     }
 
-    fun nudgeModel(dx: Float, dy: Float): Boolean =
-        tryApply(transform.copy(offsetX = transform.offsetX + dx, offsetY = transform.offsetY + dy))
+    fun nudgeModel(
+        dx: Float,
+        dy: Float,
+    ): Boolean = tryApply(transform.copy(offsetX = transform.offsetX + dx, offsetY = transform.offsetY + dy))
 
     fun toggleMirror(axis: Char): Boolean {
-        val next = when (axis) {
-            'x' -> transform.copy(mirrorX = !transform.mirrorX)
-            'y' -> transform.copy(mirrorY = !transform.mirrorY)
-            'z' -> transform.copy(mirrorZ = !transform.mirrorZ)
-            else -> return false
-        }
-        return tryApply(next)
+        val next =
+            when (axis) {
+                'x' -> transform.copy(mirrorX = !transform.mirrorX)
+                'y' -> transform.copy(mirrorY = !transform.mirrorY)
+                'z' -> transform.copy(mirrorZ = !transform.mirrorZ)
+                else -> return false
+            }
+        return tryApply(next.normalized())
     }
 
-    fun rotateModel(axis: Char): Boolean {
-        val next = when (axis) {
-            'x' -> transform.copy(rotX = transform.rotX + 90f)
-            'y' -> transform.copy(rotY = transform.rotY + 90f)
-            'z' -> transform.copy(rotZ = transform.rotZ + 90f)
-            else -> return false
-        }
-        return tryApply(next)
+    /** Turn the model 90° around one axis — kept for the existing callers of [rotateBy]. */
+    fun rotateModel(axis: Char): Boolean = rotateBy(axis, 90f)
+
+    /**
+     * Turn the model [degrees] around one axis. Angles are stored mod 360, so eight
+     * taps on X read 0° again instead of the old 720°: the number on screen always
+     * describes the pose that is drawn and the one the slicer receives.
+     */
+    fun rotateBy(
+        axis: Char,
+        degrees: Float,
+    ): Boolean {
+        val next =
+            when (axis) {
+                'x' -> transform.copy(rotX = transform.rotX + degrees)
+                'y' -> transform.copy(rotY = transform.rotY + degrees)
+                'z' -> transform.copy(rotZ = transform.rotZ + degrees)
+                else -> return false
+            }
+        return tryApply(next.normalized())
     }
+
+    /** "Put this face on the plate" — the six faces of the authored bounding box. */
+    fun setFaceDown(face: ModelTransform.Face): Boolean = tryApply(transform.forFace(face))
+
+    /** The pose the renderer draws — and the pose the slicer has to reproduce. */
+    fun currentTransform(): ModelTransform = transform
+
+    /** What the plate has to hold at this pose: width, depth, height in mm. */
+    fun footprintMm(): FloatArray = transform.extents(halfX, halfY, halfZ)
 
     fun resetModelTransform() {
         transform = ModelTransform()
@@ -289,13 +346,19 @@ class ModelPreviewView(context: Context) : GLSurfaceView(context) {
 
     private fun tryApply(next: ModelTransform): Boolean {
         baseMesh ?: return false
-        val fits = next.withinPlate(
-            pivotX, pivotY,
-            halfX, halfY, halfZ,
-            plateCenterX - plateHalfX, plateCenterX + plateHalfX,
-            plateCenterY - plateHalfY, plateCenterY + plateHalfY,
-            PLATE_EPSILON,
-        )
+        val fits =
+            next.withinPlate(
+                pivotX,
+                pivotY,
+                halfX,
+                halfY,
+                halfZ,
+                plateCenterX - plateHalfX,
+                plateCenterX + plateHalfX,
+                plateCenterY - plateHalfY,
+                plateCenterY + plateHalfY,
+                PLATE_EPSILON,
+            )
         if (!fits) return false
         transform = next
         updateTransformMatrix()

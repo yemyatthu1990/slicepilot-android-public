@@ -10,6 +10,9 @@ secrets/
   google-services.json         Firebase project config for the SlicePilot app.
                                Gradle copies it to android/app/ at build time.
   upload-keystore.properties   Signing config for release builds (see template).
+  debug-keystore.properties    Optional. Pins the debug signing key (see template)
+                               so every debug build shares one signature.
+  debug.keystore               The pinned debug keystore itself.
   slicepilot-upload.jks        Android upload keystore.
   slicepilot-upload-cert.pem   Certificate of the upload key.
   play-service-account.json    Google Cloud service account key with the
@@ -18,6 +21,9 @@ secrets/
 ```
 
 Without `upload-keystore.properties`, release builds sign with the debug key.
+Without `debug-keystore.properties`, debug builds use the throwaway key AGP
+mints per machine — installs from different machines then fail with
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE` and cost an uninstall plus app-data wipe.
 Without `google-services.json`, the build fails with a "google-services.json
 is missing" error from the Google Services Gradle plugin.
 Without `build.properties` (or `-P<KEY>=` / env vars), the build fails with a

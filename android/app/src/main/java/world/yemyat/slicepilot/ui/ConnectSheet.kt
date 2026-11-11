@@ -2,14 +2,20 @@ package world.yemyat.slicepilot.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.ClickableText
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
@@ -20,29 +26,24 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.*
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.foundation.text.ClickableText
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import world.yemyat.slicepilot.cloud.CloudPrinter
@@ -53,16 +54,21 @@ private data class PrinterBrand(
     val label: String,
 )
 
-private val supportedPrinterBrands = listOf(
-    PrinterBrand("elegoo", "Elegoo"),
-)
+private val supportedPrinterBrands =
+    listOf(
+        PrinterBrand("elegoo", "Elegoo"),
+    )
 
 private const val ELEGOO_TERMS_URL = "https://www.elegoo.com/pages/terms-of-service"
 private const val ELEGOO_PRIVACY_URL = "https://www.elegoo.com/pages/privacy-policy"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ConnectSheet(vm: AppViewModel, onDismiss: () -> Unit) {
+fun ConnectSheet(
+    vm: AppViewModel,
+    onDismiss: () -> Unit,
+    onAddPrinter: () -> Unit = {},
+) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val printers by vm.printers.collectAsState()
     val filaments by vm.filaments.collectAsState()
@@ -73,7 +79,7 @@ fun ConnectSheet(vm: AppViewModel, onDismiss: () -> Unit) {
     }
     var selectedTab by rememberSaveable {
         mutableIntStateOf(
-            if (vm.selectedPrinter?.isLocal == true) 1 else 0
+            if (vm.selectedPrinter?.isLocal == true) 1 else 0,
         )
     }
 
@@ -226,6 +232,7 @@ fun ConnectSheet(vm: AppViewModel, onDismiss: () -> Unit) {
                                 filaments = filaments,
                                 selectedPrinter = selectedPrinter,
                                 onDismiss = onDismiss,
+                                onAddPrinter = onAddPrinter,
                             )
                         } else {
                             LocalNetworkSection(
@@ -236,6 +243,7 @@ fun ConnectSheet(vm: AppViewModel, onDismiss: () -> Unit) {
                             )
                         }
                     }
+
                     null -> {
                         Text(
                             "Select a printer brand to continue.",
@@ -243,6 +251,7 @@ fun ConnectSheet(vm: AppViewModel, onDismiss: () -> Unit) {
                             fontSize = 14.sp,
                         )
                     }
+
                     else -> {
                         Text(
                             "More printer brands coming soon.",
@@ -302,22 +311,28 @@ private fun LocalNetworkSection(
         Text("Found printers", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             var showFilamentPicker by remember { mutableStateOf(false) }
-            val curLanFilament = selectedPrinter?.let {
-                filaments[it.serial ?: ""] ?: filaments[it.ip ?: ""] ?: filaments[it.id]
-            }
+            val curLanFilament =
+                selectedPrinter?.let {
+                    filaments[it.serial ?: ""] ?: filaments[it.ip ?: ""] ?: filaments[it.id]
+                }
 
             lanPrinters.forEach { p ->
                 val isSelected = selectedPrinter?.let { it.isLocal && (it.serial == p.serial || it.ip == p.ip) } == true
                 val filament = filaments[p.serial] ?: filaments[p.ip] ?: (if (isSelected) curLanFilament else null)
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceVariant,
+                    color =
+                        if (isSelected) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        },
                     border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .alpha(if (p.lanMode) 1f else 0.55f)
-                        .clickable(enabled = p.lanMode) { vm.selectLanPrinter(p) },
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .alpha(if (p.lanMode) 1f else 0.55f)
+                            .clickable(enabled = p.lanMode) { vm.selectLanPrinter(p) },
                 ) {
                     Column(Modifier.padding(14.dp)) {
                         Row(
@@ -360,21 +375,31 @@ private fun LocalNetworkSection(
                             Spacer(Modifier.height(10.dp))
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(MaterialTheme.colorScheme.surface)
-                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                modifier =
+                                    Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(MaterialTheme.colorScheme.surface)
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
                             ) {
-                                val trays = filament.trays.ifEmpty {
-                                    listOf(world.yemyat.slicepilot.cloud.LoadedTray(-1, filament.name, filament.name, filament.colorHex))
-                                }
+                                val trays =
+                                    filament.trays.ifEmpty {
+                                        listOf(
+                                            world.yemyat.slicepilot.cloud
+                                                .LoadedTray(-1, filament.name, filament.name, filament.colorHex),
+                                        )
+                                    }
                                 trays.forEachIndexed { idx, tray ->
                                     if (idx > 0) Spacer(Modifier.width(12.dp))
-                                    val swatchColor = remember(tray.colorHex) {
-                                        tray.colorHex?.let {
-                                            try { android.graphics.Color.parseColor(it) } catch (_: Exception) { null }
+                                    val swatchColor =
+                                        remember(tray.colorHex) {
+                                            tray.colorHex?.let {
+                                                try {
+                                                    android.graphics.Color.parseColor(it)
+                                                } catch (_: Exception) {
+                                                    null
+                                                }
+                                            }
                                         }
-                                    }
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Box(
                                             Modifier
@@ -382,8 +407,7 @@ private fun LocalNetworkSection(
                                                 .background(
                                                     swatchColor?.let { Color(it) } ?: MaterialTheme.colorScheme.outline,
                                                     CircleShape,
-                                                )
-                                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                                                ).border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
                                         )
                                         Spacer(Modifier.width(6.dp))
                                         Text(
@@ -478,6 +502,7 @@ private fun CloudSection(
     filaments: Map<String, world.yemyat.slicepilot.cloud.FilamentInfo>,
     selectedPrinter: ConnectedPrinter?,
     onDismiss: () -> Unit,
+    onAddPrinter: () -> Unit = {},
 ) {
     val demoMode by vm.demoModeState.collectAsState()
     if (!vm.cloudLoggedIn) {
@@ -531,9 +556,10 @@ private fun CloudSection(
         )
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { rememberPassword = !rememberPassword },
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { rememberPassword = !rememberPassword },
         ) {
             Checkbox(
                 checked = rememberPassword,
@@ -544,41 +570,45 @@ private fun CloudSection(
         }
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { agreedToElegooTerms = !agreedToElegooTerms },
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { agreedToElegooTerms = !agreedToElegooTerms },
         ) {
             Checkbox(
                 checked = agreedToElegooTerms,
                 onCheckedChange = { agreedToElegooTerms = it },
             )
             Spacer(Modifier.width(8.dp))
-            val linkStyle = SpanStyle(
-                color = LanternGold,
-                textDecoration = TextDecoration.Underline,
-            )
-            val termsText = buildAnnotatedString {
-                withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
-                    append("I agree to the ")
+            val linkStyle =
+                SpanStyle(
+                    color = LanternGold,
+                    textDecoration = TextDecoration.Underline,
+                )
+            val termsText =
+                buildAnnotatedString {
+                    withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
+                        append("I agree to the ")
+                    }
+                    pushStringAnnotation(tag = "URL", annotation = ELEGOO_TERMS_URL)
+                    withStyle(linkStyle) { append("ELEGOO Terms of Service") }
+                    pop()
+                    withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
+                        append(" and ")
+                    }
+                    pushStringAnnotation(tag = "URL", annotation = ELEGOO_PRIVACY_URL)
+                    withStyle(linkStyle) { append("Privacy Policy") }
+                    pop()
+                    withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
+                        append(".")
+                    }
                 }
-                pushStringAnnotation(tag = "URL", annotation = ELEGOO_TERMS_URL)
-                withStyle(linkStyle) { append("ELEGOO Terms of Service") }
-                pop()
-                withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
-                    append(" and ")
-                }
-                pushStringAnnotation(tag = "URL", annotation = ELEGOO_PRIVACY_URL)
-                withStyle(linkStyle) { append("Privacy Policy") }
-                pop()
-                withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
-                    append(".")
-                }
-            }
             ClickableText(
                 text = termsText,
                 style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
                 onClick = { offset ->
-                    termsText.getStringAnnotations(tag = "URL", start = offset, end = offset)
+                    termsText
+                        .getStringAnnotations(tag = "URL", start = offset, end = offset)
                         .firstOrNull()
                         ?.let { uriHandler.openUri(it.item) }
                 },
@@ -606,6 +636,14 @@ private fun CloudSection(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            // A printer already in the account used to be the only one this app could ever
+            // offer; this is the door to the ones that have not been claimed yet. Demo mode has
+            // no account to bind to, so pairing there is simulated the way demo printing is.
+            TextButton(onClick = onAddPrinter) {
+                Icon(Icons.Filled.Add, null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Add", fontSize = 14.sp)
+            }
             IconButton(onClick = { vm.refreshPrinters() }) {
                 Icon(Icons.Filled.Refresh, "Refresh")
             }
@@ -625,6 +663,18 @@ private fun CloudSection(
             }
         } else {
             Text("No printers found yet in your Elegoo account.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Button(
+                onClick = onAddPrinter,
+                shape = RoundedCornerShape(14.dp),
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+            ) {
+                Icon(Icons.Filled.Add, null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Add printer", fontSize = 15.sp)
+            }
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -694,7 +744,7 @@ private fun PrinterRow(
                                 .background(
                                     if (p.online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
                                     CircleShape,
-                                )
+                                ),
                         )
                     },
                 )
@@ -703,21 +753,31 @@ private fun PrinterRow(
                 Spacer(Modifier.height(10.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(MaterialTheme.colorScheme.surface)
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    modifier =
+                        Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.surface)
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
                 ) {
-                    val trays = filament.trays.ifEmpty {
-                        listOf(world.yemyat.slicepilot.cloud.LoadedTray(-1, filament.name, filament.name, filament.colorHex))
-                    }
+                    val trays =
+                        filament.trays.ifEmpty {
+                            listOf(
+                                world.yemyat.slicepilot.cloud
+                                    .LoadedTray(-1, filament.name, filament.name, filament.colorHex),
+                            )
+                        }
                     trays.forEachIndexed { idx, tray ->
                         if (idx > 0) Spacer(Modifier.width(12.dp))
-                        val swatchColor = remember(tray.colorHex) {
-                            tray.colorHex?.let {
-                                try { android.graphics.Color.parseColor(it) } catch (_: Exception) { null }
+                        val swatchColor =
+                            remember(tray.colorHex) {
+                                tray.colorHex?.let {
+                                    try {
+                                        android.graphics.Color.parseColor(it)
+                                    } catch (_: Exception) {
+                                        null
+                                    }
+                                }
                             }
-                        }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 Modifier
@@ -725,8 +785,7 @@ private fun PrinterRow(
                                     .background(
                                         swatchColor?.let { Color(it) } ?: MaterialTheme.colorScheme.outline,
                                         CircleShape,
-                                    )
-                                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                                    ).border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
                             )
                             Spacer(Modifier.width(6.dp))
                             Text(
@@ -766,13 +825,15 @@ fun AccessCodeDialog(
                     onValueChange = { code = it.filter(Char::isLetterOrDigit).take(16) },
                     label = { Text("Access code") },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Password,
-                        imeAction = ImeAction.Done,
-                    ),
-                    keyboardActions = KeyboardActions(
-                        onDone = { if (code.isNotBlank()) onSave(code.trim()) },
-                    ),
+                    keyboardOptions =
+                        KeyboardOptions(
+                            keyboardType = KeyboardType.Password,
+                            imeAction = ImeAction.Done,
+                        ),
+                    keyboardActions =
+                        KeyboardActions(
+                            onDone = { if (code.isNotBlank()) onSave(code.trim()) },
+                        ),
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
@@ -810,20 +871,21 @@ private fun FilamentPickerDialog(
     onConfirm: (String, String, Int) -> Unit,
 ) {
     val materials = listOf("PLA", "PETG", "ABS", "TPU", "PLA+", "PLA-CF", "PETG-CF", "ASA", "PC", "PA")
-    val colors = listOf(
-        "#FFFFFF" to "White",
-        "#212121" to "Black",
-        "#9E9E9E" to "Grey",
-        "#E53935" to "Red",
-        "#1E88E5" to "Blue",
-        "#43A047" to "Green",
-        "#FB8C00" to "Orange",
-        "#FDD835" to "Yellow",
-        "#8E24AA" to "Purple",
-        "#00ACC1" to "Cyan",
-        "#D4AF37" to "Gold",
-        "#A1887F" to "Brown",
-    )
+    val colors =
+        listOf(
+            "#FFFFFF" to "White",
+            "#212121" to "Black",
+            "#9E9E9E" to "Grey",
+            "#E53935" to "Red",
+            "#1E88E5" to "Blue",
+            "#43A047" to "Green",
+            "#FB8C00" to "Orange",
+            "#FDD835" to "Yellow",
+            "#8E24AA" to "Purple",
+            "#00ACC1" to "Cyan",
+            "#D4AF37" to "Gold",
+            "#A1887F" to "Brown",
+        )
     var selectedMat by remember { mutableStateOf(currentMaterial.ifBlank { "PLA" }) }
     var selectedCol by remember { mutableStateOf(currentColorHex ?: "#FFFFFF") }
     var selectedTray by remember { mutableStateOf(currentTrayId) }
@@ -838,7 +900,12 @@ private fun FilamentPickerDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Text("Material type", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "Material type",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     materials.forEach { m ->
                         FilterChip(
@@ -853,20 +920,26 @@ private fun FilamentPickerDialog(
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     colors.forEach { (hex, name) ->
                         val isColSelected = selectedCol.equals(hex, ignoreCase = true)
-                        val parsed = try { Color(android.graphics.Color.parseColor(hex)) } catch (_: Exception) { Color.Gray }
+                        val parsed =
+                            try {
+                                Color(android.graphics.Color.parseColor(hex))
+                            } catch (_: Exception) {
+                                Color.Gray
+                            }
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.clickable { selectedCol = hex }
+                            modifier = Modifier.clickable { selectedCol = hex },
                         ) {
                             Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .background(parsed, CircleShape)
-                                    .border(
-                                        if (isColSelected) 3.dp else 1.dp,
-                                        if (isColSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-                                        CircleShape,
-                                    ),
+                                modifier =
+                                    Modifier
+                                        .size(36.dp)
+                                        .background(parsed, CircleShape)
+                                        .border(
+                                            if (isColSelected) 3.dp else 1.dp,
+                                            if (isColSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                                            CircleShape,
+                                        ),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 if (isColSelected) {
@@ -884,26 +957,35 @@ private fun FilamentPickerDialog(
                     }
                 }
 
-                Text("Printer spool", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "Printer spool",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     slotOptions.forEach { (trayId, trayColorHex) ->
                         FilterChip(
                             selected = selectedTray == trayId,
                             onClick = { selectedTray = trayId },
                             leadingIcon = {
-                                val parsed = remember(trayColorHex) {
-                                    trayColorHex?.let {
-                                        try { android.graphics.Color.parseColor(it) } catch (_: Exception) { null }
+                                val parsed =
+                                    remember(trayColorHex) {
+                                        trayColorHex?.let {
+                                            try {
+                                                android.graphics.Color.parseColor(it)
+                                            } catch (_: Exception) {
+                                                null
+                                            }
+                                        }
                                     }
-                                }
                                 Box(
                                     Modifier
                                         .size(14.dp)
                                         .background(
                                             parsed?.let { Color(it) } ?: MaterialTheme.colorScheme.outline,
                                             CircleShape,
-                                        )
-                                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                                        ).border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
                                 )
                             },
                             label = { Text("Slot ${trayId + 1}") },
@@ -921,7 +1003,6 @@ private fun FilamentPickerDialog(
             TextButton(onClick = onDismiss) {
                 Text("Cancel")
             }
-        }
+        },
     )
 }
-

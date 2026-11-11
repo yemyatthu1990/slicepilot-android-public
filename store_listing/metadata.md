@@ -38,6 +38,19 @@ AND THE NICE TOUCHES
 
 SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint, Elegoo, or YE3D. All trademarks belong to their respective owners.
 
+## What's new (1.9.0)
+- Home, Printer and Files are their own tabs now, with one button style everywhere instead of five
+- A full-screen camera: pinch-zoom live view, a shutter, and a photo gallery with Share and Save
+- Comments on every source - threaded, with their photos and votes - and a swipeable photo viewer
+- Sign in to MakerWorld or Nexprint without leaving the app, including the emailed Bambu Lab code step
+- Pair a printer by typing its PIN or scanning the QR code on the panel, even one the account doesn't list yet
+- Fixed: MakerWorld models that answered "no download link" now download
+- Fixed: the 3D preview and the slicer no longer disagree about how a model is posed
+- Slice failures now say what went wrong instead of the slicer's literal "Errors"
+- Long model descriptions collapse behind "Show more" so a model page can be scanned
+- Fixed a crash opening the preview of an empty G-code, and thumbnails that never left the cache
+- Built for Android's 16 KB memory pages
+
 ## What's new (1.6.2)
 - Search and download models from MakerWorld, Printables, Thingiverse and Nexprint, right inside the app
 - Download progress banner so you always know what is downloading
