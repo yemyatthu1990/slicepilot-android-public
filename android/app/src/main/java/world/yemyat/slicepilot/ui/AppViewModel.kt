@@ -309,6 +309,84 @@ class AppViewModel(
 
     fun resetModelTransform() {
         _modelTransform.value = ModelTransform()
+        clearPartPoses()
+    }
+
+    // Per-piece placement, in the order the parser listed the pieces. Null while the model is
+    // posed as one blob — every single-part file, and every multi-part file the user has not
+    // laid out yet — in which case the slicer uses modelTransform alone, exactly as before
+    // pieces existed. Setting it switches the slicer to one pose per object, which is what
+    // lets a 3MF holding two models print only one of them, or slide both onto one plate.
+    // The layout itself lives in model/PartPlacement; the payload shape in
+    // NativeLib.nativeSetPartPoses.
+    private val _partPoses =
+        MutableStateFlow<List<world.yemyat.slicepilot.preview.ModelTransform>?>(null)
+    val partPoses: StateFlow<List<world.yemyat.slicepilot.preview.ModelTransform>?> =
+        _partPoses.asStateFlow()
+
+    /** Pieces left off the plate. Empty means every piece prints (the pre-parts behaviour). */
+    private val _partsSkipped = MutableStateFlow<Set<Int>>(emptySet())
+    val partsSkipped: StateFlow<Set<Int>> = _partsSkipped.asStateFlow()
+
+    private val _selectedPart = MutableStateFlow(0)
+    val selectedPart: StateFlow<Int> = _selectedPart.asStateFlow()
+
+    /** Lay every piece out on a plateW×plateH plate the way PartPlacement derives it. */
+    fun arrangeParts(
+        plateW: Float,
+        plateH: Float,
+    ) {
+        val mesh = _mesh.value ?: return
+        if (mesh.parts.size < 2) return
+        _partPoses.value =
+            world.yemyat.slicepilot.model.PartPlacement
+                .defaultPoses(mesh, plateW, plateH)
+    }
+
+    /** Pose one piece — rotate, mirror or move it on its own. Unknown index: nothing to do. */
+    fun setPartPose(
+        index: Int,
+        pose: world.yemyat.slicepilot.preview.ModelTransform,
+    ) {
+        val current = _partPoses.value ?: return
+        if (index !in current.indices) return
+        _partPoses.value = current.toMutableList().also { it[index] = pose }
+    }
+
+    /** Print this piece, or leave it off the plate. */
+    fun setPartPrinted(
+        index: Int,
+        printed: Boolean,
+    ) {
+        val mesh = _mesh.value ?: return
+        if (index !in mesh.parts.indices) return
+        val current = _partsSkipped.value
+        _partsSkipped.value = if (printed) current - index else current + index
+    }
+
+    fun selectPart(index: Int) {
+        _selectedPart.value = index
+    }
+
+    /** Drop the per-piece layout, e.g. when a different model is selected. */
+    fun clearPartPoses() {
+        _partPoses.value = null
+        _partsSkipped.value = emptySet()
+        _selectedPart.value = 0
+    }
+
+    /**
+     * The pose rows to hand the slicer, or null when the current model has no pieces of its
+     * own (a plain STL, or a decimated preview): the single [modelTransform] then places it.
+     */
+    fun partPoseRows(): FloatArray? {
+        val mesh = _mesh.value ?: return null
+        val poses = _partPoses.value ?: return null
+        return world.yemyat.slicepilot.model.PartPlacement.poseRows(
+            mesh,
+            poses,
+            _partsSkipped.value,
+        )
     }
 
     private val _themeDark = MutableStateFlow(prefs.getBoolean("ui_dark", false))
@@ -3242,6 +3320,8 @@ class AppViewModel(
                         offsetX = t.offsetX,
                         offsetY = t.offsetY,
                     ),
+                partPoseRows = partPoseRows(),
+                partPoseCount = _partPoses.value?.size ?: 0,
             )
         } catch (e: Exception) {
             _slicing.value = false

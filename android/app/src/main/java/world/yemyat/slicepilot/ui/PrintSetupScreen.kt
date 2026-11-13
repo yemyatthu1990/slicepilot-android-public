@@ -103,6 +103,11 @@ fun PrintSetupScreen(vm: AppViewModel) {
         mesh?.let {
             try {
                 previewController.setModelWithPlate(it, materialColor, plateColor, volume.first / 2f, volume.second / 2f)
+                // A file the parser split into pieces gets its layout worked out up front, so the
+                // plate shows what the slicer will get; a single-piece file keeps using the
+                // whole-model transform below.
+                if (it.parts.size > 1) vm.arrangeParts(volume.first, volume.second)
+                previewController.setPartPoses(vm.partPoses.value, vm.partsSkipped.value)
                 val t = vm.modelTransform.value
                 previewController.setModelTransform(
                     floatArrayOf(
@@ -229,6 +234,20 @@ fun PrintSetupScreen(vm: AppViewModel) {
                 }
             }
 
+            // Pieces: the UI half of per-object placement. Before this a 3MF holding two models
+            // could only be moved as one blob — now each one can be rotated, moved or left off
+            // the plate, and the plate can be re-laid out to fit them all.
+            val partNames = mesh?.parts?.map { it.name }.orEmpty()
+            if (partNames.size > 1) {
+                SectionLabel("Pieces")
+                PieceSection(
+                    vm = vm,
+                    names = partNames,
+                    plateW = volume.first,
+                    plateH = volume.second,
+                )
+            }
+
             SectionLabel("Material")
             MaterialDropdown(
                 options = materials,
@@ -304,6 +323,60 @@ fun PrintSetupScreen(vm: AppViewModel) {
 @Composable
 private fun SectionLabel(text: String) {
     Text(text, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+/**
+ * The pieces of the loaded model, in file order: tap one to pick the piece the buttons act on,
+ * switch the ones that should not print off, spin the selected one, or re-lay the whole set out
+ * on the plate. Names come from the file (a 3MF names its objects); unnamed pieces are
+ * "Part 1", "Part 2", …
+ */
+@Composable
+private fun PieceSection(
+    vm: AppViewModel,
+    names: List<String>,
+    plateW: Float,
+    plateH: Float,
+) {
+    val selected by vm.selectedPart.collectAsState()
+    val skipped by vm.partsSkipped.collectAsState()
+    val poses by vm.partPoses.collectAsState()
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        names.forEachIndexed { index, name ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                FilterChip(
+                    selected = index == selected,
+                    onClick = { vm.selectPart(index) },
+                    label = { Text(name, maxLines = 1, fontSize = 13.sp) },
+                )
+                Spacer(Modifier.weight(1f))
+                val printed = index !in skipped
+                TextButton(onClick = { vm.setPartPrinted(index, !printed) }) {
+                    Text(if (printed) "prints" else "skipped", fontSize = 12.sp)
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            val pose = poses?.getOrNull(selected)
+            OutlinedButton(
+                onClick = { if (pose != null) vm.setPartPose(selected, pose.copy(rotZ = pose.rotZ + 90f)) },
+                enabled = pose != null,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Rotate 90°", fontSize = 13.sp, maxLines = 1)
+            }
+            OutlinedButton(
+                onClick = { vm.arrangeParts(plateW, plateH) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Re-arrange", fontSize = 13.sp, maxLines = 1)
+            }
+        }
+    }
 }
 
 @Composable

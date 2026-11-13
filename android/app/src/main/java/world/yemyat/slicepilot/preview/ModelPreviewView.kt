@@ -20,6 +20,12 @@ class ModelPreviewView(
 
     private var baseMesh: MeshData? = null
     private var transform = ModelTransform()
+
+    // Per-piece poses for baseMesh. Null keeps the old behaviour (the whole mesh drawn with
+    // [transform]); setting them makes the renderer draw one piece at a time, each with its
+    // own matrix - see PreviewScene.partDraws and model/PartPlacement.
+    private var partPoses: List<ModelTransform>? = null
+    private var partsSkipped: Set<Int> = emptySet()
     private var pivotX = 0f
     private var pivotY = 0f
     private var pivotZ = 0f
@@ -136,6 +142,8 @@ class ModelPreviewView(
         scene.model = MeshGeometry(PreviewGeometry.interleave(mesh.positions, mesh.normals), mesh.indices)
         scene.modelColor = PreviewGeometry.DEFAULT_MODEL_COLOR
         camera.frame(mesh.centerX, mesh.centerY, mesh.centerZ, mesh.maxRadius)
+        baseMesh = mesh
+        rebuildPartDraws()
         publishCamera()
     }
 
@@ -166,6 +174,7 @@ class ModelPreviewView(
         scene.plate = PreviewGeometry.plate(bedHalfX, bedHalfY, -0.5f, bedHalfX, bedHalfY)
         scene.plateColor = PreviewGeometry.parseColor(plateColorHex) ?: PreviewGeometry.DEFAULT_PLATE_COLOR
         updateTransformMatrix()
+        rebuildPartDraws()
         camera.frame(
             plateCenterX,
             plateCenterY,
@@ -330,6 +339,23 @@ class ModelPreviewView(
 
     fun modelTransform(): FloatArray = transform.toArray()
 
+    /**
+     * Pose the pieces of the current model individually - the preview half of "move this
+     * model, leave that one". [poses] is in the order the parser reported the pieces (see
+     * model/PartPlacement); [skipped] names the pieces left off the plate. Passing null (or a
+     * model with a single piece) draws the mesh whole with [setModelTransform], as before.
+     */
+    fun setPartPoses(
+        poses: List<ModelTransform>?,
+        skipped: Set<Int> = emptySet(),
+    ) {
+        partPoses = poses
+        partsSkipped = skipped
+        rebuildPartDraws()
+    }
+
+    fun partPoses(): List<ModelTransform>? = partPoses
+
     fun setModelTransform(t: FloatArray) {
         transform = ModelTransform.fromArray(t)
         updateTransformMatrix()
@@ -367,6 +393,47 @@ class ModelPreviewView(
 
     private fun updateTransformMatrix() {
         scene.transform = transform.worldMatrix(pivotX, pivotY, pivotZ, plateCenterX, plateCenterY, dropZ, halfX, halfY, halfZ)
+        requestRender()
+    }
+
+    /**
+     * Fill PreviewScene.partDraws from the pieces of baseMesh and their poses: printed pieces
+     * get a draw for their slice of the shared index buffer with their own matrix, skipped
+     * pieces get none. Anything the mesh has no pose for falls back to the whole-mesh draw.
+     */
+    private fun rebuildPartDraws() {
+        val mesh = baseMesh
+        val poses = partPoses
+        if (mesh == null || poses == null || mesh.parts.size < 2) {
+            scene.partDraws = emptyList()
+            requestRender()
+            return
+        }
+        scene.partDraws =
+            buildList {
+                mesh.parts.forEachIndexed { index, part ->
+                    val pose = poses.getOrNull(index) ?: return@forEachIndexed
+                    if (index in partsSkipped) return@forEachIndexed
+                    add(
+                        ModelPartDraw(
+                            indexOffset = part.indexOffset,
+                            indexCount = part.indexCount,
+                            matrix =
+                                pose.worldMatrix(
+                                    part.centerX,
+                                    part.centerY,
+                                    (part.minZ + part.maxZ) / 2f,
+                                    plateCenterX,
+                                    plateCenterY,
+                                    dropZ,
+                                    part.halfX,
+                                    part.halfY,
+                                    part.halfZ,
+                                ),
+                        ),
+                    )
+                }
+            }
         requestRender()
     }
 

@@ -8,9 +8,9 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
-import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
@@ -26,12 +26,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.io.File
 import world.yemyat.slicepilot.model.GcodePreview
 import world.yemyat.slicepilot.model.GcodePreviewParser
 import world.yemyat.slicepilot.model.GcodeStats
 import world.yemyat.slicepilot.tracking.EventNotifier
 import world.yemyat.slicepilot.tracking.TrackingBootstrap
+import java.io.File
 
 data class SliceServiceState(
     val jobId: Long = 0L,
@@ -57,7 +57,6 @@ data class SliceTransform(
 )
 
 class SliceForegroundService : Service() {
-
     companion object {
         const val ACTION_START = "world.yemyat.slicepilot.action.START_SLICE"
         const val ACTION_CANCEL = "world.yemyat.slicepilot.action.CANCEL_SLICE"
@@ -80,6 +79,12 @@ class SliceForegroundService : Service() {
         const val EXTRA_OFFSET_X = "offset_x"
         const val EXTRA_OFFSET_Y = "offset_y"
 
+        // Per-piece placement: the flat pose rows (NativeLib.nativeSetPartPoses) and how many
+        // pieces they describe. Absent/null means "no per-piece opinion" and the single
+        // transform above places the whole model, as before pieces existed.
+        const val EXTRA_PART_POSE_ROWS = "part_pose_rows"
+        const val EXTRA_PART_POSE_COUNT = "part_pose_count"
+
         private const val CHANNEL_PROGRESS = "slice_progress"
         private const val CHANNEL_RESULT = "slice_result"
         private const val GROUP_SLICE = "world.yemyat.slicepilot.slice"
@@ -101,36 +106,45 @@ class SliceForegroundService : Service() {
             outPath: String,
             autoPrint: Boolean,
             transform: SliceTransform,
+            partPoseRows: FloatArray? = null,
+            partPoseCount: Int = 0,
         ) {
-            val intent = Intent(context, SliceForegroundService::class.java).apply {
-                action = ACTION_START
-                putExtra(EXTRA_JOB_ID, jobId)
-                putExtra(EXTRA_MODEL_PATH, modelPath)
-                putExtra(EXTRA_PRINTER, printer)
-                putExtra(EXTRA_FILAMENT, filament)
-                putExtra(EXTRA_PROCESS, process)
-                putExtra(EXTRA_OVERRIDES, overrides)
-                putExtra(EXTRA_SUPPORT_FILAMENT, supportFilament)
-                putExtra(EXTRA_OUT_PATH, outPath)
-                putExtra(EXTRA_AUTO_PRINT, autoPrint)
-                putExtra(EXTRA_ROT_X, transform.rotX)
-                putExtra(EXTRA_ROT_Y, transform.rotY)
-                putExtra(EXTRA_ROT_Z, transform.rotZ)
-                putExtra(EXTRA_MIRROR_X, transform.mirrorX)
-                putExtra(EXTRA_MIRROR_Y, transform.mirrorY)
-                putExtra(EXTRA_MIRROR_Z, transform.mirrorZ)
-                putExtra(EXTRA_OFFSET_X, transform.offsetX)
-                putExtra(EXTRA_OFFSET_Y, transform.offsetY)
-            }
+            val intent =
+                Intent(context, SliceForegroundService::class.java).apply {
+                    action = ACTION_START
+                    putExtra(EXTRA_JOB_ID, jobId)
+                    putExtra(EXTRA_MODEL_PATH, modelPath)
+                    putExtra(EXTRA_PRINTER, printer)
+                    putExtra(EXTRA_FILAMENT, filament)
+                    putExtra(EXTRA_PROCESS, process)
+                    putExtra(EXTRA_OVERRIDES, overrides)
+                    putExtra(EXTRA_SUPPORT_FILAMENT, supportFilament)
+                    putExtra(EXTRA_OUT_PATH, outPath)
+                    putExtra(EXTRA_AUTO_PRINT, autoPrint)
+                    putExtra(EXTRA_ROT_X, transform.rotX)
+                    putExtra(EXTRA_ROT_Y, transform.rotY)
+                    putExtra(EXTRA_ROT_Z, transform.rotZ)
+                    putExtra(EXTRA_MIRROR_X, transform.mirrorX)
+                    putExtra(EXTRA_MIRROR_Y, transform.mirrorY)
+                    putExtra(EXTRA_MIRROR_Z, transform.mirrorZ)
+                    putExtra(EXTRA_OFFSET_X, transform.offsetX)
+                    putExtra(EXTRA_OFFSET_Y, transform.offsetY)
+                    putExtra(EXTRA_PART_POSE_ROWS, partPoseRows)
+                    putExtra(EXTRA_PART_POSE_COUNT, partPoseCount)
+                }
             startService(context, intent)
         }
 
-        fun cancel(context: Context, jobId: Long) {
+        fun cancel(
+            context: Context,
+            jobId: Long,
+        ) {
             if (!_state.value.isRunning) return
-            val intent = Intent(context, SliceForegroundService::class.java).apply {
-                action = ACTION_CANCEL
-                putExtra(EXTRA_JOB_ID, jobId)
-            }
+            val intent =
+                Intent(context, SliceForegroundService::class.java).apply {
+                    action = ACTION_CANCEL
+                    putExtra(EXTRA_JOB_ID, jobId)
+                }
             startService(context, intent)
         }
 
@@ -171,12 +185,17 @@ class SliceForegroundService : Service() {
             // A user-deleted channel reads back null and cannot host the FGS
             // notification ("Bad notification" crash): recreate it first.
             if (mgr.getNotificationChannel(CHANNEL_PROGRESS) == null) ensureChannels(context)
-            val importance = mgr.getNotificationChannel(CHANNEL_PROGRESS)?.importance
-                ?: NotificationManager.IMPORTANCE_LOW
+            val importance =
+                mgr.getNotificationChannel(CHANNEL_PROGRESS)?.importance
+                    ?: NotificationManager.IMPORTANCE_LOW
             return importance != NotificationManager.IMPORTANCE_NONE
         }
 
-        private fun startService(context: Context, intent: Intent) {            if (!notificationsUsable(context)) {
+        private fun startService(
+            context: Context,
+            intent: Intent,
+        ) {
+            if (!notificationsUsable(context)) {
                 runCatching { context.startService(intent) }
                 return
             }
@@ -202,10 +221,20 @@ class SliceForegroundService : Service() {
         createNotificationChannels()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int,
+    ): Int {
         when (intent?.action) {
-            ACTION_START -> startSlicing(intent)
-            ACTION_CANCEL -> cancelSlicing(intent.getLongExtra(EXTRA_JOB_ID, 0L))
+            ACTION_START -> {
+                startSlicing(intent)
+            }
+
+            ACTION_CANCEL -> {
+                cancelSlicing(intent.getLongExtra(EXTRA_JOB_ID, 0L))
+            }
+
             else -> {
                 if (intent != null) {
                     ensureForeground(buildProgressNotification("Working…", _state.value.progress))
@@ -237,7 +266,9 @@ class SliceForegroundService : Service() {
         val filament = intent.getStringExtra(EXTRA_FILAMENT)
         val process = intent.getStringExtra(EXTRA_PROCESS)
         val outPath = intent.getStringExtra(EXTRA_OUT_PATH)
-        if (jobId == 0L || modelPath.isNullOrBlank() || printer.isNullOrBlank() || filament.isNullOrBlank() || process.isNullOrBlank() || outPath.isNullOrBlank()) {
+        if (jobId == 0L || modelPath.isNullOrBlank() || printer.isNullOrBlank() || filament.isNullOrBlank() || process.isNullOrBlank() ||
+            outPath.isNullOrBlank()
+        ) {
             stopSelf()
             return
         }
@@ -250,16 +281,21 @@ class SliceForegroundService : Service() {
         val overrides = intent.getStringExtra(EXTRA_OVERRIDES).orEmpty()
         val supportFilament = intent.getStringExtra(EXTRA_SUPPORT_FILAMENT).orEmpty()
         val autoPrint = intent.getBooleanExtra(EXTRA_AUTO_PRINT, false)
-        val transform = SliceTransform(
-            rotX = intent.getFloatExtra(EXTRA_ROT_X, 0f),
-            rotY = intent.getFloatExtra(EXTRA_ROT_Y, 0f),
-            rotZ = intent.getFloatExtra(EXTRA_ROT_Z, 0f),
-            mirrorX = intent.getBooleanExtra(EXTRA_MIRROR_X, false),
-            mirrorY = intent.getBooleanExtra(EXTRA_MIRROR_Y, false),
-            mirrorZ = intent.getBooleanExtra(EXTRA_MIRROR_Z, false),
-            offsetX = intent.getFloatExtra(EXTRA_OFFSET_X, 0f),
-            offsetY = intent.getFloatExtra(EXTRA_OFFSET_Y, 0f),
-        )
+        val transform =
+            SliceTransform(
+                rotX = intent.getFloatExtra(EXTRA_ROT_X, 0f),
+                rotY = intent.getFloatExtra(EXTRA_ROT_Y, 0f),
+                rotZ = intent.getFloatExtra(EXTRA_ROT_Z, 0f),
+                mirrorX = intent.getBooleanExtra(EXTRA_MIRROR_X, false),
+                mirrorY = intent.getBooleanExtra(EXTRA_MIRROR_Y, false),
+                mirrorZ = intent.getBooleanExtra(EXTRA_MIRROR_Z, false),
+                offsetX = intent.getFloatExtra(EXTRA_OFFSET_X, 0f),
+                offsetY = intent.getFloatExtra(EXTRA_OFFSET_Y, 0f),
+            )
+        // Pieces the app posed individually (a multi-model 3MF); null restores the
+        // single-transform placement of every file the app has no per-piece data for.
+        val partPoseRows = intent.getFloatArrayExtra(EXTRA_PART_POSE_ROWS)
+        val partPoseCount = intent.getIntExtra(EXTRA_PART_POSE_COUNT, 0)
 
         if (_state.value.isRunning && _state.value.jobId != jobId) {
             NativeLib.nativeCancel()
@@ -286,53 +322,60 @@ class SliceForegroundService : Service() {
         acquireWakeLock()
 
         sliceJob?.cancel()
-        sliceJob = scope.launch {
-            NativeLib.nativeSetModelTransform(
-                transform.rotX,
-                transform.rotY,
-                transform.rotZ,
-                transform.mirrorX,
-                transform.mirrorY,
-                transform.mirrorZ,
-                transform.offsetX,
-                transform.offsetY,
-            )
+        sliceJob =
+            scope.launch {
+                NativeLib.nativeSetModelTransform(
+                    transform.rotX,
+                    transform.rotY,
+                    transform.rotZ,
+                    transform.mirrorX,
+                    transform.mirrorY,
+                    transform.mirrorZ,
+                    transform.offsetX,
+                    transform.offsetY,
+                )
+                NativeLib.nativeSetPartPoses(partPoseRows, partPoseCount)
 
-            val ok = NativeLib.nativeSliceWithOverrides(
-                modelPath,
-                printer,
-                filament,
-                process,
-                overrides,
-                supportFilament,
-                outPath,
-                object : NativeLib.SliceCallback {
-                    override fun onProgress(step: Int, text: String, percent: Int) {
-                        if (_state.value.jobId != jobId) return
-                        _state.update { it.copy(progress = percent / 100f, status = text) }
-                        showProgressNotification()
-                    }
-                },
-            )
+                val ok =
+                    NativeLib.nativeSliceWithOverrides(
+                        modelPath,
+                        printer,
+                        filament,
+                        process,
+                        overrides,
+                        supportFilament,
+                        outPath,
+                        object : NativeLib.SliceCallback {
+                            override fun onProgress(
+                                step: Int,
+                                text: String,
+                                percent: Int,
+                            ) {
+                                if (_state.value.jobId != jobId) return
+                                _state.update { it.copy(progress = percent / 100f, status = text) }
+                                showProgressNotification()
+                            }
+                        },
+                    )
 
-            if (!ok) {
-                handleFailure(jobId, "launch", NativeLib.nativeGetError(), startedAt, printer, filament, process, outPath)
-                return@launch
+                if (!ok) {
+                    handleFailure(jobId, "launch", NativeLib.nativeGetError(), startedAt, printer, filament, process, outPath)
+                    return@launch
+                }
+
+                while (NativeLib.nativeIsRunning()) {
+                    delay(250)
+                }
+                if (_state.value.jobId != jobId) return@launch
+
+                val err = NativeLib.nativeGetError()
+                if (err.isNotEmpty()) {
+                    handleFailure(jobId, "run", err, startedAt, printer, filament, process, outPath)
+                    return@launch
+                }
+
+                handleSuccess(jobId, outPath, startedAt, printer, filament, process, modelPath)
             }
-
-            while (NativeLib.nativeIsRunning()) {
-                delay(250)
-            }
-            if (_state.value.jobId != jobId) return@launch
-
-            val err = NativeLib.nativeGetError()
-            if (err.isNotEmpty()) {
-                handleFailure(jobId, "run", err, startedAt, printer, filament, process, outPath)
-                return@launch
-            }
-
-            handleSuccess(jobId, outPath, startedAt, printer, filament, process, modelPath)
-        }
     }
 
     private fun cancelSlicing(jobId: Long) {
@@ -440,21 +483,22 @@ class SliceForegroundService : Service() {
         }
         showProgressNotification(force = true)
 
-        val preview = try {
-            GcodePreviewParser.parse(File(outPath)) { p ->
-                if (_state.value.jobId == jobId) {
-                    _state.update {
-                        it.copy(
-                            progress = 0.80f + 0.18f * p,
-                            status = "Parsing G-code preview ${(p * 100).toInt()}%",
-                        )
+        val preview =
+            try {
+                GcodePreviewParser.parse(File(outPath)) { p ->
+                    if (_state.value.jobId == jobId) {
+                        _state.update {
+                            it.copy(
+                                progress = 0.80f + 0.18f * p,
+                                status = "Parsing G-code preview ${(p * 100).toInt()}%",
+                            )
+                        }
+                        showProgressNotification()
                     }
-                    showProgressNotification()
                 }
+            } catch (_: Exception) {
+                null
             }
-        } catch (_: Exception) {
-            null
-        }
 
         var stats: GcodeStats? = null
         try {
@@ -530,25 +574,31 @@ class SliceForegroundService : Service() {
         gcodePath: String? = null,
         modelPath: String? = null,
     ) {
-        val notification = NotificationCompat.Builder(this, CHANNEL_RESULT)
-            .setSmallIcon(if (error) android.R.drawable.stat_notify_error else android.R.drawable.stat_sys_download_done)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setAutoCancel(true)
-            .setOngoing(false)
-            .setCategory(NotificationCompat.CATEGORY_STATUS)
-            .setContentIntent(openAppPendingIntent(openPreview, gcodePath, modelPath))
-            .setGroup(GROUP_SLICE)
-            .build()
+        val notification =
+            NotificationCompat
+                .Builder(this, CHANNEL_RESULT)
+                .setSmallIcon(if (error) android.R.drawable.stat_notify_error else android.R.drawable.stat_sys_download_done)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                .setAutoCancel(true)
+                .setOngoing(false)
+                .setCategory(NotificationCompat.CATEGORY_STATUS)
+                .setContentIntent(openAppPendingIntent(openPreview, gcodePath, modelPath))
+                .setGroup(GROUP_SLICE)
+                .build()
         try {
             NotificationManagerCompat.from(this).notify(RESULT_NOTIFICATION_ID, notification)
         } catch (_: Exception) {
         }
     }
 
-    private fun buildProgressNotification(status: String, progress: Float): Notification {
-        return NotificationCompat.Builder(this, CHANNEL_PROGRESS)
+    private fun buildProgressNotification(
+        status: String,
+        progress: Float,
+    ): Notification =
+        NotificationCompat
+            .Builder(this, CHANNEL_PROGRESS)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setContentTitle("Slicing model")
             .setContentText(status.ifBlank { "Working…" })
@@ -562,20 +612,23 @@ class SliceForegroundService : Service() {
             .addAction(0, "Cancel", cancelPendingIntent(_state.value.jobId))
             .setGroup(GROUP_SLICE)
             .build()
-    }
 
-    private fun completeNotificationText(outPath: String, stats: GcodeStats?): String {
-        val details = buildString {
-            stats?.layerCount?.let { append("$it layers") }
-            stats?.estimatedTimeLabel?.let {
-                if (isNotEmpty()) append(" · ")
-                append(it)
+    private fun completeNotificationText(
+        outPath: String,
+        stats: GcodeStats?,
+    ): String {
+        val details =
+            buildString {
+                stats?.layerCount?.let { append("$it layers") }
+                stats?.estimatedTimeLabel?.let {
+                    if (isNotEmpty()) append(" · ")
+                    append(it)
+                }
+                stats?.filamentGrams?.let {
+                    if (isNotEmpty()) append(" · ")
+                    append(String.format("%.1f g", it))
+                }
             }
-            stats?.filamentGrams?.let {
-                if (isNotEmpty()) append(" · ")
-                append(String.format("%.1f g", it))
-            }
-        }
         val fileName = File(outPath).name
         return if (details.isBlank()) fileName else "$details · $fileName"
     }
@@ -585,12 +638,13 @@ class SliceForegroundService : Service() {
         gcodePath: String? = null,
         modelPath: String? = null,
     ): PendingIntent {
-        val intent = Intent(this, MainActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            putExtra("open_preview", openPreview)
-            if (!gcodePath.isNullOrBlank()) putExtra("gcode_path", gcodePath)
-            if (!modelPath.isNullOrBlank()) putExtra("model_path", modelPath)
-        }
+        val intent =
+            Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                putExtra("open_preview", openPreview)
+                if (!gcodePath.isNullOrBlank()) putExtra("gcode_path", gcodePath)
+                if (!modelPath.isNullOrBlank()) putExtra("model_path", modelPath)
+            }
         return PendingIntent.getActivity(
             this,
             if (openPreview) 1 else 0,
@@ -600,10 +654,11 @@ class SliceForegroundService : Service() {
     }
 
     private fun cancelPendingIntent(jobId: Long): PendingIntent {
-        val intent = Intent(this, SliceForegroundService::class.java).apply {
-            action = ACTION_CANCEL
-            putExtra(EXTRA_JOB_ID, jobId)
-        }
+        val intent =
+            Intent(this, SliceForegroundService::class.java).apply {
+                action = ACTION_CANCEL
+                putExtra(EXTRA_JOB_ID, jobId)
+            }
         return PendingIntent.getService(
             this,
             jobId.toInt(),
@@ -615,10 +670,11 @@ class SliceForegroundService : Service() {
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
         val manager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = manager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SlicePilot:slicing").apply {
-            setReferenceCounted(false)
-            acquire(6 * 60 * 60 * 1000L)
-        }
+        wakeLock =
+            manager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SlicePilot:slicing").apply {
+                setReferenceCounted(false)
+                acquire(6 * 60 * 60 * 1000L)
+            }
     }
 
     private fun releaseWakeLock() {

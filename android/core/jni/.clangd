@@ -1,27 +1,86 @@
-# clangd config for the native layer (android/core/jni).
+# clangd / C++ checker config for android/core/jni.
 #
-# Problem this fixes: with no compilation database, clangd had no include paths at all,
-# so `#include <jni.h>` failed and every JNI file reported a cascade of ~21 false errors
-# ("Unknown type name 'jobject'", "'JNIEnv'", "'Print'", ...).
+# Why this exists: these files are not part of a Gradle module, so no compile database
+# lands next to them; without one the checker falls back to a host clang that has no
+# libc++ here and reports a cascade of false errors on every std:: use ('jni.h' /
+# 'string' / 'array' file not found, "did you mean 'jstring'?"). The app pins
+# ndkVersion = "27.0.12077973" (android/app/build.gradle.kts:72), so the flags below are
+# the exact ones the build uses for this target - copied from AGP's own database.
 #
-# The app pins ndkVersion = "27.0.12077973" (android/app/build.gradle.kts:72), so the
-# sysroot below is the exact one the build uses. The app's own headers live in <repo>/src
-# (that is where src/libslic3r/Model.hpp, AppConfig.hpp, ... sit), which is why the JNI
-# file's `#include "libslic3r/Model.hpp"` resolves during the build.
-#
-# Prefer the database AGP generates when you build:
-#   ./gradlew :app:externalNativeBuildDebug
-#   -> android/app/.cxx/Debug/<hash>/arm64-v8a/compile_commands.json
-# and, if that exists, replace the Add: block with
-#   CompileFlags: { CompilationDatabase: ../../app/.cxx/Debug/<hash>/arm64-v8a }
-# Absolute paths are used here on purpose: relative -I entries in a .clangd file are
-# resolved against the file's own directory, not the repository root.
+# Refreshment: AGP recreates the hashed folder per configuration, so after changing the
+# NDK or ABI, point this at the new folder (`ls android/app/.cxx/Debug`) or regenerate the
+# Add: list from its compile_commands.json:
+#   python3 -c "import json,shlex;db=json.load(open('android/app/.cxx/Debug/5x2z2y6v/arm64-v8a/compile_commands.json'));"
 CompileFlags:
-  Compiler: clang
+  # Exact database entry (used for slice_jni.cpp and preview_parse.cpp).
+  CompilationDatabase: ../../app/.cxx/Debug/5x2z2y6v/arm64-v8a
+  # Header files (.h) have no entry of their own - clangd would otherwise guess "C" and
+  # find no libc++ - so the driver and language are stated explicitly, plus the same
+  # include set the build passes.
+  Compiler: /home/ymt/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++
   Add:
-    - --target=aarch64-none-linux-android24
-    - -std=c++17
-    - -D__ANDROID_API__=24
-    - -isystem/home/ymt/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include
-    - -I/home/ymt/Work/slicepilot-android/src
+    - -x
+    - c++
+    # libc++ first: a checker that cannot use `Compiler:` above still needs this
+    # path explicitly, or every libc++ header reports "didn't find libc++'s <...> header".
+    - -isystem/home/ymt/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/c++/v1
+    - --target=aarch64-none-linux-android28
+    - --sysroot=/home/ymt/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot
+    - -DBOOST_ALL_NO_LIB
+    - -DCGAL_DISABLE_GMP
+    - -DLIBNEST2D_GEOMETRIES_libslic3r
+    - -DLIBNEST2D_OPTIMIZER_nlopt
+    - -DLIBNEST2D_STATIC
+    - -DLIBNEST2D_THREADING_tbb
+    - -DSLIC3R_NO_WIN_SDL=1
+    - -DTBB_USE_CAPTURED_EXCEPTION=0
+    - -DUSE_TBB
+    - -Dslice_core_EXPORTS
+    - -I/home/ymt/Work/slicepilot-android/src/libslic3r
+    - -I/home/ymt/Work/slicepilot-android/android/core/../native-build/prefix/arm64-v8a/include/opencascade
     - -I/home/ymt/Work/slicepilot-android/android/core/jni
+    - -I/home/ymt/Work/slicepilot-android/android/core/stubs
+    - -I/home/ymt/Work/slicepilot-android/deps_src/clipper2/Clipper2Lib/include
+    - -isystem
+    - /home/ymt/Work/slicepilot-android/src
+    - -isystem
+    - /home/ymt/Work/slicepilot-android/android/app/.cxx/Debug/5x2z2y6v/arm64-v8a/gen
+    - -isystem
+    - /home/ymt/Work/slicepilot-android/deps_src
+    - -isystem
+    - /home/ymt/Work/slicepilot-android/android/core/../native-build/prefix/arm64-v8a/include
+    - -isystem
+    - /home/ymt/Work/slicepilot-android/deps_src/admesh
+    - -isystem
+    - /home/ymt/Work/slicepilot-android/deps_src/admesh/..
+    - -isystem
+    - /home/ymt/Work/slicepilot-android/deps_src/libigl
+    - -isystem
+    - /home/ymt/Work/slicepilot-android/deps_src/libnest2d/include
+    - -isystem
+    - /home/ymt/Work/slicepilot-android/deps_src/miniz
+    - -isystem
+    - /home/ymt/Work/slicepilot-android/deps_src/clipper
+    - -isystem
+    - /home/ymt/Work/slicepilot-android/deps_src/glu-libtess/include
+    - -isystem
+    - /home/ymt/Work/slicepilot-android/deps_src/semver
+    - -isystem
+    - /home/ymt/Work/slicepilot-android/deps_src/nanosvg
+    - -g
+    - -DANDROID
+    - -fdata-sections
+    - -ffunction-sections
+    - -funwind-tables
+    - -fstack-protector-strong
+    - -no-canonical-prefixes
+    - -D__BIONIC_NO_PAGE_SIZE_MACRO
+    - -D_FORTIFY_SOURCE=2
+    - -Wformat
+    - -Werror=format-security
+    - -DNDEBUG
+    - -fno-limit-debug-info
+    - -fPIC
+    - -std=gnu++17
+    - /home/ymt/Work/slicepilot-android/android/core/jni/slice_jni.cpp
+    - -std=c++17

@@ -64,6 +64,28 @@ struct ModelTransform {
 
 ModelTransform g_model_transform;
 
+// One piece of a multi-piece file, posed by the app: the same eight values ModelTransform
+// carries, plus whether the piece is printed at all. Empty while the app has no opinion
+// about placement, in which case the model is placed the way it always was.
+struct PartPose {
+    float rotX = 0.0f;
+    float rotY = 0.0f;
+    float rotZ = 0.0f;
+    bool mirrorX = false;
+    bool mirrorY = false;
+    bool mirrorZ = false;
+    float offsetX = 0.0f;
+    float offsetY = 0.0f;
+    bool print = true;
+};
+
+// Floats per pose row, matching NativeLib.nativeSetPartPoses.
+constexpr int kPartPoseRowSize = 9;
+// Posed pieces, in the order the parser reported them. A pose only ever exists for a piece
+// the parser named, so the list is either complete or absent - see nativeSetPartPoses.
+constexpr size_t kMaxPartPoses = 512;
+std::vector<PartPose> g_part_poses;
+
 std::unique_ptr<AppConfig>     g_app_config;
 std::unique_ptr<PresetBundle> g_preset_bundle;
 
@@ -100,7 +122,58 @@ Vec3d bed_center_from_config(const DynamicPrintConfig &config) {
     return Vec3d(c.x(), c.y(), 0.0);
 }
 
+// Place every object with the pose the app gave that piece: turn its own mesh around its
+// own centre, then park its instances where the pose says. It is what apply_model_transform
+// does to the whole model, done one object at a time - which is what lets a 3MF holding two
+// models print only one of them, or slide them together to fit the plate.
+void apply_part_poses(Model &model, const Vec3d &bedCenter) {
+    const double deg2rad = PI / 180.0;
+    std::vector<size_t> dropped;
+    for (size_t i = 0; i < model.objects.size(); ++i) {
+        ModelObject *obj = model.objects[i];
+        const PartPose &pose = g_part_poses[i];
+        if (!pose.print) {
+            dropped.push_back(i);
+            continue;
+        }
+        BoundingBoxf3 bb = obj->raw_mesh_bounding_box();
+        if (!bb.defined) continue;
+        const Vec3d pivot = bb.center();
+        for (ModelVolume *vol : obj->volumes) {
+            vol->translate(-pivot.x(), -pivot.y(), -pivot.z());
+            if (pose.rotX != 0.0f) vol->rotate(pose.rotX * deg2rad, X);
+            if (pose.rotY != 0.0f) vol->rotate(pose.rotY * deg2rad, Y);
+            if (pose.rotZ != 0.0f) vol->rotate(pose.rotZ * deg2rad, Z);
+            if (pose.mirrorX) vol->mirror(X);
+            if (pose.mirrorY) vol->mirror(Y);
+            if (pose.mirrorZ) vol->mirror(Z);
+        }
+        obj->invalidate_bounding_box();
+        // The mesh now hangs centred on the object origin. A 3MF keeps the authored
+        // placement in the instance, so the pose is written there: the piece's own centre
+        // goes to (bed centre + offset) and its lowest point to the bed.
+        const BoundingBoxf3 posed = obj->raw_mesh_bounding_box();
+        if (!posed.defined) continue;
+        const Vec3d center = posed.center();
+        const Vec3d delta(bedCenter.x() + pose.offsetX - center.x(),
+                          bedCenter.y() + pose.offsetY - center.y(),
+                          -posed.min.z());
+        for (ModelInstance *inst : obj->instances) inst->set_offset(inst->get_offset() + delta);
+        obj->invalidate_bounding_box();
+    }
+    // Pieces the user unticked are not sliced at all: leaving them in the model would print
+    // the whole file, which is exactly the complaint about multi-model 3MFs. Deleted from
+    // the back so the remaining indices stay valid.
+    for (auto it = dropped.rbegin(); it != dropped.rend(); ++it) model.delete_object(*it);
+    LOGI("Placed %zu pieces from app poses (%zu left out)", g_part_poses.size() - dropped.size(),
+         dropped.size());
+}
+
 void apply_model_transform(Model &model, const Vec3d &bedCenter) {
+    if (!g_part_poses.empty() && g_part_poses.size() == model.objects.size()) {
+        apply_part_poses(model, bedCenter);
+        return;
+    }
     const ModelTransform t = g_model_transform;
     const double deg2rad = PI / 180.0;
 
@@ -673,6 +746,45 @@ Java_world_yemyat_slicepilot_NativeLib_nativeSetModelTransform(JNIEnv *, jclass,
          offsetX, offsetY);
 }
 
+// Per-piece placement for a file the parser split into pieces: [rowCount * 9] floats, one
+// row per piece in the order the parser reported them -
+//   [rotX, rotY, rotZ, mirrorX, mirrorY, mirrorZ, offsetX, offsetY, print]
+// (degrees, 0/1 flags, mm relative to the bed centre, 0/1 for "print this piece").
+// A row count that does not match the model, or a null array, clears the poses and the whole
+// file is placed by nativeSetModelTransform as before.
+JNIEXPORT void JNICALL
+Java_world_yemyat_slicepilot_NativeLib_nativeSetPartPoses(JNIEnv *env, jclass, jfloatArray poses,
+                                                           jint row_count) {
+    std::vector<PartPose> parsed;
+    const jsize values = poses == nullptr ? 0 : env->GetArrayLength(poses);
+    const jsize rows = row_count > 0 ? row_count : 0;
+    if (poses != nullptr && values == rows * kPartPoseRowSize && rows <= kMaxPartPoses) {
+        const jfloat *v = env->GetFloatArrayElements(poses, nullptr);
+        if (v != nullptr) {
+            for (jsize r = 0; r < rows; ++r) {
+                const jfloat *row = v + r * kPartPoseRowSize;
+                PartPose p;
+                p.rotX = row[0];
+                p.rotY = row[1];
+                p.rotZ = row[2];
+                p.mirrorX = row[3] != 0.f;
+                p.mirrorY = row[4] != 0.f;
+                p.mirrorZ = row[5] != 0.f;
+                p.offsetX = row[6];
+                p.offsetY = row[7];
+                p.print = row[8] != 0.f;
+                parsed.push_back(p);
+            }
+            env->ReleaseFloatArrayElements(poses, const_cast<jfloat *>(v), JNI_ABORT);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_state.mutex);
+        g_part_poses.swap(parsed);
+    }
+    LOGI("Part poses set: %zu pieces", g_part_poses.size());
+}
+
 JNIEXPORT void JNICALL
 Java_world_yemyat_slicepilot_NativeLib_nativeCancel(JNIEnv *, jclass) {
     g_state.cancel_requested.store(true, std::memory_order_relaxed);
@@ -697,7 +809,13 @@ Java_world_yemyat_slicepilot_NativeLib_nativeGetVersion(JNIEnv *env, jclass) {
 }
 
 // Parses STL/3MF with the fast streaming preview parser (reads at most ~target
-// triangles) and returns {positions, normals, indices, bbox[6]}, or null on failure.
+// triangles) and returns
+//   {positions, normals, indices, bbox[6], partRows, partNames}
+// partRows holds ten floats per piece - vertex start, vertex count, index start, index
+// count, then the authored min/max xyz in mm - and partNames the matching labels, in the
+// order the pieces appear in the file; see NativeLib.parsePreviewMesh and model/MeshPart.
+// Older callers read the first four entries only, so the last two are additive: on failure
+// the whole result is null.
 JNIEXPORT jobjectArray JNICALL
 Java_world_yemyat_slicepilot_NativeLib_nativeParsePreview(
     JNIEnv *env, jclass, jstring jpath, jint target_tris, jobject callback)
@@ -748,14 +866,52 @@ Java_world_yemyat_slicepilot_NativeLib_nativeParsePreview(
         const float bb[6] = {mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]};
         env->SetFloatArrayRegion(bbox, 0, 6, bb);
 
-        jobjectArray out = env->NewObjectArray(4, env->FindClass("java/lang/Object"), nullptr);
+        jobjectArray out = env->NewObjectArray(6, env->FindClass("java/lang/Object"), nullptr);
         env->SetObjectArrayElement(out, 0, pos);
         env->SetObjectArrayElement(out, 1, nrm);
         env->SetObjectArrayElement(out, 2, idx);
         env->SetObjectArrayElement(out, 3, bbox);
+        env->DeleteLocalRef(pos);
+        env->DeleteLocalRef(nrm);
+        env->DeleteLocalRef(idx);
+        env->DeleteLocalRef(bbox);
+
+        // The pieces themselves: ten floats per piece (see the header comment) plus their
+        // names, so a piece can be drawn, posed or left out without touching the shared
+        // vertex buffers.
+        const size_t pc = pv.parts.size();
+        std::vector<float> rows;
+        rows.reserve(pc * 10);
+        std::vector<jstring> names;
+        names.reserve(pc);
+        const char empty[] = "";
+        for (const preview::PartGeometry &p : pv.parts) {
+            rows.insert(rows.end(),
+                        {(float) p.vertex_start,
+                         (float) p.vertex_count,
+                         (float) p.index_start,
+                         (float) p.index_count,
+                         p.bbox[0], p.bbox[1], p.bbox[2], p.bbox[3], p.bbox[4], p.bbox[5]});
+            names.push_back(env->NewStringUTF(p.name.empty() ? empty : p.name.c_str()));
+        }
+        jfloatArray part_rows = env->NewFloatArray((jsize) rows.size());
+        env->SetFloatArrayRegion(part_rows, 0, (jsize) rows.size(), rows.data());
+        jclass str_cls = env->FindClass("java/lang/String");
+        jobjectArray part_names = env->NewObjectArray((jsize) names.size(), str_cls, nullptr);
+        for (size_t i = 0; i < names.size(); ++i) {
+            env->SetObjectArrayElement(part_names, (jsize) i, names[i]);
+            env->DeleteLocalRef(names[i]);
+        }
+        env->DeleteLocalRef(str_cls);
+        env->SetObjectArrayElement(out, 4, part_rows);
+        env->SetObjectArrayElement(out, 5, part_names);
+        env->DeleteLocalRef(part_rows);
+        env->DeleteLocalRef(part_names);
+
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t0).count();
-        LOGI("nativeParsePreview: %zu tris, %zu verts in %lld ms", tc, vc, (long long) ms);
+        LOGI("nativeParsePreview: %zu tris, %zu verts, %zu parts in %lld ms", tc, vc, pc,
+             (long long) ms);
         return out;
     } catch (const std::exception &e) {
         LOGE("nativeParsePreview crashed: %s", e.what());

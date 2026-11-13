@@ -1,6 +1,8 @@
 # Play Store listing
 
-Drafted in Play edit `01915840855682935073` (left uncommitted / not submitted for review).
+Published 2026-11-13 from Play edit `13677982899649546337` (en-US listing + phone screenshots).
+The first draft of this copy, edit `01915840855682935073`, expired before it could be submitted:
+Play edits live about an hour, so an edit is built and committed in one sitting, not parked.
 Screenshots: `store_listing/screenshots/phone_v1.9.0/` (captured on a Pixel 4a, v1.9.0 build;
 earlier sets live in `phone_new/` for v1.6.2 and `phone/` before that).
 
@@ -38,6 +40,12 @@ AND THE NICE TOUCHES
 - Open STL/3MF files directly from your Files app
 
 SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint or Elegoo. All trademarks belong to their respective owners.
+
+## What's new (1.9.2)
+• Choose which pieces of a multi-part 3MF print — switch any piece off without editing the model
+• Rotate a single piece 90°, or re-arrange the whole set on the plate
+• Piece names come from the file; unnamed pieces are listed as Part 1, Part 2, …
+• The preview draws every piece with its own pose, so what you see is what gets sliced
 
 ## What's new (1.9.1)
 • Fixed: opening the full-screen camera preview could close the app

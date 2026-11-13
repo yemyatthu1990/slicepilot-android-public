@@ -14,9 +14,14 @@ import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.tan
 
-class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer {
-
-    private class GpuPart(val vbo: Int, val cumulativeVertices: IntArray, val layerCount: Int)
+class PreviewRenderer(
+    private val scene: PreviewScene,
+) : GLSurfaceView.Renderer {
+    private class GpuPart(
+        val vbo: Int,
+        val cumulativeVertices: IntArray,
+        val layerCount: Int,
+    )
 
     private var program = 0
     private var uModel = 0
@@ -46,7 +51,10 @@ class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer 
     // Reused staging buffer for chunked VBO uploads. Only touched on the GL thread.
     private var uploadScratch: ByteBuffer? = null
 
-    override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+    override fun onSurfaceCreated(
+        gl: GL10?,
+        config: EGLConfig?,
+    ) {
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
         GLES30.glDepthFunc(GLES30.GL_LEQUAL)
         GLES30.glDisable(GLES30.GL_CULL_FACE)
@@ -65,7 +73,11 @@ class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer 
         deleteUploads()
     }
 
-    override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
+    override fun onSurfaceChanged(
+        gl: GL10?,
+        width: Int,
+        height: Int,
+    ) {
         viewportWidth = width.coerceAtLeast(1)
         viewportHeight = height.coerceAtLeast(1)
         GLES30.glViewport(0, 0, width, height)
@@ -92,11 +104,18 @@ class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer 
         val eyeX = camera.targetX + radius * sp * cos(camera.theta)
         val eyeY = camera.targetY + radius * sp * sin(camera.theta)
         val eyeZ = camera.targetZ + radius * cp
-        val view = Mat4.lookAt(
-            eyeX, eyeY, eyeZ,
-            camera.targetX, camera.targetY, camera.targetZ,
-            0f, 0f, 1f,
-        )
+        val view =
+            Mat4.lookAt(
+                eyeX,
+                eyeY,
+                eyeZ,
+                camera.targetX,
+                camera.targetY,
+                camera.targetZ,
+                0f,
+                0f,
+                1f,
+            )
         val viewProjection = Mat4.multiply(projection, view)
         GLES30.glUniformMatrix4fv(uViewProj, 1, false, viewProjection, 0)
 
@@ -113,8 +132,16 @@ class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer 
     private fun syncUploads() {
         val model = scene.model
         if (model !== uploadedModel) {
-            if (modelVbo != 0) { single[0] = modelVbo; GLES30.glDeleteBuffers(1, single, 0); modelVbo = 0 }
-            if (modelIbo != 0) { single[0] = modelIbo; GLES30.glDeleteBuffers(1, single, 0); modelIbo = 0 }
+            if (modelVbo != 0) {
+                single[0] = modelVbo
+                GLES30.glDeleteBuffers(1, single, 0)
+                modelVbo = 0
+            }
+            if (modelIbo != 0) {
+                single[0] = modelIbo
+                GLES30.glDeleteBuffers(1, single, 0)
+                modelIbo = 0
+            }
             modelIndexCount = 0
             if (model != null) {
                 modelVbo = uploadVertices(model.vertices)
@@ -126,7 +153,11 @@ class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer 
 
         val plate = scene.plate
         if (plate !== uploadedPlate) {
-            if (plateVbo != 0) { single[0] = plateVbo; GLES30.glDeleteBuffers(1, single, 0); plateVbo = 0 }
+            if (plateVbo != 0) {
+                single[0] = plateVbo
+                GLES30.glDeleteBuffers(1, single, 0)
+                plateVbo = 0
+            }
             if (plate != null) plateVbo = uploadVertices(plate.vertices)
             uploadedPlate = plate
         }
@@ -167,13 +198,34 @@ class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer 
         if (uploadedModel == null) return
         if (modelVbo == 0 || modelIbo == 0 || modelIndexCount == 0) return
         bindVertexLayout(modelVbo)
-        GLES30.glUniformMatrix4fv(uModel, 1, false, scene.transform, 0)
         GLES30.glUniform1f(uRevealZ, revealZ())
         GLES30.glUniform1f(uAlpha, 1f)
         GLES30.glUniform1f(uPlateEdge, 0f)
         setColor(scene.modelColor)
         GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, modelIbo)
-        GLES30.glDrawElements(GLES30.GL_TRIANGLES, modelIndexCount, GLES30.GL_UNSIGNED_INT, 0)
+
+        val parts = scene.partDraws
+        if (parts.isEmpty()) {
+            // One anonymous piece (every single-part file, and every file before pieces):
+            // the whole index buffer with the model's single transform.
+            GLES30.glUniformMatrix4fv(uModel, 1, false, scene.transform, 0)
+            GLES30.glDrawElements(GLES30.GL_TRIANGLES, modelIndexCount, GLES30.GL_UNSIGNED_INT, 0)
+            return
+        }
+        // Posed pieces: one draw per range of the shared index buffer, each with its own
+        // matrix. A piece the user rotated moves alone, a piece they unticked is simply not
+        // drawn, and the vertex buffers stay shared by every piece.
+        for (part in parts) {
+            if (part.indexCount <= 0) continue
+            GLES30.glUniformMatrix4fv(uModel, 1, false, part.matrix, 0)
+            // Indices are 4-byte unsigned ints, so the range's byte offset is offset * 4.
+            GLES30.glDrawElements(
+                GLES30.GL_TRIANGLES,
+                part.indexCount,
+                GLES30.GL_UNSIGNED_INT,
+                part.indexOffset * 4,
+            )
+        }
     }
 
     private fun drawGcode() {
@@ -221,7 +273,10 @@ class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer 
         GLES30.glUniform3f(uColor, color[0], color[1], color[2])
     }
 
-    private fun fitRadius(fitMaxRadius: Float, aspect: Float): Float {
+    private fun fitRadius(
+        fitMaxRadius: Float,
+        aspect: Float,
+    ): Float {
         val fovV = Math.toRadians(FIELD_OF_VIEW_DEGREES.toDouble())
         val fovH = 2.0 * atan(tan(fovV / 2.0) * aspect)
         val fovFit = min(fovV, fovH)
@@ -283,7 +338,10 @@ class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer 
      * source FloatArray) pushed large previews past the 256 MB heap footprint
      * limit and OOM-crashed the GL thread.
      */
-    private fun beginUpload(target: Int, totalBytes: Int): Int {
+    private fun beginUpload(
+        target: Int,
+        totalBytes: Int,
+    ): Int {
         GLES30.glGenBuffers(1, single, 0)
         val id = single[0]
         GLES30.glBindBuffer(target, id)
@@ -292,9 +350,21 @@ class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer 
     }
 
     private fun deleteUploads() {
-        if (modelVbo != 0) { single[0] = modelVbo; GLES30.glDeleteBuffers(1, single, 0); modelVbo = 0 }
-        if (modelIbo != 0) { single[0] = modelIbo; GLES30.glDeleteBuffers(1, single, 0); modelIbo = 0 }
-        if (plateVbo != 0) { single[0] = plateVbo; GLES30.glDeleteBuffers(1, single, 0); plateVbo = 0 }
+        if (modelVbo != 0) {
+            single[0] = modelVbo
+            GLES30.glDeleteBuffers(1, single, 0)
+            modelVbo = 0
+        }
+        if (modelIbo != 0) {
+            single[0] = modelIbo
+            GLES30.glDeleteBuffers(1, single, 0)
+            modelIbo = 0
+        }
+        if (plateVbo != 0) {
+            single[0] = plateVbo
+            GLES30.glDeleteBuffers(1, single, 0)
+            plateVbo = 0
+        }
         for (part in gpuGcode) {
             single[0] = part.vbo
             GLES30.glDeleteBuffers(1, single, 0)
@@ -330,7 +400,10 @@ class PreviewRenderer(private val scene: PreviewScene) : GLSurfaceView.Renderer 
         return program
     }
 
-    private fun compileShader(type: Int, source: String): Int {
+    private fun compileShader(
+        type: Int,
+        source: String,
+    ): Int {
         val shader = GLES30.glCreateShader(type)
         GLES30.glShaderSource(shader, source)
         GLES30.glCompileShader(shader)

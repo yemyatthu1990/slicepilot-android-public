@@ -3,8 +3,9 @@
 // Reads at most ~target triangles from the file: for 3MF, a first pass counts
 // triangles per object (following build items and components across the
 // external .model files a 3MF may reference), a second pass keeps a strided
-// sample of the geometry, then everything is grid-clustered down to the target
-// budget. Big assemblies / hi-poly meshes preview in seconds; slicing is
+// sample of the geometry, then each build item is grid-clustered down to its own
+// share of the budget and appended as one part (an STL is a single part).
+// Big assemblies / hi-poly meshes preview in seconds; slicing is
 // unaffected (it re-reads the original file at full detail).
 #include "preview_parse.h"
 
@@ -116,6 +117,29 @@ std::string resolve_path(const std::string &base_file, const std::string &rel) {
     const size_t slash = base_file.rfind('/');
     const std::string dir = slash == std::string::npos ? std::string() : base_file.substr(0, slash);
     return norm_path(dir.empty() ? s : dir + "/" + s);
+}
+
+// "dir/model_2.stl" -> "model_2": the label a part falls back to when the file has no
+// name for it.
+std::string file_stem(const std::string &path) {
+    const size_t slash = path.find_last_of("/\\");
+    const std::string leaf = slash == std::string::npos ? path : path.substr(slash + 1);
+    if (leaf.empty()) return leaf;
+    const size_t dot = leaf.rfind('.');
+    return dot == std::string::npos ? leaf : leaf.substr(0, dot);
+}
+
+// Axis-aligned bounds (min xyz, max xyz) of a position array.
+std::array<float, 6> bbox_of(const std::vector<float> &pos) {
+    if (pos.size() < 3) return {};
+    std::array<float, 6> b{pos[0], pos[1], pos[2], pos[0], pos[1], pos[2]};
+    for (size_t i = 3; i + 2 < pos.size(); i += 3)
+        for (int k = 0; k < 3; ++k) {
+            const float v = pos[i + k];
+            if (v < b[k]) b[k] = v;
+            if (v > b[3 + k]) b[3 + k] = v;
+        }
+    return b;
 }
 
 // ---------------------------------------------------------------- clustering
@@ -345,6 +369,9 @@ bool parse_stl(const std::string &path, int target, Preview &out, std::string &e
     std::fclose(f);
     prog(85);
     if (idx.empty()) { err = "no triangles"; return false; }
+    // The authored bbox, measured before clustering shrinks the mesh: the app pivots a
+    // part's pose on the centre the file authored, not on the centre the decimator left.
+    const std::array<float, 6> authored = bbox_of(raw);
     grid_cluster(raw, idx, target);
     prog(90);
     compact_vertices(raw, idx);
@@ -352,6 +379,17 @@ bool parse_stl(const std::string &path, int target, Preview &out, std::string &e
     smooth_normals(raw, idx, out.normals);
     out.positions.swap(raw);
     out.indices.swap(idx);
+
+    // An STL carries no part structure, so the whole file is one part named after it.
+    out.parts.clear();
+    PartGeometry whole;
+    whole.vertex_start = 0;
+    whole.vertex_count = (int) (out.positions.size() / 3);
+    whole.index_start = 0;
+    whole.index_count = (int) out.indices.size();
+    whole.bbox = authored;
+    whole.name = file_stem(path);
+    out.parts.push_back(std::move(whole));
     prog(100);
     return true;
 }
@@ -365,6 +403,7 @@ struct MObject {
     std::vector<int> comp_obj;  // pass 1: component children
     std::vector<std::string> comp_path;
     std::vector<std::array<float, 12>> comp_tr;
+    std::string name;           // pass 1: the author's label, empty when unnamed
 };
 
 struct MItem {
@@ -429,6 +468,9 @@ void XMLCALL mf_start(void *ud, const XML_Char *name, const XML_Char **attribs) 
             MObject &o = f.objects[c.cur_id];
             o.verts.clear();
             o.tris.clear();
+        } else if (c.cur_id >= 0) {
+            const XML_Char *nm = attr(attribs, "name");
+            if (nm && *nm) f.objects[c.cur_id].name = nm;
         }
     } else if (!std::strcmp(el, "mesh-support")) {
         c.in_mesh_support = true;
@@ -560,6 +602,73 @@ bool run_pass(mz_zip_archive &zip, int file_idx, MFFile &file, bool pass2, size_
     XML_ParserFree(parser);
     if (grid_flag && c.has_grid) *grid_flag = true;
     return feed.ok;
+}
+
+// The file an object lives in: the component's own file when it names one (Bambu Studio
+// keeps the mesh in 3D/Objects/object_N.model), otherwise the file we are already in.
+std::string comp_file(const std::string &fp, const std::string &comp_path) {
+    return comp_path.empty() ? fp : resolve_path(fp, comp_path);
+}
+
+// Vertices an item contributes, including its whole component chain. Used to hand every
+// part a share of the preview budget proportional to its size.
+size_t count_verts(const std::map<std::string, MFFile> &files, const std::string &fp,
+                   int oid, int depth) {
+    if (depth > 32) return 0;
+    const auto fit = files.find(fp);
+    if (fit == files.end()) return 0;
+    const auto oit = fit->second.objects.find(oid);
+    if (oit == fit->second.objects.end()) return 0;
+    const MObject &o = oit->second;
+    size_t n = o.verts.size() / 3;
+    for (size_t c = 0; c < o.comp_obj.size(); ++c)
+        n += count_verts(files, comp_file(fp, o.comp_path[c]), o.comp_obj[c], depth + 1);
+    return n;
+}
+
+// Instantiate [oid] of [fp] — plus everything it references through <component>, with the
+// matrices multiplied along the way — into one part's own [pos]/[tris], consuming at most
+// [budget] triangles from the shared budget.
+void place_object(const std::map<std::string, MFFile> &files, const std::string &fp, int oid,
+                  const float *tr, int depth, size_t max_verts, size_t &budget,
+                  std::vector<float> &pos, std::vector<int> &tris) {
+    if (depth > 32 || budget == 0) return;
+    if (pos.size() / 3 >= max_verts) return;
+    const auto fit = files.find(fp);
+    if (fit == files.end()) return;
+    const auto oit = fit->second.objects.find(oid);
+    if (oit == fit->second.objects.end()) return;
+    const MObject &o = oit->second;
+    const size_t base = pos.size() / 3;
+    const size_t nv = o.verts.size() / 3;
+    for (size_t v = 0; v < nv && pos.size() / 3 < max_verts; ++v) {
+        const float *p = &o.verts[v * 3];
+        if (tr) {
+            float q[3];
+            apply_matrix(tr, p, q);
+            pos.push_back(q[0]); pos.push_back(q[1]); pos.push_back(q[2]);
+        } else {
+            pos.push_back(p[0]); pos.push_back(p[1]); pos.push_back(p[2]);
+        }
+    }
+    const size_t appended = pos.size() / 3 - base;
+    for (size_t t = 0; t + 2 < o.tris.size(); t += 3) {
+        if (budget == 0) break;
+        const int i0 = o.tris[t], i1 = o.tris[t + 1], i2 = o.tris[t + 2];
+        if (i0 < (int) appended && i1 < (int) appended && i2 < (int) appended) {
+            tris.push_back((int) (base + i0));
+            tris.push_back((int) (base + i1));
+            tris.push_back((int) (base + i2));
+            --budget;
+        }
+    }
+    for (size_t c = 0; c < o.comp_obj.size() && budget > 0; ++c) {
+        std::array<float, 12> m;
+        if (tr) mul_matrix(tr, o.comp_tr[c].data(), m.data());
+        else m = o.comp_tr[c];
+        place_object(files, comp_file(fp, o.comp_path[c]), o.comp_obj[c], m.data(), depth + 1,
+                     max_verts, budget, pos, tris);
+    }
 }
 
 bool parse_3mf(const std::string &path, int target, Preview &out, std::string &err,
@@ -702,78 +811,82 @@ bool parse_3mf(const std::string &path, int target, Preview &out, std::string &e
     mz_zip_reader_end(&zip);
     prog(82);
 
-    // Instantiate the sampled geometry with build item transforms. Each build
-    // item gets a share of the triangle budget proportional to its sampled
-    // size, so multi-plate assemblies render whole instead of truncating the
-    // later items.
-    std::vector<float> raw;
-    std::vector<int> idx;
-    raw.reserve((size_t) target * 9);
-    idx.reserve((size_t) target * 3);
-    // Memory guards for pathological files; normal files stay below these.
-    const size_t max_verts = 12000000;
-    const size_t max_tris = 5000000;
-
+    // One part per build item. Each item's geometry (with its component chain) is
+    // clustered on its own and appended to the shared buffers as a range.
+    //
+    // Clustering the union — what this did before — welded the parts together into one
+    // anonymous mesh, which is why a 3MF holding two small models could only be printed as
+    // one lump: there was nothing left to move, rotate or leave behind individually.
     MFFile &rf = files[root];
     std::vector<MItem> items = rf.items;
     if (items.empty())
         for (const auto &kv : rf.objects) items.push_back(MItem{std::string(), kv.first, false, {}});
 
-    std::function<void(const std::string &, int, const float *, int, size_t &)> place =
-        [&](const std::string &fp, int oid, const float *tr, int depth, size_t &budget) {
-            if (depth > 32 || budget == 0) return;
-            if (raw.size() / 3 >= max_verts) return;
-            auto fit = files.find(fp);
-            if (fit == files.end()) return;
-            auto oit = fit->second.objects.find(oid);
-            if (oit == fit->second.objects.end()) return;
-            MObject &o = oit->second;
-            const size_t base = raw.size() / 3;
-            const size_t nv = o.verts.size() / 3;
-            for (size_t v = 0; v < nv && raw.size() / 3 < max_verts; ++v) {
-                const float *p = &o.verts[v * 3];
-                if (tr) {
-                    float q[3];
-                    apply_matrix(tr, p, q);
-                    raw.push_back(q[0]); raw.push_back(q[1]); raw.push_back(q[2]);
-                } else {
-                    raw.push_back(p[0]); raw.push_back(p[1]); raw.push_back(p[2]);
-                }
-            }
-            const size_t appended = raw.size() / 3 - base;
-            for (size_t t = 0; t + 2 < o.tris.size(); t += 3) {
-                if (budget == 0) break;
-                const int i0 = o.tris[t], i1 = o.tris[t + 1], i2 = o.tris[t + 2];
-                if (i0 < (int) appended && i1 < (int) appended && i2 < (int) appended) {
-                    idx.push_back((int) (base + i0));
-                    idx.push_back((int) (base + i1));
-                    idx.push_back((int) (base + i2));
-                    --budget;
-                }
-            }
-            for (size_t c = 0; c < o.comp_obj.size() && budget > 0; ++c) {
-                const std::string cp = o.comp_path[c].empty() ? fp : resolve_path(fp, o.comp_path[c]);
-                std::array<float, 12> m;
-                if (tr) mul_matrix(tr, o.comp_tr[c].data(), m.data());
-                else m = o.comp_tr[c];
-                place(cp, o.comp_obj[c], m.data(), depth + 1, budget);
-            }
-        };
+    // Memory guards for pathological files; normal files stay below these.
+    const size_t max_verts = 12000000;
+    const size_t max_tris = 5000000;
+
+    std::vector<size_t> item_verts(items.size(), 0);
+    size_t total_verts = 0;
+    for (size_t i = 0; i < items.size(); ++i) {
+        item_verts[i] = count_verts(files, comp_file(root, items[i].path), items[i].objectid, 0);
+        total_verts += item_verts[i];
+    }
+
+    std::vector<float> raw;
+    std::vector<int> idx;
+    std::vector<float> nrm;
+    raw.reserve((size_t) target * 9);
+    idx.reserve((size_t) target * 3);
+    out.parts.clear();
 
     size_t budget = max_tris;
-    for (const MItem &it : items) {
-        if (budget == 0) break;
-        const std::string fp = it.path.empty() ? root : resolve_path(root, it.path);
-        place(fp, it.objectid, it.has_tr ? it.tr.data() : nullptr, 0, budget);
+    for (size_t i = 0; i < items.size(); ++i) {
+        const MItem &it = items[i];
+        if (budget == 0 || item_verts[i] == 0) continue;
+        const std::string fp = comp_file(root, it.path);
+
+        std::vector<float> p;
+        std::vector<int> t;
+        p.reserve(item_verts[i]);
+        place_object(files, fp, it.objectid, it.has_tr ? it.tr.data() : nullptr, 0,
+                     max_verts, budget, p, t);
+        if (p.empty()) continue;
+        // Authored bounds, before the clusterer moves vertices onto grid centres.
+        const std::array<float, 6> authored = bbox_of(p);
+        // This part's own share of the budget, so a small part beside a huge one keeps its
+        // shape instead of being thinned to a handful of triangles.
+        const int part_target =
+            (int) std::max<size_t>(1, (size_t) target * (p.size() / 3) / std::max<size_t>(1, total_verts));
+        grid_cluster(p, t, part_target);
+        compact_vertices(p, t);
+        std::vector<float> pn;
+        smooth_normals(p, t, pn);
+        if (p.empty() || t.empty()) continue;
+
+        PartGeometry part;
+        part.vertex_start = (int) (raw.size() / 3);
+        part.index_start = (int) idx.size();
+        for (size_t k = 0; k < t.size(); ++k) idx.push_back(part.vertex_start + t[k]);
+        raw.insert(raw.end(), p.begin(), p.end());
+        nrm.insert(nrm.end(), pn.begin(), pn.end());
+        part.vertex_count = (int) (p.size() / 3);
+        part.index_count = (int) t.size();
+        part.bbox = authored;
+        const auto name_fit = files.find(fp);
+        if (name_fit != files.end()) {
+            const auto oit = name_fit->second.objects.find(it.objectid);
+            if (oit != name_fit->second.objects.end()) part.name = oit->second.name;
+        }
+        if (part.name.empty()) part.name = "Part " + std::to_string(i + 1);
+        out.parts.push_back(std::move(part));
+        prog(82 + (int) (10.0 * (i + 1) / items.size()));
     }
     if (idx.empty()) { err = "no triangles"; return false; }
-    grid_cluster(raw, idx, target);
-    prog(90);
-    compact_vertices(raw, idx);
     prog(94);
-    smooth_normals(raw, idx, out.normals);
     out.positions.swap(raw);
     out.indices.swap(idx);
+    out.normals.swap(nrm);
     prog(100);
     return true;
 }

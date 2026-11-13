@@ -26,3 +26,4 @@ secrets/debug-keystore.properties
 android/app/google-services.json
 .venv-play/
 AGENTS.md
+__pycache__/
