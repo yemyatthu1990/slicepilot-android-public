@@ -419,15 +419,21 @@ fun GcodePreviewCanvas(
 fun ModelPreviewCanvas(
     mesh: MeshData?,
     modifier: Modifier = Modifier.fillMaxSize(),
+    partPoses: List<world.yemyat.slicepilot.preview.ModelTransform>? = null,
+    partsSkipped: Set<Int> = emptySet(),
+    selectedPart: Int = -1,
     controllerRef: (ModelPreviewView) -> Unit = {},
     onError: (Throwable) -> Unit = {},
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val controller = remember { ModelPreviewView(context) }
-    LaunchedEffect(mesh) {
+    LaunchedEffect(mesh, partPoses, partsSkipped, selectedPart) {
         mesh?.let {
             try {
                 controller.setModel(it)
+                // The poses the slicer will get, so this viewer shows the same plate the setup
+                // sheet shows - without them a multi-piece file draws as the file authored it.
+                controller.setPartPoses(partPoses, partsSkipped, selectedPart)
             } catch (t: Throwable) {
                 try {
                     controller.clearModel()

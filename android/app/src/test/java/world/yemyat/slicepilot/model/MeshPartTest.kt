@@ -192,4 +192,38 @@ class MeshPartTest {
         assertFalse(PartPlacement.fits(two, poses, emptyList(), 5f, 5f, 250f))
         assertFalse(PartPlacement.fits(two, poses, emptyList(), 220f, 220f, 1f))
     }
+
+    @Test
+    fun printedHeightIsTheTallestPrintedPieceAndZeroWhenAllAreSkipped() {
+        // Two 10 mm cubes: the stack is 10 tall whichever one is left on the plate, and 0 when
+        // the user picks "None" - the state the slicing view would otherwise draw a plate-high
+        // reveal band for.
+        val two = meshOf("a", "b")
+        val poses = listOf(ModelTransform(), ModelTransform())
+        assertEquals(10f, PartPlacement.printedHeightMm(two.parts, poses), 0.01f)
+        assertEquals(10f, PartPlacement.printedHeightMm(two.parts, poses, skipped = setOf(1)), 0.01f)
+        assertEquals(0f, PartPlacement.printedHeightMm(two.parts, poses, skipped = setOf(0, 1)), 0.01f)
+    }
+
+    @Test
+    fun printedHeightFollowsThePoseNotTheAuthoredHeight() {
+        // A 10 x 30 x 5 piece turned 90° on X stands its 30 mm depth up, and that is the height
+        // the plate has to hold and the reveal band has to sweep - the authored 5 mm is not it.
+        val deep =
+            MeshPart(
+                name = "deep",
+                vertexOffset = 0,
+                vertexCount = 8,
+                indexOffset = 0,
+                indexCount = 36,
+                minX = 20f,
+                minY = 0f,
+                minZ = 0f,
+                maxX = 30f,
+                maxY = 30f,
+                maxZ = 5f,
+            )
+        assertEquals(5f, PartPlacement.printedHeightMm(listOf(deep), listOf(ModelTransform())), 0.01f)
+        assertEquals(30f, PartPlacement.printedHeightMm(listOf(deep), listOf(ModelTransform(rotX = 90f))), 0.01f)
+    }
 }

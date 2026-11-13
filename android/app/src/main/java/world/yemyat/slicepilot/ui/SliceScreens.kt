@@ -43,6 +43,9 @@ fun SlicingScreen(vm: AppViewModel) {
     androidx.activity.compose.BackHandler(enabled = !showCancelConfirm) { showCancelConfirm = true }
     val mesh by vm.mesh.collectAsState()
     val modelTransform by vm.modelTransform.collectAsState()
+    val partPoses by vm.partPoses.collectAsState()
+    val partsSkipped by vm.partsSkipped.collectAsState()
+    val selectedPart by vm.selectedPart.collectAsState()
     val reveal by animateFloatAsState(
         targetValue = progress,
         animationSpec = tween(durationMillis = 900, easing = FastOutSlowInEasing),
@@ -69,6 +72,9 @@ fun SlicingScreen(vm: AppViewModel) {
                 transform = modelTransform,
                 bedHalfX = bedHalf.first,
                 bedHalfY = bedHalf.second,
+                partPoses = partPoses,
+                partsSkipped = partsSkipped,
+                selectedPart = selectedPart,
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -166,6 +172,9 @@ fun LiveSliceView(
     transform: AppViewModel.ModelTransform = AppViewModel.ModelTransform(),
     bedHalfX: Float = 128f,
     bedHalfY: Float = 128f,
+    partPoses: List<world.yemyat.slicepilot.preview.ModelTransform>? = null,
+    partsSkipped: Set<Int> = emptySet(),
+    selectedPart: Int = -1,
     modifier: Modifier = Modifier.fillMaxSize(),
 ) {
     val context = LocalContext.current
@@ -191,9 +200,9 @@ fun LiveSliceView(
             controller.setSceneBackground(0.914f, 0.937f, 0.973f)
         }
     }
-    LaunchedEffect(mesh, transformArray, bedHalfX, bedHalfY) {
+    LaunchedEffect(mesh, transformArray, bedHalfX, bedHalfY, partPoses, partsSkipped, selectedPart) {
         mesh?.let {
-            controller.setMeshSlabs(it, transformArray, bedHalfX, bedHalfY)
+            controller.setMeshSlabs(it, transformArray, bedHalfX, bedHalfY, partPoses, partsSkipped, selectedPart)
             controller.setRevealFraction(revealFraction)
         }
     }

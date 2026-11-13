@@ -41,6 +41,11 @@ AND THE NICE TOUCHES
 
 SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint or Elegoo. All trademarks belong to their respective owners.
 
+## What's new (1.9.4)
+• Fixed: the slicing preview ignored the piece poses you set — a multi-part file snapped back to its own layout, and switched-off pieces reappeared, as soon as slicing started
+• The slicing preview now matches Print setup and the G-code preview piece for piece, with the selected piece highlighted
+• Skipped pieces now stay off the plate while slicing
+
 ## What's new (1.9.3)
 • Fixed: "Model is larger than the build volume" ignored how the pieces are laid out, so a multi-part file that fits was refused
 • Fixed: rotating, skipping or re-arranging a piece left the preview unchanged

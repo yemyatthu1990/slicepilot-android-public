@@ -94,13 +94,7 @@ fun PrintSetupScreen(vm: AppViewModel) {
             placedPoses != null -> {
                 val included = List(parts.size) { it !in skipped }
                 val (w, d) = PartPlacement.unionFootprint(parts, placedPoses, included)
-                val h =
-                    parts.indices
-                        .filter { it !in skipped }
-                        .maxOfOrNull { parts[it].footprint(placedPoses[it])[2] }
-                        ?.times(2f)
-                        ?: 0f
-                floatArrayOf(w, d, h)
+                floatArrayOf(w, d, PartPlacement.printedHeightMm(parts, placedPoses, skipped))
             }
 
             else -> {

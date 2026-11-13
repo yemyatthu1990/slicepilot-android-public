@@ -8,6 +8,7 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import world.yemyat.slicepilot.model.GcodePreview
 import world.yemyat.slicepilot.model.MeshData
+import world.yemyat.slicepilot.model.PartPlacement
 import kotlin.math.max
 import kotlin.math.sqrt
 
@@ -215,16 +216,30 @@ class ModelPreviewView(
         publishCamera()
     }
 
+    /**
+     * The mesh as the slicer is going to build it: the geometry plus a reveal band that shows
+     * only the height printed so far. Like every other viewer, a file with pieces has to be
+     * drawn piece by piece - the first version drew the whole mesh with [transform] here, so a
+     * multi-part file snapped back to the layout the file itself carried the moment slicing
+     * started (and the pieces the user had switched off came back with it), because those poses
+     * live one per piece in [partPoses] and not in that single transform.
+     */
     fun setMeshSlabs(
         mesh: MeshData,
         transform: FloatArray,
         bedHalfX: Float = 128f,
         bedHalfY: Float = 128f,
+        partPoses: List<ModelTransform>? = null,
+        partsSkipped: Set<Int> = emptySet(),
+        selectedPart: Int = -1,
     ) {
         if (destroyed) return
         scene.clearGeometry()
         baseMesh = mesh
         this.transform = ModelTransform.fromArray(transform)
+        this.partPoses = partPoses
+        this.partsSkipped = partsSkipped
+        this.selectedPart = selectedPart
         pivotX = mesh.centerX
         pivotY = mesh.centerY
         pivotZ = mesh.centerZ
@@ -236,10 +251,18 @@ class ModelPreviewView(
         plateCenterY = bedHalfY
         plateHalfX = bedHalfX
         plateHalfY = bedHalfY
-        val extZ = this.transform.extents(halfX, halfY, halfZ)[2]
+        // How high the print gets: the pieces' own height when the file is laid out piece by
+        // piece (a rotated piece lies down shorter, a skipped one adds nothing), the whole
+        // mesh's otherwise. The band sweeps from the plate to that height, so the plate the
+        // user posed is the plate that animates.
+        val extZ =
+            posesForMesh(mesh)
+                ?.let { PartPlacement.printedHeightMm(mesh.parts, it, partsSkipped) / 2f }
+                ?: this.transform.extents(halfX, halfY, halfZ)[2]
         scene.model = MeshGeometry(PreviewGeometry.interleave(mesh.positions, mesh.normals), mesh.indices)
         scene.modelColor = PreviewGeometry.REVEAL_COLOR
         scene.transform = this.transform.worldMatrix(pivotX, pivotY, pivotZ, bedHalfX, bedHalfY, dropZ, halfX, halfY, halfZ)
+        rebuildPartDraws()
         scene.revealEnabled = true
         scene.revealMinZ = 0f
         scene.revealMaxZ = 2f * extZ
@@ -412,18 +435,13 @@ class ModelPreviewView(
      * pieces get none. Anything the mesh has no pose for falls back to the whole-mesh draw.
      */
     private fun rebuildPartDraws() {
-        val mesh = baseMesh
-        val poses = partPoses
-        if (mesh == null || poses == null || mesh.parts.size < 2) {
-            scene.partDraws = emptyList()
-            requestRender()
-            return
-        }
+        val mesh = baseMesh ?: return
+        val poses = posesForMesh(mesh) ?: return
         scene.partDraws =
             buildList {
                 mesh.parts.forEachIndexed { index, part ->
-                    val pose = poses.getOrNull(index) ?: return@forEachIndexed
                     if (index in partsSkipped) return@forEachIndexed
+                    val pose = poses[index]
                     add(
                         ModelPartDraw(
                             indexOffset = part.indexOffset,
@@ -452,6 +470,15 @@ class ModelPreviewView(
             }
         requestRender()
     }
+
+    /**
+     * The poses to draw [mesh] with: [partPoses] only describe it when they carry one pose for
+     * every piece of a multi-piece file. Anything else (a plain STL, a decimated copy, a pose
+     * list from a different file) has no per-piece answer, so the caller draws the mesh whole
+     * with the single [transform] and the pieces stay as the file authored them.
+     */
+    private fun posesForMesh(mesh: MeshData): List<ModelTransform>? =
+        partPoses?.takeIf { mesh.parts.size > 1 && it.size == mesh.parts.size }
 
     private fun publishCamera() {
         scene.camera = CameraState.from(camera)

@@ -264,6 +264,25 @@ object PartPlacement {
         return (maxX - minX) to (maxY - minY)
     }
 
+    /**
+     * Full height (mm) the printed pieces reach in [poses]. [MeshPart.footprint] reports the
+     * half-height (the same value doubles to a piece's real height), so the answer is twice the
+     * tallest printed piece - or 0 when every piece is skipped, which is a real state the UI
+     * offers and would make maxOf throw. One copy of that maths now serves the setup sheet's
+     * height readout, the plate check below and the slicing view's reveal band.
+     */
+    fun printedHeightMm(
+        parts: List<MeshPart>,
+        poses: List<ModelTransform>,
+        skipped: Set<Int> = emptySet(),
+    ): Float {
+        val printed = parts.indices.filter { it !in skipped }
+        return printed
+            .maxOfOrNull { parts[it].footprint(poses.getOrElse(it) { ModelTransform() })[2] }
+            ?.times(2f)
+            ?: 0f
+    }
+
     /** True when every included part lies inside the plate and under the plate height. */
     fun fits(
         mesh: MeshData,
@@ -276,14 +295,7 @@ object PartPlacement {
         val parts = mesh.partsForRendering
         if (parts.isEmpty()) return false
         val (w, d) = unionFootprint(parts, poses, included)
-        val active = parts.indices.filter { included.isEmpty() || included[it] }
-        // Every piece skipped is a real state (the UI offers "None"), and an empty selection
-        // still has a height: zero. maxOf would throw on it.
-        val tallest =
-            active
-                .maxOfOrNull { parts[it].footprint(poses.getOrElse(it) { ModelTransform() })[2] }
-                ?.times(2f)
-                ?: 0f
-        return w <= plateW && d <= plateH && tallest <= plateZ
+        val skipped = parts.indices.filter { included.isNotEmpty() && !included[it] }.toSet()
+        return w <= plateW && d <= plateH && printedHeightMm(parts, poses, skipped) <= plateZ
     }
 }
