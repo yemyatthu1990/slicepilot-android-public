@@ -7,6 +7,13 @@ import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.tan
 
+/**
+ * An arrow the user pressed, stated in screen terms (up/down/left/right of the preview) rather
+ * than in plate axes - the camera is what turns it into plate movement, see
+ * [OrbitCamera.plateDelta].
+ */
+enum class ScreenDirection { UP, DOWN, LEFT, RIGHT }
+
 class OrbitCamera {
     var theta: Float = DEFAULT_THETA
     var phi: Float = DEFAULT_PHI
@@ -20,9 +27,18 @@ class OrbitCamera {
     var fitMaxRadius: Float = 100f
     var userZoomed: Boolean = false
 
-    fun frame(centerX: Float, centerY: Float, centerZ: Float, fitRadius: Float) {
-        targetX = centerX; targetY = centerY; targetZ = centerZ
-        fitCenterX = centerX; fitCenterY = centerY; fitCenterZ = centerZ
+    fun frame(
+        centerX: Float,
+        centerY: Float,
+        centerZ: Float,
+        fitRadius: Float,
+    ) {
+        targetX = centerX
+        targetY = centerY
+        targetZ = centerZ
+        fitCenterX = centerX
+        fitCenterY = centerY
+        fitCenterZ = centerZ
         fitMaxRadius = max(1f, fitRadius)
         userZoomed = false
         theta = DEFAULT_THETA
@@ -30,15 +46,24 @@ class OrbitCamera {
     }
 
     fun reframe() {
-        targetX = fitCenterX; targetY = fitCenterY; targetZ = fitCenterZ
+        targetX = fitCenterX
+        targetY = fitCenterY
+        targetZ = fitCenterZ
         userZoomed = false
     }
 
     fun eyeX(): Float = targetX + radius * sin(phi) * cos(theta)
+
     fun eyeY(): Float = targetY + radius * sin(phi) * sin(theta)
+
     fun eyeZ(): Float = targetZ + radius * cos(phi)
 
-    fun fitRadius(width: Float, height: Float, fovYDegrees: Float, margin: Float): Float {
+    fun fitRadius(
+        width: Float,
+        height: Float,
+        fovYDegrees: Float,
+        margin: Float,
+    ): Float {
         val fovV = Math.toRadians(fovYDegrees.toDouble())
         val aspect = if (height > 0f) (width / height).toDouble() else 1.0
         val fovH = 2.0 * atan(tan(fovV / 2.0) * aspect)
@@ -51,12 +76,21 @@ class OrbitCamera {
 
     fun maxZoom(): Float = max(fitMaxRadius * 30f, 1000f)
 
-    fun zoomBy(scaleFactor: Float, currentRadius: Float) {
+    fun zoomBy(
+        scaleFactor: Float,
+        currentRadius: Float,
+    ) {
         userZoomed = true
         radius = (currentRadius / scaleFactor).coerceIn(minZoom(), maxZoom())
     }
 
-    fun pan(distanceX: Float, distanceY: Float, viewportHeight: Float, radius: Float, fovYDegrees: Float) {
+    fun pan(
+        distanceX: Float,
+        distanceY: Float,
+        viewportHeight: Float,
+        radius: Float,
+        fovYDegrees: Float,
+    ) {
         if (viewportHeight <= 0f) return
         val worldPerPixel = 2f * radius * tan(Math.toRadians(fovYDegrees / 2.0).toFloat()) / viewportHeight
         val sp = sin(phi)
@@ -64,6 +98,37 @@ class OrbitCamera {
         targetX += (-sin(theta) * distanceX - cos(theta) * cp * distanceY) * worldPerPixel
         targetY += (cos(theta) * distanceX - sin(theta) * cp * distanceY) * worldPerPixel
         targetZ += sp * distanceY * worldPerPixel
+    }
+
+    /**
+     * Which way on the plate the move arrows have to push to look like the arrow the user
+     * pressed, and how far: the plate-space (dx, dy) in mm for [direction] at [step].
+     *
+     * The arrows used to add ±step to the model's offsetX/offsetY, which is "towards +X/+Y of
+     * the plate" - right only while the camera looks from the plate's front-left. Orbit the
+     * preview (or leave the default corner view) and the arrows dragged the piece along the
+     * plate's own axes: pressing up slid it towards the plate's far corner, diagonally on
+     * screen, and pressing right could pull it towards the camera. Same math [pan] uses for a
+     * two-finger drag, so an arrow and a drag now move a piece the same way.
+     */
+    fun plateDelta(
+        direction: ScreenDirection,
+        step: Float,
+    ): Pair<Float, Float> {
+        val st = sin(theta)
+        val ct = cos(theta)
+        // Screen-right: the view direction crossed with the plate normal, in the plate plane.
+        val right = -st to ct
+        // Screen-up's horizontal part: away from the camera, which flips below the plate.
+        val up = if (cos(phi) >= 0f) -ct to -st else ct to st
+        val (x, y) =
+            when (direction) {
+                ScreenDirection.RIGHT -> right
+                ScreenDirection.LEFT -> -right.first to -right.second
+                ScreenDirection.UP -> up
+                ScreenDirection.DOWN -> -up.first to -up.second
+            }
+        return x * step to y * step
     }
 
     companion object {

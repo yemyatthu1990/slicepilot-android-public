@@ -26,6 +26,9 @@ class ModelPreviewView(
     // own matrix - see PreviewScene.partDraws and model/PartPlacement.
     private var partPoses: List<ModelTransform>? = null
     private var partsSkipped: Set<Int> = emptySet()
+
+    /** Which piece the UI has picked, drawn in [PreviewGeometry.SELECTED_PART_COLOR]; -1 = none. */
+    private var selectedPart: Int = -1
     private var pivotX = 0f
     private var pivotY = 0f
     private var pivotZ = 0f
@@ -288,18 +291,29 @@ class ModelPreviewView(
     fun nudgeModel(
         dx: Float,
         dy: Float,
-    ): Boolean = tryApply(transform.copy(offsetX = transform.offsetX + dx, offsetY = transform.offsetY + dy))
+    ): Boolean = tryApply(transform.nudged(dx, dy))
 
-    fun toggleMirror(axis: Char): Boolean {
-        val next =
-            when (axis) {
-                'x' -> transform.copy(mirrorX = !transform.mirrorX)
-                'y' -> transform.copy(mirrorY = !transform.mirrorY)
-                'z' -> transform.copy(mirrorZ = !transform.mirrorZ)
-                else -> return false
-            }
-        return tryApply(next.normalized())
+    /**
+     * The plate movement ([dx], [dy] in mm) that looks like the arrow [direction] points, for
+     * the camera the preview is currently drawn with. The setup sheet asks for this instead of
+     * hardcoding (0, step): an arrow has to move a piece the way it points on screen, not along
+     * the plate's own axes (see [OrbitCamera.plateDelta]).
+     */
+    fun screenDelta(
+        direction: ScreenDirection,
+        step: Float,
+    ): Pair<Float, Float> = camera.plateDelta(direction, step)
+
+    /** Move the model one step towards a screen direction — what the Move arrows mean. */
+    fun nudgeScreen(
+        direction: ScreenDirection,
+        step: Float,
+    ): Boolean {
+        val (dx, dy) = screenDelta(direction, step)
+        return nudgeModel(dx, dy)
     }
+
+    fun toggleMirror(axis: Char): Boolean = transform.mirrored(axis)?.let(::tryApply) ?: false
 
     /** Turn the model 90° around one axis — kept for the existing callers of [rotateBy]. */
     fun rotateModel(axis: Char): Boolean = rotateBy(axis, 90f)
@@ -312,16 +326,7 @@ class ModelPreviewView(
     fun rotateBy(
         axis: Char,
         degrees: Float,
-    ): Boolean {
-        val next =
-            when (axis) {
-                'x' -> transform.copy(rotX = transform.rotX + degrees)
-                'y' -> transform.copy(rotY = transform.rotY + degrees)
-                'z' -> transform.copy(rotZ = transform.rotZ + degrees)
-                else -> return false
-            }
-        return tryApply(next.normalized())
-    }
+    ): Boolean = transform.rotated(axis, degrees)?.let(::tryApply) ?: false
 
     /** "Put this face on the plate" — the six faces of the authored bounding box. */
     fun setFaceDown(face: ModelTransform.Face): Boolean = tryApply(transform.forFace(face))
@@ -342,15 +347,20 @@ class ModelPreviewView(
     /**
      * Pose the pieces of the current model individually - the preview half of "move this
      * model, leave that one". [poses] is in the order the parser reported the pieces (see
-     * model/PartPlacement); [skipped] names the pieces left off the plate. Passing null (or a
-     * model with a single piece) draws the mesh whole with [setModelTransform], as before.
+     * model/PartPlacement); [skipped] names the pieces left off the plate; [selected] is the
+     * piece the Pieces list has picked, drawn in [PreviewGeometry.SELECTED_PART_COLOR] so the
+     * plate answers "which one is Part 3?" on a file of eight identical clips.
+     * Passing null (or a model with a single piece) draws the mesh whole with
+     * [setModelTransform], as before.
      */
     fun setPartPoses(
         poses: List<ModelTransform>?,
         skipped: Set<Int> = emptySet(),
+        selected: Int = -1,
     ) {
         partPoses = poses
         partsSkipped = skipped
+        selectedPart = selected
         rebuildPartDraws()
     }
 
@@ -430,6 +440,12 @@ class ModelPreviewView(
                                     part.halfY,
                                     part.halfZ,
                                 ),
+                            color =
+                                if (index == selectedPart) {
+                                    PreviewGeometry.SELECTED_PART_COLOR
+                                } else {
+                                    null
+                                },
                         ),
                     )
                 }

@@ -86,6 +86,38 @@ data class ModelTransform(
             rotZ = normalizeAngle(rotZ),
         )
 
+    /**
+     * Turn this pose [degrees] around one axis, or null for an axis that isn't X/Y/Z. Lives on
+     * the pose so the full-screen sheet and the preview agree on one set of angles: the sheet
+     * poses either the selected piece or the whole mesh, and both used to grow their own copy
+     * of this maths (one of them ended up saving rot=(270, 720, 630)).
+     */
+    fun rotated(
+        axis: Char,
+        degrees: Float = 90f,
+    ): ModelTransform? =
+        when (axis) {
+            'x' -> copy(rotX = rotX + degrees)
+            'y' -> copy(rotY = rotY + degrees)
+            'z' -> copy(rotZ = rotZ + degrees)
+            else -> null
+        }?.normalized()
+
+    /** Flip this pose on one axis, or null for an axis that isn't X/Y/Z. */
+    fun mirrored(axis: Char): ModelTransform? =
+        when (axis) {
+            'x' -> copy(mirrorX = !mirrorX)
+            'y' -> copy(mirrorY = !mirrorY)
+            'z' -> copy(mirrorZ = !mirrorZ)
+            else -> null
+        }?.normalized()
+
+    /** Slide this pose on the plate by (dx, dy) mm; the plate check stays with the caller. */
+    fun nudged(
+        dx: Float,
+        dy: Float,
+    ): ModelTransform = copy(offsetX = offsetX + dx, offsetY = offsetY + dy)
+
     fun extents(
         halfX: Float,
         halfY: Float,

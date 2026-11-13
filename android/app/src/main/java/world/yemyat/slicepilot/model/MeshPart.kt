@@ -277,7 +277,13 @@ object PartPlacement {
         if (parts.isEmpty()) return false
         val (w, d) = unionFootprint(parts, poses, included)
         val active = parts.indices.filter { included.isEmpty() || included[it] }
-        val tallest = active.maxOf { parts[it].footprint(poses.getOrElse(it) { ModelTransform() })[2] } * 2f
+        // Every piece skipped is a real state (the UI offers "None"), and an empty selection
+        // still has a height: zero. maxOf would throw on it.
+        val tallest =
+            active
+                .maxOfOrNull { parts[it].footprint(poses.getOrElse(it) { ModelTransform() })[2] }
+                ?.times(2f)
+                ?: 0f
         return w <= plateW && d <= plateH && tallest <= plateZ
     }
 }

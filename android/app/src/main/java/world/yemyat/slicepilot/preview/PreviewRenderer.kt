@@ -201,13 +201,13 @@ class PreviewRenderer(
         GLES30.glUniform1f(uRevealZ, revealZ())
         GLES30.glUniform1f(uAlpha, 1f)
         GLES30.glUniform1f(uPlateEdge, 0f)
-        setColor(scene.modelColor)
         GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, modelIbo)
 
         val parts = scene.partDraws
         if (parts.isEmpty()) {
             // One anonymous piece (every single-part file, and every file before pieces):
             // the whole index buffer with the model's single transform.
+            setColor(scene.modelColor)
             GLES30.glUniformMatrix4fv(uModel, 1, false, scene.transform, 0)
             GLES30.glDrawElements(GLES30.GL_TRIANGLES, modelIndexCount, GLES30.GL_UNSIGNED_INT, 0)
             return
@@ -217,6 +217,8 @@ class PreviewRenderer(
         // drawn, and the vertex buffers stay shared by every piece.
         for (part in parts) {
             if (part.indexCount <= 0) continue
+            // The picked piece is painted differently; the rest keep the filament colour.
+            setColor(part.color ?: scene.modelColor)
             GLES30.glUniformMatrix4fv(uModel, 1, false, part.matrix, 0)
             // Indices are 4-byte unsigned ints, so the range's byte offset is offset * 4.
             GLES30.glDrawElements(

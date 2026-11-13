@@ -25,14 +25,25 @@ class GcodePartGeometry(
 )
 
 object PreviewGeometry {
-
     val DEFAULT_MODEL_COLOR = floatArrayOf(0.42f, 0.55f, 0.72f)
     val DEFAULT_PLATE_COLOR = floatArrayOf(0.13f, 0.14f, 0.17f)
+
+    /**
+     * The brand gold (ui/theme/LanternGold, #E8B84B) - the exact colour the Pieces tiles draw
+     * their selected border with, so the tile and the piece on the plate are visibly the same
+     * thing. Naming a piece is not enough on a file of eight identical clips: the user has to
+     * see which one on the plate is theirs. Gold also stays readable on every filament colour
+     * and on both themes (unlike the material blue, which disappears on a blue PLA).
+     */
+    val SELECTED_PART_COLOR = floatArrayOf(0.910f, 0.722f, 0.294f)
     val REVEAL_COLOR = floatArrayOf(0.24f, 0.51f, 0.85f)
     val GCODE_DEFAULT_COLOR = floatArrayOf(0.20f, 0.45f, 0.80f)
     val BACKGROUND_COLOR = floatArrayOf(0.93f, 0.94f, 0.96f)
 
-    fun interleave(positions: FloatArray, normals: FloatArray): FloatArray {
+    fun interleave(
+        positions: FloatArray,
+        normals: FloatArray,
+    ): FloatArray {
         val count = positions.size / 3
         val out = FloatArray(count * 6)
         val hasNormals = normals.size == positions.size
@@ -55,24 +66,71 @@ object PreviewGeometry {
         return out
     }
 
-    fun plate(cx: Float, cy: Float, z: Float, halfX: Float, halfY: Float): PlaneGeometry = PlaneGeometry(
-        vertices = plateVertices(cx, cy, z, halfX, halfY),
-        minX = cx - halfX,
-        minY = cy - halfY,
-        maxX = cx + halfX,
-        maxY = cy + halfY,
-    )
+    fun plate(
+        cx: Float,
+        cy: Float,
+        z: Float,
+        halfX: Float,
+        halfY: Float,
+    ): PlaneGeometry =
+        PlaneGeometry(
+            vertices = plateVertices(cx, cy, z, halfX, halfY),
+            minX = cx - halfX,
+            minY = cy - halfY,
+            maxX = cx + halfX,
+            maxY = cy + halfY,
+        )
 
-    fun plateVertices(cx: Float, cy: Float, z: Float, halfX: Float, halfY: Float): FloatArray = floatArrayOf(
-        cx - halfX, cy - halfY, z, 0f, 0f, 1f,
-        cx + halfX, cy - halfY, z, 0f, 0f, 1f,
-        cx + halfX, cy + halfY, z, 0f, 0f, 1f,
-        cx - halfX, cy - halfY, z, 0f, 0f, 1f,
-        cx + halfX, cy + halfY, z, 0f, 0f, 1f,
-        cx - halfX, cy + halfY, z, 0f, 0f, 1f,
-    )
+    fun plateVertices(
+        cx: Float,
+        cy: Float,
+        z: Float,
+        halfX: Float,
+        halfY: Float,
+    ): FloatArray =
+        floatArrayOf(
+            cx - halfX,
+            cy - halfY,
+            z,
+            0f,
+            0f,
+            1f,
+            cx + halfX,
+            cy - halfY,
+            z,
+            0f,
+            0f,
+            1f,
+            cx + halfX,
+            cy + halfY,
+            z,
+            0f,
+            0f,
+            1f,
+            cx - halfX,
+            cy - halfY,
+            z,
+            0f,
+            0f,
+            1f,
+            cx + halfX,
+            cy + halfY,
+            z,
+            0f,
+            0f,
+            1f,
+            cx - halfX,
+            cy + halfY,
+            z,
+            0f,
+            0f,
+            1f,
+        )
 
-    fun gcodeParts(preview: GcodePreview, defaultColor: FloatArray): List<GcodePartGeometry> {
+    fun gcodeParts(
+        preview: GcodePreview,
+        defaultColor: FloatArray,
+    ): List<GcodePartGeometry> {
         val layerCount = preview.layers.size
         val byType = LinkedHashMap<GcodePart, Int>()
         val countsByType = HashMap<GcodePart, IntArray>()
@@ -111,27 +169,37 @@ object PreviewGeometry {
                     cumulativeVertices = cumulative,
                     layerCount = layerCount,
                     color = colorFor(part, defaultColor),
-                )
+                ),
             )
         }
         return out
     }
 
-    private fun colorFor(part: GcodePart, defaultColor: FloatArray): FloatArray = when (part) {
-        GcodePart.SUPPORT -> floatArrayOf(0.18f, 0.72f, 0.35f)
-        GcodePart.SUPPORT_INTERFACE -> floatArrayOf(0.95f, 0.55f, 0.15f)
-        GcodePart.TRAVEL -> floatArrayOf(0.75f, 0.75f, 0.78f)
-        else -> defaultColor
-    }
+    private fun colorFor(
+        part: GcodePart,
+        defaultColor: FloatArray,
+    ): FloatArray =
+        when (part) {
+            GcodePart.SUPPORT -> floatArrayOf(0.18f, 0.72f, 0.35f)
+            GcodePart.SUPPORT_INTERFACE -> floatArrayOf(0.95f, 0.55f, 0.15f)
+            GcodePart.TRAVEL -> floatArrayOf(0.75f, 0.75f, 0.78f)
+            else -> defaultColor
+        }
 
     fun parseColor(hex: String?): FloatArray? {
         if (hex.isNullOrBlank()) return null
-        val first = hex.split('|').firstOrNull { it.isNotBlank() }?.trim()?.removePrefix("#") ?: return null
-        val full = when (first.length) {
-            6 -> first
-            8 -> first.substring(2)
-            else -> return null
-        }
+        val first =
+            hex
+                .split('|')
+                .firstOrNull { it.isNotBlank() }
+                ?.trim()
+                ?.removePrefix("#") ?: return null
+        val full =
+            when (first.length) {
+                6 -> first
+                8 -> first.substring(2)
+                else -> return null
+            }
         return try {
             val r = Integer.parseInt(full.substring(0, 2), 16) / 255f
             val g = Integer.parseInt(full.substring(2, 4), 16) / 255f

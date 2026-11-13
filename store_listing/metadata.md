@@ -41,6 +41,13 @@ AND THE NICE TOUCHES
 
 SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint or Elegoo. All trademarks belong to their respective owners.
 
+## What's new (1.9.3)
+• Fixed: "Model is larger than the build volume" ignored how the pieces are laid out, so a multi-part file that fits was refused
+• Fixed: rotating, skipping or re-arranging a piece left the preview unchanged
+• The full-screen viewer's rotate, mirror, move and face controls now act on the selected piece
+• The selected piece is highlighted in the preview, and the move arrows follow the view
+• Pieces are listed in a compact two-column grid with All / None actions
+
 ## What's new (1.9.2)
 • Choose which pieces of a multi-part 3MF print — switch any piece off without editing the model
 • Rotate a single piece 90°, or re-arrange the whole set on the plate

@@ -364,6 +364,17 @@ class AppViewModel(
         _partsSkipped.value = if (printed) current - index else current + index
     }
 
+    /**
+     * Print every piece, or leave every one off: the two answers nobody wants to tap nine
+     * times to print one clip out of a plate of them. The selection stays where it was, so
+     * the piece the viewer is posing does not change under the user.
+     */
+    fun setAllPartsPrinted(printed: Boolean) {
+        val mesh = _mesh.value ?: return
+        if (mesh.parts.isEmpty()) return
+        _partsSkipped.value = if (printed) emptySet() else mesh.parts.indices.toSet()
+    }
+
     fun selectPart(index: Int) {
         _selectedPart.value = index
     }

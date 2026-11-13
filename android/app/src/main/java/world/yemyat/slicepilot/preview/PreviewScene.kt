@@ -12,6 +12,12 @@ data class ModelPartDraw(
     val indexCount: Int,
     /** The piece's 4x4 model matrix (ModelTransform.worldMatrix for that piece). */
     val matrix: FloatArray,
+    /**
+     * What to paint this piece with, or null for the model's own colour. The selected piece
+     * passes [PreviewGeometry.SELECTED_PART_COLOR] so the plate shows what the Pieces list
+     * picked; everything else keeps the filament colour.
+     */
+    val color: FloatArray? = null,
 )
 
 class CameraState(

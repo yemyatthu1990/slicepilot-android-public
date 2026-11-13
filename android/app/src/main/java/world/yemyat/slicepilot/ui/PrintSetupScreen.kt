@@ -1,8 +1,10 @@
 package world.yemyat.slicepilot.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -16,6 +18,7 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.PrintDisabled
 import androidx.compose.material.icons.filled.Rotate90DegreesCw
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
@@ -30,13 +33,20 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.delay
+import world.yemyat.slicepilot.model.PartPlacement
+import world.yemyat.slicepilot.preview.ScreenDirection
 import world.yemyat.slicepilot.ui.components.SharedAndroidView
 import world.yemyat.slicepilot.ui.theme.*
+import world.yemyat.slicepilot.ui.theme.LanternGold
+import world.yemyat.slicepilot.ui.theme.Radius
+import world.yemyat.slicepilot.ui.theme.Space
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -65,10 +75,39 @@ fun PrintSetupScreen(vm: AppViewModel) {
     val plateColor = vm.plateColorHex(plate)
     val context = androidx.compose.ui.platform.LocalContext.current
     val volume = remember(config.printer) { printVolumeForProfile(context, config.printer ?: "") ?: Triple(256f, 256f, 256f) }
-    val modelW = mesh?.let { it.maxX - it.minX } ?: 0f
-    val modelD = mesh?.let { it.maxY - it.minY } ?: 0f
-    val modelH = mesh?.let { it.maxZ - it.minZ } ?: 0f
-    val fits = modelW <= volume.first && modelD <= volume.second && modelH <= volume.third
+    val poses by vm.partPoses.collectAsState()
+    val skipped by vm.partsSkipped.collectAsState()
+    val selectedPart by vm.selectedPart.collectAsState()
+    // What the plate has to hold, in mm. A laid-out multi-part file is measured as the pieces
+    // it actually puts down: the file's own box is usually far wider than the packed layout
+    // (re-arranging exists precisely because of that), and pieces left off the plate must not
+    // count against it. A file with no per-piece layout still reports the file's box.
+    val meshData = mesh
+    val parts = meshData?.partsForRendering.orEmpty()
+    val placedPoses = poses?.takeIf { it.size == parts.size && parts.size > 1 }
+    val box: FloatArray =
+        when {
+            meshData == null -> {
+                floatArrayOf(0f, 0f, 0f)
+            }
+
+            placedPoses != null -> {
+                val included = List(parts.size) { it !in skipped }
+                val (w, d) = PartPlacement.unionFootprint(parts, placedPoses, included)
+                val h =
+                    parts.indices
+                        .filter { it !in skipped }
+                        .maxOfOrNull { parts[it].footprint(placedPoses[it])[2] }
+                        ?.times(2f)
+                        ?: 0f
+                floatArrayOf(w, d, h)
+            }
+
+            else -> {
+                floatArrayOf(meshData.maxX - meshData.minX, meshData.maxY - meshData.minY, meshData.maxZ - meshData.minZ)
+            }
+        }
+    val fits = box[0] <= volume.first && box[1] <= volume.second && box[2] <= volume.third
     var fullscreen by remember { mutableStateOf(false) }
 
     val previewController =
@@ -107,7 +146,7 @@ fun PrintSetupScreen(vm: AppViewModel) {
                 // plate shows what the slicer will get; a single-piece file keeps using the
                 // whole-model transform below.
                 if (it.parts.size > 1) vm.arrangeParts(volume.first, volume.second)
-                previewController.setPartPoses(vm.partPoses.value, vm.partsSkipped.value)
+                previewController.setPartPoses(vm.partPoses.value, vm.partsSkipped.value, vm.selectedPart.value)
                 val t = vm.modelTransform.value
                 previewController.setModelTransform(
                     floatArrayOf(
@@ -130,6 +169,15 @@ fun PrintSetupScreen(vm: AppViewModel) {
                 vm.reportModelLoadError("render", t)
             }
         }
+    }
+    // The plate has to follow the layout. setPartPoses only ran on the first mesh load, so
+    // rotating a piece, skipping it or re-arranging the set changed the state - and the
+    // slicer's answer - while the picture stayed as it was.
+    // The plate has to follow the layout and the selection. setPartPoses only ran on the first
+    // mesh load, so rotating a piece, skipping it or re-arranging the set changed the state -
+    // and the slicer's answer - while the picture stayed as it was.
+    LaunchedEffect(poses, skipped, selectedPart) {
+        if (mesh != null) previewController.setPartPoses(poses, skipped, selectedPart)
     }
     LaunchedEffect(materialColor) { if (mesh != null) previewController.setModelColor(materialColor) }
     LaunchedEffect(plateColor) { if (mesh != null) previewController.setPlateColor(plateColor) }
@@ -228,7 +276,7 @@ fun PrintSetupScreen(vm: AppViewModel) {
                 if (!fits) {
                     WarningBanner(
                         "Model is larger than the build volume",
-                        "Model ${modelW.toInt()}×${modelD.toInt()}×${modelH.toInt()} mm · " +
+                        "Model ${box[0].toInt()}×${box[1].toInt()}×${box[2].toInt()} mm · " +
                             "Max ${volume.first.toInt()}×${volume.second.toInt()}×${volume.third.toInt()} mm",
                     )
                 }
@@ -239,7 +287,6 @@ fun PrintSetupScreen(vm: AppViewModel) {
             // the plate, and the plate can be re-laid out to fit them all.
             val partNames = mesh?.parts?.map { it.name }.orEmpty()
             if (partNames.size > 1) {
-                SectionLabel("Pieces")
                 PieceSection(
                     vm = vm,
                     names = partNames,
@@ -315,6 +362,7 @@ fun PrintSetupScreen(vm: AppViewModel) {
         PrintSetupFullscreen(
             vm = vm,
             controller = previewController,
+            volume = volume,
             onClose = { fullscreen = false },
         )
     }
@@ -326,10 +374,19 @@ private fun SectionLabel(text: String) {
 }
 
 /**
- * The pieces of the loaded model, in file order: tap one to pick the piece the buttons act on,
- * switch the ones that should not print off, spin the selected one, or re-lay the whole set out
- * on the plate. Names come from the file (a 3MF names its objects); unnamed pieces are
- * "Part 1", "Part 2", …
+ * The pieces of the loaded model, in file order: tap a tile to pick the piece the viewer's
+ * controls act on, tap the tile's print icon to leave that piece off the plate, and use
+ * All / None instead of eight taps when only one of nine parts should print.
+ *
+ * Names come from the file (a 3MF names its objects); unnamed pieces are "Part 1", "Part 2", …
+ *
+ * The first version drew a FilterChip and a "prints/skipped" TextButton per piece in one
+ * column: on a file of eight clips that was sixteen controls stacked twice as tall as the
+ * preview, and the chips' outlines made the whole list read as selected at once. The pieces
+ * are now a two-column grid of quiet tiles, and the chosen tile carries the same gold the
+ * preview paints on that piece — the list and the plate agree about which one is meant.
+ * The whole-model "Rotate 90°" button left with it: it duplicated the full-screen viewer's
+ * Rotate, and on a file of symmetric parts it spun a piece you could not see turn.
  */
 @Composable
 private fun PieceSection(
@@ -340,41 +397,113 @@ private fun PieceSection(
 ) {
     val selected by vm.selectedPart.collectAsState()
     val skipped by vm.partsSkipped.collectAsState()
-    val poses by vm.partPoses.collectAsState()
+    val printing = names.indices.count { it !in skipped }
 
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        names.forEachIndexed { index, name ->
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                FilterChip(
-                    selected = index == selected,
-                    onClick = { vm.selectPart(index) },
-                    label = { Text(name, maxLines = 1, fontSize = 13.sp) },
-                )
-                Spacer(Modifier.weight(1f))
-                val printed = index !in skipped
-                TextButton(onClick = { vm.setPartPrinted(index, !printed) }) {
-                    Text(if (printed) "prints" else "skipped", fontSize = 12.sp)
-                }
+    Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            SectionLabel("Pieces")
+            Text(
+                text = "  $printing/${names.size}",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.outline,
+            )
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = { vm.setAllPartsPrinted(true) }, enabled = printing != names.size) {
+                Text("All", fontSize = 11.sp)
+            }
+            TextButton(onClick = { vm.setAllPartsPrinted(false) }, enabled = printing != 0) {
+                Text("None", fontSize = 11.sp)
+            }
+            TextButton(onClick = { vm.arrangeParts(plateW, plateH) }) {
+                Text("Re-arrange", fontSize = 11.sp)
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            val pose = poses?.getOrNull(selected)
-            OutlinedButton(
-                onClick = { if (pose != null) vm.setPartPose(selected, pose.copy(rotZ = pose.rotZ + 90f)) },
-                enabled = pose != null,
-                modifier = Modifier.weight(1f),
+        names.indices.chunked(2).forEach { rowIndices ->
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(Space.xs),
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("Rotate 90°", fontSize = 13.sp, maxLines = 1)
+                rowIndices.forEach { index ->
+                    PieceTile(
+                        name = names[index],
+                        selected = index == selected,
+                        printed = index !in skipped,
+                        onSelect = { vm.selectPart(index) },
+                        onTogglePrint = { vm.setPartPrinted(index, index in skipped) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                // An odd last piece keeps the grid's columns the same width.
+                if (rowIndices.size == 1) Spacer(Modifier.weight(1f))
             }
-            OutlinedButton(
-                onClick = { vm.arrangeParts(plateW, plateH) },
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Re-arrange", fontSize = 13.sp, maxLines = 1)
-            }
+        }
+    }
+}
+
+/**
+ * One piece in the grid. Selected pieces take the gold hairline (the same colour the preview
+ * paints the piece with); pieces left off the plate get a struck-through name and a quiet
+ * print-off icon, so "which ones are going" reads at a glance without a second column of
+ * buttons.
+ */
+@Composable
+private fun PieceTile(
+    name: String,
+    selected: Boolean,
+    printed: Boolean,
+    onSelect: () -> Unit,
+    onTogglePrint: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(Radius.sm)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier =
+            modifier
+                .clip(shape)
+                .background(
+                    when {
+                        selected -> scheme.secondaryContainer
+                        printed -> scheme.surface
+                        else -> scheme.surfaceVariant.copy(alpha = 0.45f)
+                    },
+                    shape,
+                ).border(
+                    BorderStroke(
+                        width = if (selected) 1.5.dp else 1.dp,
+                        color = if (selected) LanternGold else Color.Transparent,
+                    ),
+                    shape,
+                ).clickable(onClick = onSelect)
+                .padding(start = 10.dp, end = 4.dp, top = 7.dp, bottom = 7.dp),
+    ) {
+        Text(
+            text = name,
+            fontSize = 12.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            color = if (printed) scheme.onSurface else scheme.onSurfaceVariant,
+            textDecoration = if (printed) TextDecoration.None else TextDecoration.LineThrough,
+            modifier = Modifier.weight(1f),
+        )
+        Box(
+            modifier =
+                Modifier
+                    .size(26.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onTogglePrint),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = if (printed) Icons.Filled.Print else Icons.Filled.PrintDisabled,
+                contentDescription = if (printed) "prints" else "skipped",
+                modifier = Modifier.size(15.dp),
+                tint = if (printed) LanternGold else scheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -598,13 +727,30 @@ private typealias Face = world.yemyat.slicepilot.preview.ModelTransform.Face
 private fun PrintSetupFullscreen(
     vm: AppViewModel,
     controller: world.yemyat.slicepilot.preview.ModelPreviewView,
+    volume: Triple<Float, Float, Float>,
     onClose: () -> Unit,
 ) {
-    // One source of truth: the pose the renderer is actually drawing. The first version
+    // One source of truth: the pose the app is actually using. The first version
     // of this sheet kept its own mx/my/mz booleans, so a change the renderer refused
     // still lit the chip up, and the angles had no place on screen at all — which is how
     // a model could end up saved as rot=(270, 720, 630) with nobody able to see it.
-    var pose by remember { mutableStateOf<Pose>(controller.currentTransform()) }
+    val mesh by vm.mesh.collectAsState()
+    val allPoses by vm.partPoses.collectAsState()
+    val skipped by vm.partsSkipped.collectAsState()
+    val selected by vm.selectedPart.collectAsState()
+    val parts = mesh?.partsForRendering.orEmpty()
+
+    /**
+     * The pose this sheet owns. A file that is laid out piece by piece is posed piece by
+     * piece, so these controls drive the piece the Pieces list picked: the renderer gives
+     * every piece its own matrix and ignores the single whole-model transform, which meant
+     * the buttons here moved the readout and left the plate alone. A single-piece file (and a
+     * multi-part one nobody has laid out yet) still poses the whole model.
+     */
+    val partPose: Pose? =
+        allPoses?.takeIf { it.size == parts.size && parts.size > 1 }?.getOrNull(selected)
+    val pose: Pose = partPose ?: controller.currentTransform()
+    val partTitle: String? = if (partPose == null) null else parts.getOrNull(selected)?.name
     var error by remember { mutableStateOf<String?>(null) }
     val step = 5f
     LaunchedEffect(error) {
@@ -614,14 +760,59 @@ private fun PrintSetupFullscreen(
         }
     }
 
-    /** Apply to the renderer, publish to the ViewModel — or say why the pose was refused. */
-    fun applyPose(block: () -> Boolean) {
-        if (!block()) {
+    /** Pose the selected piece, or say why the plate could not hold it. */
+    fun applyToPart(next: Pose?) {
+        val m = mesh ?: return
+        val all = allPoses ?: return
+        val label = parts.getOrNull(selected)?.name ?: "Part ${selected + 1}"
+        if (next == null) {
+            error = "$label can't be posed that way"
+            return
+        }
+        val updated = all.mapIndexed { i, current -> if (i == selected) next else current }
+        val included = List(parts.size) { it !in skipped }
+        if (!PartPlacement.fits(m, updated, included, volume.first, volume.second, volume.third)) {
+            error = "$label doesn't fit on the build plate in that pose"
+            return
+        }
+        vm.setPartPose(selected, next)
+    }
+
+    /** Ask the renderer for a whole-model pose and publish the one it accepted. */
+    fun applyToModel(applied: Boolean) {
+        if (!applied) {
             error = "That pose doesn't fit on the build plate"
             return
         }
-        pose = controller.currentTransform()
         vm.setModelTransform(controller.modelTransform())
+    }
+
+    /**
+     * One Rotate / Mirror / Move / Face button with two meanings: the selected piece when the
+     * file has a per-piece layout, the whole model when it has none.
+     */
+    fun applyPose(
+        onPart: (Pose) -> Pose?,
+        onModel: () -> Boolean,
+    ) {
+        val current = partPose
+        if (current != null) applyToPart(onPart(current)) else applyToModel(onModel())
+    }
+
+    /**
+     * The four Move arrows. A direction here is a *screen* direction, and the preview's camera
+     * is what turns it into plate millimetres, so the piece follows the arrow however the plate
+     * is orbited. The arrows used to add to the plate's own +X/-X/+Y/-Y, which only lined up
+     * with the arrow from one camera angle - see OrbitCamera.plateDelta.
+     */
+    fun move(direction: ScreenDirection) {
+        val current = partPose
+        if (current == null) {
+            applyToModel(controller.nudgeScreen(direction, step))
+            return
+        }
+        val (dx, dy) = controller.screenDelta(direction, step)
+        applyToPart(current.nudged(dx, dy))
     }
 
     Dialog(
@@ -650,32 +841,54 @@ private fun PrintSetupFullscreen(
                 modifier = Modifier.align(Alignment.TopStart).padding(24.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                OrientationCard(pose, controller.footprintMm())
+                OrientationCard(
+                    pose,
+                    footprint = partPose?.let { parts.getOrNull(selected)?.footprint(it) } ?: controller.footprintMm(),
+                    title = partTitle,
+                )
 
                 SectionLabel("Put this face on the plate")
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    FaceChip(Face.BOTTOM, pose) { applyPose { controller.setFaceDown(Face.BOTTOM) } }
-                    FaceChip(Face.TOP, pose) { applyPose { controller.setFaceDown(Face.TOP) } }
-                    FaceChip(Face.FRONT, pose) { applyPose { controller.setFaceDown(Face.FRONT) } }
+                    FaceChip(Face.BOTTOM, pose) {
+                        applyPose({ it.forFace(Face.BOTTOM) }) { controller.setFaceDown(Face.BOTTOM) }
+                    }
+                    FaceChip(Face.TOP, pose) {
+                        applyPose({ it.forFace(Face.TOP) }) { controller.setFaceDown(Face.TOP) }
+                    }
+                    FaceChip(Face.FRONT, pose) {
+                        applyPose({ it.forFace(Face.FRONT) }) { controller.setFaceDown(Face.FRONT) }
+                    }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    FaceChip(Face.BACK, pose) { applyPose { controller.setFaceDown(Face.BACK) } }
-                    FaceChip(Face.LEFT, pose) { applyPose { controller.setFaceDown(Face.LEFT) } }
-                    FaceChip(Face.RIGHT, pose) { applyPose { controller.setFaceDown(Face.RIGHT) } }
+                    FaceChip(Face.BACK, pose) {
+                        applyPose({ it.forFace(Face.BACK) }) { controller.setFaceDown(Face.BACK) }
+                    }
+                    FaceChip(Face.LEFT, pose) {
+                        applyPose({ it.forFace(Face.LEFT) }) { controller.setFaceDown(Face.LEFT) }
+                    }
+                    FaceChip(Face.RIGHT, pose) {
+                        applyPose({ it.forFace(Face.RIGHT) }) { controller.setFaceDown(Face.RIGHT) }
+                    }
                 }
 
                 SectionLabel("Rotate 90°")
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    RotateButton("X") { applyPose { controller.rotateModel('x') } }
-                    RotateButton("Y") { applyPose { controller.rotateModel('y') } }
-                    RotateButton("Z") { applyPose { controller.rotateModel('z') } }
+                    RotateButton("X") { applyPose({ it.rotated('x') }) { controller.rotateModel('x') } }
+                    RotateButton("Y") { applyPose({ it.rotated('y') }) { controller.rotateModel('y') } }
+                    RotateButton("Z") { applyPose({ it.rotated('z') }) { controller.rotateModel('z') } }
                 }
 
                 SectionLabel("Mirror")
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    MirrorChip("X", pose.mirrorX) { applyPose { controller.toggleMirror('x') } }
-                    MirrorChip("Y", pose.mirrorY) { applyPose { controller.toggleMirror('y') } }
-                    MirrorChip("Z", pose.mirrorZ) { applyPose { controller.toggleMirror('z') } }
+                    MirrorChip("X", pose.mirrorX) {
+                        applyPose({ it.mirrored('x') }) { controller.toggleMirror('x') }
+                    }
+                    MirrorChip("Y", pose.mirrorY) {
+                        applyPose({ it.mirrored('y') }) { controller.toggleMirror('y') }
+                    }
+                    MirrorChip("Z", pose.mirrorZ) {
+                        applyPose({ it.mirrored('z') }) { controller.toggleMirror('z') }
+                    }
                 }
             }
 
@@ -700,28 +913,29 @@ private fun PrintSetupFullscreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                MoveButton(Icons.Filled.ArrowUpward) { applyPose { controller.nudgeModel(0f, step) } }
+                MoveButton(Icons.Filled.ArrowUpward) { move(ScreenDirection.UP) }
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(60.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    MoveButton(Icons.AutoMirrored.Filled.ArrowBack) {
-                        applyPose { controller.nudgeModel(-step, 0f) }
-                    }
-                    MoveButton(Icons.AutoMirrored.Filled.ArrowForward) {
-                        applyPose { controller.nudgeModel(step, 0f) }
-                    }
+                    MoveButton(Icons.AutoMirrored.Filled.ArrowBack) { move(ScreenDirection.LEFT) }
+                    MoveButton(Icons.AutoMirrored.Filled.ArrowForward) { move(ScreenDirection.RIGHT) }
                 }
-                MoveButton(Icons.Filled.ArrowDownward) { applyPose { controller.nudgeModel(0f, -step) } }
+                MoveButton(Icons.Filled.ArrowDownward) { move(ScreenDirection.DOWN) }
                 SectionLabel("Move on plate")
             }
 
             TextButton(
                 onClick = {
                     error = null
-                    controller.resetModelTransform()
-                    vm.resetModelTransform()
-                    pose = controller.currentTransform()
+                    val current = partPose
+                    if (current != null) {
+                        // Back to where the file authored this piece, not to the plate centre.
+                        applyToPart(parts.getOrNull(selected)?.poseAt(volume.first, volume.second))
+                    } else {
+                        controller.resetModelTransform()
+                        vm.resetModelTransform()
+                    }
                 },
                 modifier = Modifier.align(Alignment.BottomEnd).padding(24.dp),
             ) {
@@ -740,6 +954,7 @@ private fun PrintSetupFullscreen(
 private fun OrientationCard(
     pose: Pose,
     footprint: FloatArray,
+    title: String? = null,
 ) {
     Surface(color = Color.White.copy(alpha = 0.92f), shape = RoundedCornerShape(14.dp)) {
         Column(
@@ -747,7 +962,9 @@ private fun OrientationCard(
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(
-                text = "Rotating ${pose.rotX.toInt()}° X · ${pose.rotY.toInt()}° Y · ${pose.rotZ.toInt()}° Z",
+                text =
+                    (if (title != null) "$title · " else "") +
+                        "Rotating ${pose.rotX.toInt()}° X · ${pose.rotY.toInt()}° Y · ${pose.rotZ.toInt()}° Z",
                 color = Color(0xFF1A1C20),
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
