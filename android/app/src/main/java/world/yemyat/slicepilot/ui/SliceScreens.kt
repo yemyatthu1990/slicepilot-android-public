@@ -23,7 +23,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -31,6 +30,7 @@ import kotlinx.coroutines.delay
 import world.yemyat.slicepilot.model.GcodePreview
 import world.yemyat.slicepilot.model.MeshData
 import world.yemyat.slicepilot.preview.ModelPreviewView
+import world.yemyat.slicepilot.ui.components.SharedAndroidView
 import world.yemyat.slicepilot.ui.theme.*
 import kotlin.math.max
 
@@ -223,7 +223,7 @@ fun LiveSliceView(
             controller.destroy()
         }
     }
-    AndroidView(factory = { controller }, modifier = modifier)
+    SharedAndroidView(view = controller, modifier = modifier)
 }
 
 @Composable

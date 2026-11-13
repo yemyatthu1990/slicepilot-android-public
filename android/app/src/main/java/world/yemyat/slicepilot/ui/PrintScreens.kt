@@ -112,7 +112,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -121,6 +120,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import world.yemyat.slicepilot.cloud.PrintJobState
 import world.yemyat.slicepilot.cloud.PrintStatus
+import world.yemyat.slicepilot.ui.components.SharedAndroidView
 import world.yemyat.slicepilot.ui.theme.BrandButton
 import world.yemyat.slicepilot.ui.theme.BrandCyan
 import world.yemyat.slicepilot.ui.theme.ButtonRole
@@ -1180,8 +1180,8 @@ fun CameraStage(
         } else {
             val rtcSurface = surface
             if (rtcSurface != null) {
-                AndroidView(
-                    factory = { rtcSurface },
+                SharedAndroidView(
+                    view = rtcSurface,
                     modifier = scaled(Modifier.fillMaxSize()),
                 )
             } else {

@@ -42,7 +42,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
@@ -254,6 +253,6 @@ private fun CameraPreview(onCode: (String) -> Unit) {
             Text("No camera available on this device.", color = Color.White)
         }
     } else {
-        AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
+        SharedAndroidView(view = previewView, modifier = Modifier.fillMaxSize())
     }
 }

@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.delay
+import world.yemyat.slicepilot.ui.components.SharedAndroidView
 import world.yemyat.slicepilot.ui.theme.*
 import kotlin.math.cos
 import kotlin.math.sin
@@ -202,8 +203,8 @@ fun PrintSetupScreen(vm: AppViewModel) {
                             .background(MaterialTheme.colorScheme.surfaceVariant),
                 ) {
                     if (!fullscreen) {
-                        androidx.compose.ui.viewinterop.AndroidView(
-                            factory = { previewController },
+                        SharedAndroidView(
+                            view = previewController,
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
@@ -555,8 +556,8 @@ private fun PrintSetupFullscreen(
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         Box(Modifier.fillMaxSize().background(Color(0xFF1A1C20))) {
-            androidx.compose.ui.viewinterop.AndroidView(
-                factory = { controller },
+            SharedAndroidView(
+                view = controller,
                 modifier = Modifier.fillMaxSize(),
             )
 

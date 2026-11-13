@@ -1,7 +1,8 @@
 # Play Store listing
 
-Drafted in Play edit `00516906630872832170` (left uncommitted / not submitted for review).
-Screenshots: `store_listing/screenshots/phone_new/` (captured on-device, v1.6.2).
+Drafted in Play edit `01915840855682935073` (left uncommitted / not submitted for review).
+Screenshots: `store_listing/screenshots/phone_v1.9.0/` (captured on a Pixel 4a, v1.9.0 build;
+earlier sets live in `phone_new/` for v1.6.2 and `phone/` before that).
 
 ## App name
 SlicePilot
@@ -21,7 +22,7 @@ Find and download models without leaving the app — search and browse four mode
 Search across all of them at once, see what's popular today, pick the exact print profile you want (file sizes and print presets included) and download it straight into the slicer. No file manager, no browser detour.
 
 CLOUD PRINT FOR THE CENTAURI CARBON 2
-SlicePilot talks to the YE3D Centauri Carbon 2 over the cloud: sign in, pick your printer, and send the finished G-code job from your phone.
+SlicePilot talks to the Centauri Carbon 2 over the cloud: sign in, pick your printer, and send the finished G-code job from your phone.
 
 DESKTOP-CLASS SLICING ENGINE
 - Full slicing engine ported from a desktop slicer, running on your device
@@ -36,20 +37,21 @@ AND THE NICE TOUCHES
 - Light and dark themes
 - Open STL/3MF files directly from your Files app
 
-SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint, Elegoo, or YE3D. All trademarks belong to their respective owners.
+SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint or Elegoo. All trademarks belong to their respective owners.
+
+## What's new (1.9.1)
+• Fixed: opening the full-screen camera preview could close the app
+• Fixed: the model preview closing the app the same way when it moved between print setup and its full-screen viewer
 
 ## What's new (1.9.0)
-- Home, Printer and Files are their own tabs now, with one button style everywhere instead of five
-- A full-screen camera: pinch-zoom live view, a shutter, and a photo gallery with Share and Save
-- Comments on every source - threaded, with their photos and votes - and a swipeable photo viewer
-- Sign in to MakerWorld or Nexprint without leaving the app, including the emailed Bambu Lab code step
-- Pair a printer by typing its PIN or scanning the QR code on the panel, even one the account doesn't list yet
-- Fixed: MakerWorld models that answered "no download link" now download
-- Fixed: the 3D preview and the slicer no longer disagree about how a model is posed
-- Slice failures now say what went wrong instead of the slicer's literal "Errors"
-- Long model descriptions collapse behind "Show more" so a model page can be scanned
-- Fixed a crash opening the preview of an empty G-code, and thumbnails that never left the cache
-- Built for Android's 16 KB memory pages
+<!-- What shipped, verbatim: Play caps release notes at 500 characters, so this replaced the
+     longer list (the full changelog lives on the GitHub release:
+     https://github.com/yemyatthu1990/slicepilot-android-public/releases/tag/v1.9.0). -->
+• Home, Printer and Files are separate tabs now, with one button style app-wide
+• Full-screen camera: pinch-zoom live view, a shutter, and a photo gallery
+• Comments from all four model sites, with their photos and votes
+• Sign in to MakerWorld or Nexprint in-app, Bambu Lab code step included
+• Fixed: MakerWorld files with no download link, preview/slicer pose mismatch, empty G-code crash
 
 ## What's new (1.6.2)
 - Search and download models from MakerWorld, Printables, Thingiverse and Nexprint, right inside the app
@@ -61,15 +63,22 @@ SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by
 - Light and dark themes, bottom buttons no longer hidden behind the gesture bar
 - Crash fixes: seam dropdown, large model preview uploads
 
-## Screenshot set (max 8)
-1. Home (light) — Find models / Choose a file + popular feed
-2. Browse — popular on MakerWorld & Printables (light)
-3. Printables grid (light)
-4. Thingiverse grid (light)
-5. Nexprint grid (light)
-6. Home (dark)
-7. Cross-site search results, dark
-8. Model detail with files + Download & slice, dark
+## Screenshot set (max 8) — v1.9.0
+Shot on the wired Pixel 4a (1080×2340) off the v1.9.0 debug build, so the two themes and all
+three tabs are covered. The real printer was off the network, so frame 5 uses the app's own
+demo printer (`demo@demo.com` sign-in → simulated Centauri Carbon 2) instead of an empty
+discovery screen; frame 6 is still the honest empty Files tab, and a pairing-sheet frame was
+dropped because the sheet renders in its peek state and clipped its own Connect button.
+
+1. `01_home_light` — Home: search, "Popular on MakerWorld" feed, Local model
+2. `02_makerworld_grid_light` — MakerWorld source grid
+3. `03_model_detail_light` — photos, author, downloads/likes, description, Download & slice
+4. `04_makerworld_signin_light` — the MakerWorld (Bambu Lab) sign-in sheet
+5. `05_printer_demo_light` — Printer tab on the demo printer: status, temps, filament,
+   live camera, controls
+6. `06_files_light` — Files tab, Models/Photos with the empty state
+7. `07_home_dark` — Home in dark theme
+8. `08_nexprint_search_dark` — Nexprint search results in dark theme
 
 ## Category
 Tools

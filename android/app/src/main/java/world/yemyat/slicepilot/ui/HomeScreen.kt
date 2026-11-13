@@ -27,7 +27,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -36,6 +35,7 @@ import world.yemyat.slicepilot.model.MeshData
 import world.yemyat.slicepilot.preview.ModelPreviewView
 import world.yemyat.slicepilot.repo.ModelBrowser
 import world.yemyat.slicepilot.repo.ModelSource
+import world.yemyat.slicepilot.ui.components.SharedAndroidView
 import world.yemyat.slicepilot.ui.theme.*
 
 /**
@@ -412,7 +412,7 @@ fun GcodePreviewCanvas(
             controller.destroy()
         }
     }
-    AndroidView(factory = { controller }, modifier = modifier)
+    SharedAndroidView(view = controller, modifier = modifier)
 }
 
 @Composable
@@ -461,7 +461,7 @@ fun ModelPreviewCanvas(
             controller.destroy()
         }
     }
-    AndroidView(factory = { controller }, modifier = modifier)
+    SharedAndroidView(view = controller, modifier = modifier)
 }
 
 /**

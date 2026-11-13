@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import socket
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -22,6 +23,13 @@ def main():
         help="Release label shown in the console; omit to let Play show the version code.",
     )
     parser.add_argument("--version-code", type=int, default=1)
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=900,
+        help="Seconds to wait for each API response. The ~90 MB bundle uploads as one "
+        "resumable chunk and Play can answer later than the client default of 60 s.",
+    )
     parser.add_argument("--status", default="draft", choices=["draft", "inProgress", "halted", "completed"])
     parser.add_argument("--mapping", default="android/app/build/outputs/mapping/release/mapping.txt")
     parser.add_argument(
@@ -39,8 +47,12 @@ def main():
     )
     args = parser.parse_args()
 
+    # build_http() takes no arguments in google-api-python-client 2.x: it reads the
+    # timeout from socket.getdefaulttimeout() (60 s), so the ~90 MB bundle upload used
+    # to die with TimeoutError while waiting for Play's answer. Set it before building.
+    socket.setdefaulttimeout(args.timeout)
     creds = service_account.Credentials.from_service_account_file(args.key, scopes=[SCOPE])
-    service = build("androidpublisher", "v3", credentials=creds)
+    service = build("androidpublisher", "v3", credentials=creds, num_retries=3)
 
     edit = service.edits().insert(packageName=PACKAGE, body={}).execute()
     edit_id = edit["id"]
@@ -81,7 +93,11 @@ def main():
 
     notes = args.notes
     if os.path.isfile(args.notes):
-        notes = open(args.notes, encoding="utf-8").read().strip()
+        try:
+            with open(args.notes, encoding="utf-8") as handle:
+                notes = handle.read().strip()
+        except OSError as exc:
+            raise SystemExit(f"Cannot read notes file {args.notes}: {exc}") from exc
     release = {
         "versionCodes": [args.version_code],
         "status": args.status,
