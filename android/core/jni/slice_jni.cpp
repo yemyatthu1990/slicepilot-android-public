@@ -318,15 +318,48 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
                 std::string perr;
                 if (preview::parse_preview(model_path, 20000000, full, perr, {}, false)
                     && !full.indices.empty() && !full.has_grid_transforms) {
-                    indexed_triangle_set its;
-                    its.vertices.reserve(full.positions.size() / 3);
-                    for (size_t i = 0; i + 2 < full.positions.size(); i += 3)
-                        its.vertices.emplace_back(full.positions[i], full.positions[i + 1], full.positions[i + 2]);
-                    its.indices.reserve(full.indices.size() / 3);
-                    for (size_t i = 0; i + 2 < full.indices.size(); i += 3)
-                        its.indices.emplace_back(full.indices[i], full.indices[i + 1], full.indices[i + 2]);
-                    model.add_object("model", model_path.c_str(), TriangleMesh(std::move(its)));
-                    model.objects.front()->add_instance();
+                    // One object per part, in the order the parser reported them, which is the
+                    // order nativeSetPartPoses' rows arrive in. Merging the parts into a single
+                    // object (as this path used to) made the pose count disagree with the object
+                    // count, so apply_model_transform() dropped the poses and sliced the file
+                    // exactly as authored: the plate the user laid out never reached the G-code.
+                    auto add_part_object = [&](const preview::PartGeometry &part) {
+                        indexed_triangle_set its;
+                        its.vertices.reserve(part.vertex_count);
+                        for (int v = 0; v < part.vertex_count; ++v) {
+                            const float *p = &full.positions[(size_t)(part.vertex_start + v) * 3];
+                            its.vertices.emplace_back(p[0], p[1], p[2]);
+                        }
+                        its.indices.reserve(part.index_count / 3);
+                        for (int i = 0; i + 2 < part.index_count; i += 3) {
+                            const int *base = &full.indices[part.index_start];
+                            its.indices.emplace_back(base[i] - part.vertex_start,
+                                                     base[i + 1] - part.vertex_start,
+                                                     base[i + 2] - part.vertex_start);
+                        }
+                        const std::string name =
+                            part.name.empty() ? "part_" + std::to_string(model.objects.size())
+                                              : part.name;
+                        model.add_object(name.c_str(), model_path.c_str(), TriangleMesh(std::move(its)));
+                        model.objects.back()->add_instance();
+                    };
+                    if (!full.parts.empty()) {
+                        for (const preview::PartGeometry &part : full.parts) add_part_object(part);
+                        LOGI("Fast 3mf path: %zu per-part objects", full.parts.size());
+                    } else {
+                        // Geometry without a part list (defensive): one object, as before.
+                        indexed_triangle_set its;
+                        its.vertices.reserve(full.positions.size() / 3);
+                        for (size_t i = 0; i + 2 < full.positions.size(); i += 3)
+                            its.vertices.emplace_back(full.positions[i], full.positions[i + 1],
+                                                      full.positions[i + 2]);
+                        its.indices.reserve(full.indices.size() / 3);
+                        for (size_t i = 0; i + 2 < full.indices.size(); i += 3)
+                            its.indices.emplace_back(full.indices[i], full.indices[i + 1],
+                                                     full.indices[i + 2]);
+                        model.add_object("model", model_path.c_str(), TriangleMesh(std::move(its)));
+                        model.objects.back()->add_instance();
+                    }
                     // Embedded config / plate metadata, geometry skipped (fast).
                     // Failure here only loses embedded config keys (the app config
                     // already carries the parsed project settings), so keep the
