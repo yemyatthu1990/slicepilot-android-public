@@ -1,6 +1,8 @@
 # Play Store listing
 
 Published 2026-11-13 from Play edit `13677982899649546337` (en-US listing + phone screenshots).
+**v1.9.5 (38) went to production at 100 % on 2026-11-14** (Play edit `02924853408639980845`);
+production had been v1.8.3 (32) since 2026-10-21, and internal now matches at 38.
 The first draft of this copy, edit `01915840855682935073`, expired before it could be submitted:
 Play edits live about an hour, so an edit is built and committed in one sitting, not parked.
 Screenshots: `store_listing/screenshots/phone_v1.9.0/` (captured on a Pixel 4a, v1.9.0 build;
@@ -42,6 +44,17 @@ AND THE NICE TOUCHES
 SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint or Elegoo. All trademarks belong to their respective owners.
 
 ## What's new (1.9.5)
+<!-- The production rollout ships the 492-character variant below (Play caps notes at 500): a
+     production user jumps straight from 1.8.3, so one note has to cover the whole 1.9 line.
+     The text above/below is the internal-track wording for 1.9.5 alone.
+
+     Everything since 1.8.3:
+     • Home, Printer and Files are now separate tabs, one button style app-wide
+     • Full-screen camera with pinch-zoom, a shutter and a photo gallery
+     • Comments, photos and votes from MakerWorld, Printables, Thingiverse and Nexprint; in-app sign-in; pair a printer by PIN or QR
+     • Multi-part 3MF: pick which pieces print, rotate or move one piece, re-arrange the set — preview and G-code now agree
+     • Fixed camera and empty-G-code crashes; 16 KB native libraries for Android 16
+-->
 • Fixed: the G-code ignored the piece poses you set — a multi-part 3MF sliced wherever the file's author placed the pieces, ignoring rotations, moves and pieces you switched off
 • Multi-part files now slice exactly the layout Print setup shows, and the preview matches it piece for piece
 
