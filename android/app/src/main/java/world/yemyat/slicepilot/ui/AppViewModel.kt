@@ -1,6 +1,9 @@
 package world.yemyat.slicepilot.ui
 
+import android.content.ActivityNotFoundException
 import android.content.Context
+import android.net.Uri
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -28,6 +31,7 @@ import world.yemyat.slicepilot.cloud.ElegooCloudClient
 import world.yemyat.slicepilot.cloud.PairingCode
 import world.yemyat.slicepilot.cloud.PairingValues
 import world.yemyat.slicepilot.cloud.auth.CloudAuthResult
+import world.yemyat.slicepilot.cloud.auth.CloudSocialLogin
 import world.yemyat.slicepilot.model.GcodePreview
 import world.yemyat.slicepilot.model.GcodePreviewParser
 import world.yemyat.slicepilot.model.MeshData
@@ -2841,6 +2845,9 @@ class AppViewModel(
     val cloudUser get() = if (_demoMode.value) "Demo user" else cloud.auth.nickname
     val cloudLoggedIn get() = cloud.auth.isLoggedIn || _demoMode.value
     val loginPageUrl get() = if (_demoMode.value) "Demo mode" else cloud.auth.loginPageUrl
+
+    /** Google/Facebook sign-in is configured for Elegoo's international accounts only. */
+    val socialSignInAvailable get() = cloud.auth.socialSignInSupported
     var cloudRegion: String
         get() = cloud.auth.region
         set(v) {
@@ -3568,6 +3575,79 @@ class AppViewModel(
 
     fun signIn() {
         // Opens the Elegoo web login; token handoff completes via checkSession when the user returns.
+    }
+
+    /** The provider whose tab is currently open, so the callback knows what it was asked for. */
+    private var pendingSocialProvider: String? = null
+
+    /** "Google" / "Facebook" — how a provider name reads in the app's own copy. */
+    private fun providerLabel(provider: String): String = CloudSocialLogin.normalizeProvider(provider).replaceFirstChar { it.uppercase() }
+
+    /**
+     * Open Google (or Facebook) sign-in in a browser tab. Elegoo runs the OAuth dance with Google on
+     * its own server, so the app only has to render their redirect and wait — the answer comes back on
+     * the `world.yemyat.slicepilot://social/google` deep link, where [completeSocialSignIn] picks it up.
+     */
+    fun startSocialSignIn(
+        context: Context,
+        provider: String = CloudSocialLogin.PROVIDER_GOOGLE,
+    ) {
+        val url = cloud.auth.socialSignInUrl(provider)
+        try {
+            CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url))
+        } catch (e: ActivityNotFoundException) {
+            _cloudMessage.value = "No browser on this device for ${providerLabel(provider)} sign-in — use email and password."
+            return
+        }
+        pendingSocialProvider = CloudSocialLogin.normalizeProvider(provider)
+        EventNotifier.trackEvent("social_sign_in_started", mapOf("provider" to pendingSocialProvider.orEmpty()))
+    }
+
+    /**
+     * The browser tab came back with a provider token: trade it for a session and then behave exactly
+     * like [nativeLogin] did, so every screen downstream sees one kind of signed-in account.
+     *
+     * Returns false when the uri is not a social callback, which is how [MainActivity] lets the other
+     * deep links (models, print actions) through.
+     */
+    fun completeSocialSignIn(uri: Uri): Boolean {
+        val url = uri.toString()
+        val provider = CloudSocialLogin.providerOf(url) ?: return false
+        val token = CloudSocialLogin.tokenOf(url)
+        val askedFor = providerLabel(pendingSocialProvider ?: provider)
+        pendingSocialProvider = null
+
+        if (token.isNullOrBlank()) {
+            // The provider refused instead of handing a token back: suspended account, new password…
+            _cloudMessage.value = CloudSocialLogin.errorOf(url) ?: "$askedFor sign-in did not finish"
+            return true
+        }
+
+        viewModelScope.launch {
+            when (val result = cloud.auth.loginWithSocial(provider, token)) {
+                is CloudAuthResult.Ok -> {
+                    disableDemo()
+                    EventNotifier.trackEvent(
+                        "cloud_login_success",
+                        mapOf("user" to cloud.auth.nickname, "method" to askedFor),
+                    )
+                    _cloudMessage.value =
+                        listOfNotNull("Signed in as ${cloud.auth.nickname.ifBlank { askedFor }}", result.value.setupNote)
+                            .joinToString(" · ")
+                    refreshPrinters()
+                }
+
+                is CloudAuthResult.Err -> {
+                    EventNotifier.trackError(
+                        "cloud_login_failed",
+                        null,
+                        mapOf("message" to result.message, "method" to askedFor),
+                    )
+                    _cloudMessage.value = result.message
+                }
+            }
+        }
+        return true
     }
 
     fun nativeLogin(

@@ -19,8 +19,9 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-class CloudAuthClient(context: Context) {
-
+class CloudAuthClient(
+    context: Context,
+) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("elegoo_cloud", Context.MODE_PRIVATE)
 
@@ -29,10 +30,12 @@ class CloudAuthClient(context: Context) {
         set(v) = prefs.edit().putString("region", v).apply()
 
     private val gateway: String
-        get() = if (region == "china")
-            BuildConfig.CLOUD_GATEWAY_CHINA
-        else
-            BuildConfig.CLOUD_GATEWAY_GLOBAL
+        get() =
+            if (region == "china") {
+                BuildConfig.CLOUD_GATEWAY_CHINA
+            } else {
+                BuildConfig.CLOUD_GATEWAY_GLOBAL
+            }
 
     private val accountApi = "/api/v1/account-center-server"
     private val clientId = BuildConfig.CLOUD_CLIENT_ID
@@ -42,10 +45,12 @@ class CloudAuthClient(context: Context) {
     }
 
     val loginPageUrl: String
-        get() = if (region == "china")
-            BuildConfig.CLOUD_LOGIN_URL_CHINA
-        else
-            BuildConfig.CLOUD_LOGIN_URL_GLOBAL
+        get() =
+            if (region == "china") {
+                BuildConfig.CLOUD_LOGIN_URL_CHINA
+            } else {
+                BuildConfig.CLOUD_LOGIN_URL_GLOBAL
+            }
 
     val isLoggedIn: Boolean get() = !accessToken.isNullOrBlank()
 
@@ -77,7 +82,12 @@ class CloudAuthClient(context: Context) {
         get() = prefs.getLong("access_token_expire", 0L)
         set(v) = prefs.edit().putLong("access_token_expire", v).apply()
 
-    fun saveSession(token: String, refresh: String?, nick: String, mail: String) {
+    fun saveSession(
+        token: String,
+        refresh: String?,
+        nick: String,
+        mail: String,
+    ) {
         accessToken = token
         refreshToken = refresh
         nickname = nick
@@ -88,113 +98,200 @@ class CloudAuthClient(context: Context) {
         prefs.edit().clear().apply()
     }
 
-    fun tokenUsable(): Boolean =
-        accessTokenExpire == 0L || System.currentTimeMillis() < accessTokenExpire - 60_000L
+    fun tokenUsable(): Boolean = accessTokenExpire == 0L || System.currentTimeMillis() < accessTokenExpire - 60_000L
 
     suspend fun refreshIfNeeded(): Boolean = tokenUsable() || refreshTokens()
 
     /** Maps raw Elegoo cloud login errors to user-friendly text. */
-    private fun friendlyLoginError(msg: String, code: Int): String = when {
-        msg.contains("password error", ignoreCase = true) ->
-            "Wrong email or password. Please try again."
-        msg.contains("user not exist", ignoreCase = true) ->
-            "No account found for this email. Please sign up first."
-        msg.contains("账号锁定") || msg.contains("locked", ignoreCase = true) ->
-            "Account temporarily locked after too many attempts. Wait a few minutes and try again."
-        msg.isBlank() -> "Login failed (code $code)"
-        else -> msg
-    }
-
-    suspend fun login(emailAddr: String, password: String): CloudAuthResult<Unit> = withContext(Dispatchers.IO) {
-        try {
-            val pubKeyPem = fetchPublicKeyOrFallback()
-            val publicKey = parseRsaPublicKey(pubKeyPem)
-
-            val rnd = SecureRandom()
-            val keyBytes = ByteArray(32).also { rnd.nextBytes(it) }
-            val ivBytes = ByteArray(16).also { rnd.nextBytes(it) }
-
-            val aes = Cipher.getInstance("AES/CBC/PKCS5Padding")
-            aes.init(Cipher.ENCRYPT_MODE, SecretKeySpec(keyBytes, "AES"), IvParameterSpec(ivBytes))
-            val encEmail = Base64.encodeToString(
-                aes.doFinal(emailAddr.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP,
-            )
-            val encPwd = Base64.encodeToString(
-                aes.doFinal(password.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP,
-            )
-
-            val rsa = Cipher.getInstance("RSA/ECB/PKCS1Padding")
-            rsa.init(Cipher.ENCRYPT_MODE, publicKey)
-            val aesKeyB64 = Base64.encodeToString(rsa.doFinal(keyBytes), Base64.NO_WRAP)
-            val aesIvB64 = Base64.encodeToString(rsa.doFinal(ivBytes), Base64.NO_WRAP)
-
-            val body = JSONObject()
-                .put("clientId", clientId)
-                .put("email", emailAddr)
-                .put("encryptEmail", encEmail)
-                .put("password", encPwd)
-                .put("aesIv", aesIvB64)
-                .put("aesKey", aesKeyB64)
-                .put("reEncode", true)
-
-            val resp = apiPost(
-                accountApi + "/account-auth/login/email/password",
-                body,
-                authed = false,
-            )
-            if (!isSuccess(resp)) {
-                return@withContext CloudAuthResult.Err(
-                    friendlyLoginError(
-                        resp.optString("msg", ""),
-                        resp.optInt("code"),
-                    ),
-                )
+    private fun friendlyLoginError(
+        msg: String,
+        code: Int,
+    ): String =
+        when {
+            msg.contains("password error", ignoreCase = true) -> {
+                "Wrong email or password. Please try again."
             }
-            val data = resp.optJSONObject("data")
-                ?: return@withContext CloudAuthResult.Err("login: no data in response")
-            val token = data.optString("accessToken", data.optString("token", ""))
-            if (token.isBlank()) return@withContext CloudAuthResult.Err("login: no accessToken")
-            accessToken = token
-            refreshToken = data.optString("refreshToken", "").ifBlank { null }
-            accessTokenExpire = data.optLong("accessTokenExpireTime", 0L)
-            email = emailAddr
-            nickname = data.optString("nickname", data.optString("userName", emailAddr.substringBefore('@')))
-            CloudAuthResult.Ok(Unit)
-        } catch (e: Exception) {
-            CloudAuthResult.Err(e.message ?: "login failed")
+
+            msg.contains("user not exist", ignoreCase = true) -> {
+                "No account found for this email. Please sign up first."
+            }
+
+            msg.contains("账号锁定") || msg.contains("locked", ignoreCase = true) -> {
+                "Account temporarily locked after too many attempts. Wait a few minutes and try again."
+            }
+
+            // "访问令牌不存在" — a provider token that was already spent, or never issued.
+            msg.contains("访问令牌") -> {
+                "That sign-in link didn't work. Please try signing in again."
+            }
+
+            msg.isBlank() -> {
+                "Login failed (code $code)"
+            }
+
+            else -> {
+                msg
+            }
         }
+
+    suspend fun login(
+        emailAddr: String,
+        password: String,
+    ): CloudAuthResult<Unit> =
+        withContext(Dispatchers.IO) {
+            try {
+                val pubKeyPem = fetchPublicKeyOrFallback()
+                val publicKey = parseRsaPublicKey(pubKeyPem)
+
+                val rnd = SecureRandom()
+                val keyBytes = ByteArray(32).also { rnd.nextBytes(it) }
+                val ivBytes = ByteArray(16).also { rnd.nextBytes(it) }
+
+                val aes = Cipher.getInstance("AES/CBC/PKCS5Padding")
+                aes.init(Cipher.ENCRYPT_MODE, SecretKeySpec(keyBytes, "AES"), IvParameterSpec(ivBytes))
+                val encEmail =
+                    Base64.encodeToString(
+                        aes.doFinal(emailAddr.toByteArray(Charsets.UTF_8)),
+                        Base64.NO_WRAP,
+                    )
+                val encPwd =
+                    Base64.encodeToString(
+                        aes.doFinal(password.toByteArray(Charsets.UTF_8)),
+                        Base64.NO_WRAP,
+                    )
+
+                val rsa = Cipher.getInstance("RSA/ECB/PKCS1Padding")
+                rsa.init(Cipher.ENCRYPT_MODE, publicKey)
+                val aesKeyB64 = Base64.encodeToString(rsa.doFinal(keyBytes), Base64.NO_WRAP)
+                val aesIvB64 = Base64.encodeToString(rsa.doFinal(ivBytes), Base64.NO_WRAP)
+
+                val body =
+                    JSONObject()
+                        .put("clientId", clientId)
+                        .put("email", emailAddr)
+                        .put("encryptEmail", encEmail)
+                        .put("password", encPwd)
+                        .put("aesIv", aesIvB64)
+                        .put("aesKey", aesKeyB64)
+                        .put("reEncode", true)
+
+                val resp =
+                    apiPost(
+                        accountApi + "/account-auth/login/email/password",
+                        body,
+                        authed = false,
+                    )
+                if (!isSuccess(resp)) {
+                    return@withContext CloudAuthResult.Err(
+                        friendlyLoginError(
+                            resp.optString("msg", ""),
+                            resp.optInt("code"),
+                        ),
+                    )
+                }
+                val data =
+                    CloudLoginData.from(resp)
+                        ?: return@withContext CloudAuthResult.Err("login: no accessToken in response")
+                storeLoginData(data, emailIfBlank = emailAddr, nicknameIfBlank = emailAddr.substringBefore('@'))
+                CloudAuthResult.Ok(Unit)
+            } catch (e: Exception) {
+                CloudAuthResult.Err(e.message ?: "login failed")
+            }
+        }
+
+    /**
+     * Google sign-in (and Facebook) is wired up for the international region only: the China
+     * gateway has no provider configured, so the button would open a page that cannot finish.
+     */
+    val socialSignInSupported: Boolean
+        get() = region != "china"
+
+    /**
+     * The address to open in a browser tab ([androidx.browser.customtabs.CustomTabsIntent]) to start
+     * a social sign-in. Elegoo's own Google client runs the OAuth dance server side, so the app needs
+     * no Google OAuth client of its own — see [CloudSocialLogin].
+     */
+    fun socialSignInUrl(provider: String = CloudSocialLogin.PROVIDER_GOOGLE): String =
+        CloudSocialLogin.redirectUrl(gateway + accountApi, clientId, provider)
+
+    /** Trades the one-shot provider token off the callback for a session, the way [login] does for a password. */
+    suspend fun loginWithSocial(
+        provider: String,
+        providerToken: String,
+    ): CloudAuthResult<CloudLoginData> =
+        withContext(Dispatchers.IO) {
+            val name = CloudSocialLogin.normalizeProvider(provider)
+            if (!CloudSocialLogin.isSupported(provider)) {
+                return@withContext CloudAuthResult.Err("Unsupported sign-in provider: $provider")
+            }
+            try {
+                val resp =
+                    apiPost(
+                        accountApi + CloudSocialLogin.TOKEN_PATH,
+                        JSONObject().put("token", providerToken).put("clientId", clientId),
+                        authed = false,
+                    )
+                if (!isSuccess(resp)) {
+                    return@withContext CloudAuthResult.Err(
+                        friendlyLoginError(resp.optString("msg", ""), resp.optInt("code")),
+                    )
+                }
+                val data =
+                    CloudLoginData.from(resp)
+                        ?: return@withContext CloudAuthResult.Err("$name: no token in response")
+                storeLoginData(data)
+                CloudAuthResult.Ok(data)
+            } catch (e: Exception) {
+                CloudAuthResult.Err(e.message ?: "$name login failed")
+            }
+        }
+
+    /** One place where a login answer becomes stored state; the paths differ only by what they know. */
+    private fun storeLoginData(
+        data: CloudLoginData,
+        emailIfBlank: String = "",
+        nicknameIfBlank: String = "",
+    ) {
+        accessToken = data.token
+        refreshToken = data.refreshToken.ifBlank { null }
+        accessTokenExpire = data.accessTokenExpireTime
+        email = data.email.ifBlank { emailIfBlank }.ifBlank { email }
+        nickname = data.nickname.ifBlank { nicknameIfBlank }.ifBlank { nickname }
     }
 
-    suspend fun refreshTokens(): Boolean = withContext(Dispatchers.IO) {
-        val rt = refreshToken ?: return@withContext false
-        try {
-            val resp = apiPost(
-                accountApi + "/account-auth/token/refresh",
-                JSONObject().put("refreshToken", rt).put("clientId", clientId),
-                authed = false,
-            )
-            if (!isSuccess(resp)) return@withContext false
-            val data = resp.optJSONObject("data") ?: return@withContext false
-            val token = data.optString("accessToken", "")
-            if (token.isBlank()) return@withContext false
-            accessToken = token
-            data.optString("refreshToken").takeIf { it.isNotBlank() }?.let { refreshToken = it }
-            accessTokenExpire = data.optLong("accessTokenExpireTime", 0L)
-            true
-        } catch (e: Exception) {
-            false
+    suspend fun refreshTokens(): Boolean =
+        withContext(Dispatchers.IO) {
+            val rt = refreshToken ?: return@withContext false
+            try {
+                val resp =
+                    apiPost(
+                        accountApi + "/account-auth/token/refresh",
+                        JSONObject().put("refreshToken", rt).put("clientId", clientId),
+                        authed = false,
+                    )
+                if (!isSuccess(resp)) return@withContext false
+                val data = resp.optJSONObject("data") ?: return@withContext false
+                val token = data.optString("accessToken", "")
+                if (token.isBlank()) return@withContext false
+                accessToken = token
+                data.optString("refreshToken").takeIf { it.isNotBlank() }?.let { refreshToken = it }
+                accessTokenExpire = data.optLong("accessTokenExpireTime", 0L)
+                true
+            } catch (e: Exception) {
+                false
+            }
         }
-    }
 
-    suspend fun checkSession(): CloudAuthResult<CloudAuthUser> = withContext(Dispatchers.IO) {
-        if (accessToken.isNullOrBlank()) {
-            return@withContext CloudAuthResult.Err("not logged in")
+    suspend fun checkSession(): CloudAuthResult<CloudAuthUser> =
+        withContext(Dispatchers.IO) {
+            if (accessToken.isNullOrBlank()) {
+                return@withContext CloudAuthResult.Err("not logged in")
+            }
+            if (!tokenUsable() && !refreshTokens()) {
+                return@withContext CloudAuthResult.Err("session expired")
+            }
+            CloudAuthResult.Ok(CloudAuthUser(nickname, email, region))
         }
-        if (!tokenUsable() && !refreshTokens()) {
-            return@withContext CloudAuthResult.Err("session expired")
-        }
-        CloudAuthResult.Ok(CloudAuthUser(nickname, email, region))
-    }
 
     fun isAuthFailure(message: String): Boolean {
         val m = message.lowercase()
@@ -219,8 +316,8 @@ class CloudAuthClient(context: Context) {
             m.contains("身份验证失败")
     }
 
-    fun captureWebViewCookie(): String {
-        return try {
+    fun captureWebViewCookie(): String =
+        try {
             val cm = android.webkit.CookieManager.getInstance()
             cm.flush()
             val domains = BuildConfig.CLOUD_COOKIE_DOMAINS.split(",")
@@ -237,15 +334,15 @@ class CloudAuthClient(context: Context) {
         } catch (e: Exception) {
             ""
         }
-    }
 
     private suspend fun fetchPublicKeyOrFallback(): String {
         return try {
-            val keyJson = apiPost(
-                accountApi + "/account-auth/key",
-                JSONObject().put("clientId", clientId),
-                authed = false,
-            )
+            val keyJson =
+                apiPost(
+                    accountApi + "/account-auth/key",
+                    JSONObject().put("clientId", clientId),
+                    authed = false,
+                )
             if (isSuccess(keyJson)) {
                 extractPublicKey(keyJson)?.let { return it }
             }
@@ -255,9 +352,11 @@ class CloudAuthClient(context: Context) {
         }
     }
 
-    private suspend fun apiPost(path: String, body: JSONObject, authed: Boolean): JSONObject {
-        return postRaw(gateway + path, body, authed)
-    }
+    private suspend fun apiPost(
+        path: String,
+        body: JSONObject,
+        authed: Boolean,
+    ): JSONObject = postRaw(gateway + path, body, authed)
 
     private fun isSuccess(json: JSONObject): Boolean {
         val code = json.optInt("code", 200)
@@ -273,17 +372,24 @@ class CloudAuthClient(context: Context) {
                 }
                 null
             }
-            is String -> d.takeIf { it.isNotBlank() }
-            else -> null
+
+            is String -> {
+                d.takeIf { it.isNotBlank() }
+            }
+
+            else -> {
+                null
+            }
         }
     }
 
     private fun parseRsaPublicKey(pem: String): java.security.PublicKey {
-        val body = pem
-            .replace("-----BEGIN PUBLIC KEY-----", "")
-            .replace("-----END PUBLIC KEY-----", "")
-            .replace("-----BEGIN RSA PUBLIC KEY-----", "")
-            .replace("\\s".toRegex(), "")
+        val body =
+            pem
+                .replace("-----BEGIN PUBLIC KEY-----", "")
+                .replace("-----END PUBLIC KEY-----", "")
+                .replace("-----BEGIN RSA PUBLIC KEY-----", "")
+                .replace("\\s".toRegex(), "")
         val der = Base64.decode(body, Base64.DEFAULT)
         return try {
             KeyFactory.getInstance("RSA").generatePublic(X509EncodedKeySpec(der))
@@ -297,24 +403,41 @@ class CloudAuthClient(context: Context) {
     }
 
     private fun spkiFromPkcs1(pkcs1: ByteArray): X509EncodedKeySpec {
-        val algorithmId = byteArrayOf(
-            0x30, 0x0d,
-            0x06, 0x09, 0x2a, 0x86.toByte(), 0x48, 0x86.toByte(), 0xf7.toByte(), 0x0d, 0x01, 0x01, 0x01,
-            0x05, 0x00,
-        )
+        val algorithmId =
+            byteArrayOf(
+                0x30,
+                0x0d,
+                0x06,
+                0x09,
+                0x2a,
+                0x86.toByte(),
+                0x48,
+                0x86.toByte(),
+                0xf7.toByte(),
+                0x0d,
+                0x01,
+                0x01,
+                0x01,
+                0x05,
+                0x00,
+            )
         val bitString = derWrap(0x03, byteArrayOf(0x00) + pkcs1)
         val seqBody = algorithmId + bitString
         return X509EncodedKeySpec(derWrap(0x30, seqBody))
     }
 
-    private fun derWrap(tag: Int, body: ByteArray): ByteArray {
+    private fun derWrap(
+        tag: Int,
+        body: ByteArray,
+    ): ByteArray {
         val len = body.size
-        val lenBytes: ByteArray = when {
-            len < 128 -> byteArrayOf(len.toByte())
-            len < 256 -> byteArrayOf(0x81.toByte(), len.toByte())
-            len < 65536 -> byteArrayOf(0x82.toByte(), (len shr 8).toByte(), len.toByte())
-            else -> byteArrayOf(0x83.toByte(), (len shr 16).toByte(), (len shr 8).toByte(), len.toByte())
-        }
+        val lenBytes: ByteArray =
+            when {
+                len < 128 -> byteArrayOf(len.toByte())
+                len < 256 -> byteArrayOf(0x81.toByte(), len.toByte())
+                len < 65536 -> byteArrayOf(0x82.toByte(), (len shr 8).toByte(), len.toByte())
+                else -> byteArrayOf(0x83.toByte(), (len shr 16).toByte(), (len shr 8).toByte(), len.toByte())
+            }
         return byteArrayOf(tag.toByte()) + lenBytes + body
     }
 
@@ -322,7 +445,10 @@ class CloudAuthClient(context: Context) {
         val h = HashMap<String, String>()
         h["Accept"] = "application/json"
         h["User-Lang"] = "en"
-        h["X-Client-Request-Id"] = java.util.UUID.randomUUID().toString()
+        h["X-Client-Request-Id"] =
+            java.util.UUID
+                .randomUUID()
+                .toString()
         h["User-Agent"] =
             "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         if (authed) {
@@ -335,7 +461,9 @@ class CloudAuthClient(context: Context) {
     private fun applyTls(conn: HttpURLConnection) {
         if (conn is javax.net.ssl.HttpsURLConnection) {
             try {
-                val ctx = javax.net.ssl.SSLContext.getInstance("TLSv1.2")
+                val ctx =
+                    javax.net.ssl.SSLContext
+                        .getInstance("TLSv1.2")
                 ctx.init(null, null, SecureRandom())
                 conn.sslSocketFactory = ctx.socketFactory
             } catch (e: Exception) {
@@ -344,7 +472,11 @@ class CloudAuthClient(context: Context) {
         }
     }
 
-    private fun postRaw(url: String, body: JSONObject, authed: Boolean): JSONObject {
+    private fun postRaw(
+        url: String,
+        body: JSONObject,
+        authed: Boolean,
+    ): JSONObject {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.connectTimeout = 15000
@@ -365,9 +497,10 @@ class CloudAuthClient(context: Context) {
     private fun readJson(conn: HttpURLConnection): JSONObject {
         val code = conn.responseCode
         val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-        val text = stream?.let {
-            BufferedReader(InputStreamReader(it, Charsets.UTF_8)).useLines { ls -> ls.joinToString("") }
-        } ?: ""
+        val text =
+            stream?.let {
+                BufferedReader(InputStreamReader(it, Charsets.UTF_8)).useLines { ls -> ls.joinToString("") }
+            } ?: ""
         if (code !in 200..299) {
             throw RuntimeException("HTTP $code: ${text.take(200)}")
         }

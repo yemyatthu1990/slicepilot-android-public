@@ -1,6 +1,7 @@
 package world.yemyat.slicepilot.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -35,6 +36,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -46,6 +49,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import world.yemyat.slicepilot.R
 import world.yemyat.slicepilot.cloud.CloudPrinter
 import world.yemyat.slicepilot.ui.theme.LanternGold
 
@@ -512,6 +516,37 @@ private fun CloudSection(
         var agreedToElegooTerms by rememberSaveable { mutableStateOf(false) }
         var busy by remember { mutableStateOf(false) }
         val uriHandler = LocalUriHandler.current
+        val context = LocalContext.current
+        var showTermsDialog by rememberSaveable { mutableStateOf(false) }
+
+        val linkStyle =
+            SpanStyle(
+                color = LanternGold,
+                textDecoration = TextDecoration.Underline,
+            )
+        // Written once, shown twice: beside the checkbox and inside the consent dialog.
+        val termsText =
+            buildAnnotatedString {
+                withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
+                    append("I agree to the ")
+                }
+                pushStringAnnotation(tag = "URL", annotation = ELEGOO_TERMS_URL)
+                withStyle(linkStyle) { append("ELEGOO Terms of Service") }
+                pop()
+                withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
+                    append(" and ")
+                }
+                pushStringAnnotation(tag = "URL", annotation = ELEGOO_PRIVACY_URL)
+                withStyle(linkStyle) { append("Privacy Policy") }
+                pop()
+                withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
+                    append(".")
+                }
+            }
+
+        fun signInWithGoogle() {
+            vm.startSocialSignIn(context)
+        }
 
         fun doSignIn() {
             if (busy || email.isBlank() || password.isBlank() || !agreedToElegooTerms) return
@@ -527,6 +562,41 @@ private fun CloudSection(
             fontSize = 13.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (vm.socialSignInAvailable) {
+            // Elegoo's own Google flow, opened in a browser tab: the token comes back on the
+            // world.yemyat.slicepilot://social/google link (MainActivity → vm.completeSocialSignIn).
+            OutlinedButton(
+                // The box below no longer gates the provider flow: an untapped agreement asks in a
+                // dialog instead, and agreeing there ticks the box for the email form too.
+                onClick = {
+                    if (agreedToElegooTerms) signInWithGoogle() else showTermsDialog = true
+                },
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.ic_google),
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+                Text("Sign in with Google", fontSize = 16.sp)
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                HorizontalDivider(
+                    modifier = Modifier.weight(1f),
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                )
+                Text(" or ", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                HorizontalDivider(
+                    modifier = Modifier.weight(1f),
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                )
+            }
+        }
         OutlinedTextField(
             value = email,
             onValueChange = { email = it },
@@ -580,29 +650,6 @@ private fun CloudSection(
                 onCheckedChange = { agreedToElegooTerms = it },
             )
             Spacer(Modifier.width(8.dp))
-            val linkStyle =
-                SpanStyle(
-                    color = LanternGold,
-                    textDecoration = TextDecoration.Underline,
-                )
-            val termsText =
-                buildAnnotatedString {
-                    withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
-                        append("I agree to the ")
-                    }
-                    pushStringAnnotation(tag = "URL", annotation = ELEGOO_TERMS_URL)
-                    withStyle(linkStyle) { append("ELEGOO Terms of Service") }
-                    pop()
-                    withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
-                        append(" and ")
-                    }
-                    pushStringAnnotation(tag = "URL", annotation = ELEGOO_PRIVACY_URL)
-                    withStyle(linkStyle) { append("Privacy Policy") }
-                    pop()
-                    withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
-                        append(".")
-                    }
-                }
             ClickableText(
                 text = termsText,
                 style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
@@ -625,6 +672,18 @@ private fun CloudSection(
             } else {
                 Text("Sign in", fontSize = 17.sp)
             }
+        }
+        if (showTermsDialog) {
+            ElegooTermsDialog(
+                termsText = termsText,
+                onAgree = {
+                    agreedToElegooTerms = true
+                    showTermsDialog = false
+                    signInWithGoogle()
+                },
+                onDismiss = { showTermsDialog = false },
+                onOpenLink = uriHandler::openUri,
+            )
         }
     } else {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -696,6 +755,46 @@ private fun CloudSection(
             }
         }
     }
+}
+
+/**
+ * Consent asked at the moment it is actually needed, so a provider sign-in never has to be ticked
+ * into place first. The same agreement the checkbox holds, with its links still clickable — "Agree"
+ * stays an informed yes rather than a dismissal, and the box it replaces gets ticked as well.
+ */
+@Composable
+private fun ElegooTermsDialog(
+    termsText: AnnotatedString,
+    onAgree: () -> Unit,
+    onDismiss: () -> Unit,
+    onOpenLink: (String) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Terms & Privacy", fontWeight = FontWeight.Bold) },
+        text = {
+            ClickableText(
+                text = termsText,
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                onClick = { offset ->
+                    termsText
+                        .getStringAnnotations(tag = "URL", start = offset, end = offset)
+                        .firstOrNull()
+                        ?.let { onOpenLink(it.item) }
+                },
+            )
+        },
+        confirmButton = {
+            Button(onClick = onAgree) {
+                Text("Agree")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
 }
 
 @Composable

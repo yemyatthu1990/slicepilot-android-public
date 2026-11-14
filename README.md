@@ -48,7 +48,16 @@ It provides:
 - `CloudAuthClient`
 - `CloudAuthResult`
 - `CloudAuthUser`
+- `CloudLoginData`
+- `CloudSocialLogin`
 - `CloudLoginWebView`
+
+Signing in is either the account's email and password, or Google (and Facebook) through Elegoo's
+federated auth centre: the app opens Elegoo's provider redirect in a browser tab and exchanges the
+token that comes back on `world.yemyat.slicepilot://social/google` for the same session a password
+login returns. No Google Cloud setup and no extra secret are needed — the Google OAuth client is
+Elegoo's and their server runs the exchange (see `CloudSocialLogin`). Google is configured for the
+international region only, so the option is hidden when the account is on `CLOUD_GATEWAY_CHINA`.
 
 The app module depends on it with:
 

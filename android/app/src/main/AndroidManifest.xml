@@ -55,6 +55,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- Sign-in callbacks. world.yemyat.slicepilot://social/{google,facebook} is the address a
+                 browser tab comes back to with the provider token (AppViewModel.completeSocialSignIn);
+                 :oauth/callback is the older web-login handoff. Both are read by MainActivity.handleAuthLink. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="world.yemyat.slicepilot" />
+            </intent-filter>
+
             <!-- Match content:// URIs with .3mf and .stl extensions with wildcard or binary MIME types -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

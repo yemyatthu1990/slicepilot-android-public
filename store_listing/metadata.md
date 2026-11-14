@@ -1,8 +1,11 @@
 # Play Store listing
 
 Published 2026-11-13 from Play edit `13677982899649546337` (en-US listing + phone screenshots).
-**v1.9.5 (38) went to production at 100 % on 2026-11-14** (Play edit `02924853408639980845`);
-production had been v1.8.3 (32) since 2026-10-21, and internal now matches at 38.
+**v1.9.6 (39) went to production at 100 % on 2026-11-14** (Play edit `10678779014496414016`);
+production had been v1.9.5 (38) for a few hours, and internal matches at 39 (upload edit
+`10814106495084609895`).
+Earlier: **v1.9.5 (38) went to production at 100 % on 2026-11-14** (Play edit `02924853408639980845`);
+production had been v1.8.3 (32) since 2026-10-21.
 The first draft of this copy, edit `01915840855682935073`, expired before it could be submitted:
 Play edits live about an hour, so an edit is built and committed in one sitting, not parked.
 Screenshots: `store_listing/screenshots/phone_v1.9.0/` (captured on a Pixel 4a, v1.9.0 build;
@@ -42,6 +45,11 @@ AND THE NICE TOUCHES
 - Open STL/3MF files directly from your Files app
 
 SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint or Elegoo. All trademarks belong to their respective owners.
+
+## What's new (1.9.6)
+• Sign in with Google: the Google login on your Elegoo account now works in the app, so you don't have to type a password
+• When you sign in with Google, the ELEGOO Terms and Privacy Policy are confirmed in a dialog instead of leaving the button waiting for a tickbox
+• Cloud sign-in failures now name the cause — wrong password, account not configured for this region, expired access token — instead of the server's raw message
 
 ## What's new (1.9.5)
 <!-- The production rollout ships the 492-character variant below (Play caps notes at 500): a

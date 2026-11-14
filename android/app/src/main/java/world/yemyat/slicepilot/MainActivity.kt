@@ -94,7 +94,9 @@ class MainActivity : ComponentActivity() {
                 initialOpenDeviceStatus = openStatus,
                 initialPrintAction = intent?.getStringExtra(PrintForegroundService.EXTRA_PRINT_ACTION),
             )
-        handleIncomingModel(intent)
+        if (intent?.let { handleAuthLink(it) } != true) {
+            handleIncomingModel(intent)
+        }
         maybeRunHeadlessSlice()
         setContent {
             val darkTheme by vm.themeDark.collectAsState()
@@ -126,35 +128,52 @@ class MainActivity : ComponentActivity() {
             PrintForegroundService.ACTION_RESUME -> vm.resumePrint()
             PrintForegroundService.ACTION_STOP -> vm.stopPrintJob()
         }
-        val data = intent.data
+        if (!handleAuthLink(intent)) {
+            handleIncomingModel(intent)
+        }
+    }
+
+    /**
+     * Every auth-shaped deep link, in one place. The `world.yemyat.slicepilot://social/google?token=…`
+     * answer from a browser tab is a provider token that still has to be exchanged
+     * ([AppViewModel.completeSocialSignIn]); the older web-login handoff carried the access token
+     * itself, so storing it was the whole job. Returns true when the intent was an auth link.
+     */
+    private fun handleAuthLink(intent: android.content.Intent): Boolean {
+        val data = intent.data ?: return false
         android.util.Log.i(
             "AuthCallback",
-            "onNewIntent scheme=${intent.scheme} data=$data extras=${intent.extras?.keySet()?.joinToString()}",
+            "intent scheme=${intent.scheme} data=$data extras=${intent.extras?.keySet()?.joinToString()}",
         )
-        if (data != null) {
-            EventNotifier.trackEvent(
-                "deep_link_received",
-                mapOf(
-                    "scheme" to data.scheme.orEmpty(),
-                    "host" to data.host.orEmpty(),
-                    "path" to data.path.orEmpty(),
-                ),
-            )
-        }
-        if (data != null && data.scheme != null && data.scheme != "http" && data.scheme != "https" && data.scheme != "content" &&
-            data.scheme != "file"
+        EventNotifier.trackEvent(
+            "deep_link_received",
+            mapOf(
+                "scheme" to data.scheme.orEmpty(),
+                "host" to data.host.orEmpty(),
+                "path" to data.path.orEmpty(),
+            ),
+        )
+        if (vm.completeSocialSignIn(data)) return true
+        if (data.scheme == "http" ||
+            data.scheme == "https" ||
+            data.scheme == "content" ||
+            data.scheme == "file"
         ) {
-            val token =
-                listOf("token", "access_token", "accessToken", "code")
-                    .firstNotNullOfOrNull { data.getQueryParameter(it) }
-            android.util.Log.i("AuthCallback", "deep-link token=$token")
-            if (!token.isNullOrBlank()) {
-                cloud.auth.saveSession(token, intent.getStringExtra("refresh_token"), cloud.auth.nickname, cloud.auth.email)
-                vm.checkSession()
-                return
-            }
+            return false
         }
-        handleIncomingModel(intent)
+        val token =
+            listOf("token", "access_token", "accessToken", "code")
+                .firstNotNullOfOrNull { data.getQueryParameter(it) }
+        android.util.Log.i("AuthCallback", "deep-link token=$token")
+        if (token.isNullOrBlank()) return false
+        cloud.auth.saveSession(
+            token,
+            intent.getStringExtra("refresh_token"),
+            cloud.auth.nickname,
+            cloud.auth.email,
+        )
+        vm.checkSession()
+        return true
     }
 
     private fun handleIncomingModel(intent: android.content.Intent?) {
