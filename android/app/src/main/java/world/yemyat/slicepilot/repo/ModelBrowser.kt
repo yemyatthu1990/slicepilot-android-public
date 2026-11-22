@@ -8,6 +8,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -187,6 +188,7 @@ class ModelBrowser(
     // 10 roots at a time. The other sources fetch at their own size (see commentFetcher).
     private val commentsPageSize = 10
     private var searchGeneration = 0
+    private var detailGeneration = 0
     private var homeLoaded = false
 
     /** Cache key for each source's popular-models (home feed) list. */
@@ -499,8 +501,9 @@ class ModelBrowser(
     }
 
     fun openDetail(listing: ModelListing) {
-        _state.value =
-            _state.value.copy(
+        val gen = ++detailGeneration
+        _state.update {
+            it.copy(
                 detail = null,
                 loadingDetail = true,
                 error = null,
@@ -509,6 +512,7 @@ class ModelBrowser(
                 commentsExhausted = "${listing.source}|${listing.id}" in commentThreadsComplete,
                 commentsMoreError = null,
             )
+        }
         EventNotifier.trackEvent("model_detail_opened", mapOf("source" to listing.source, "name" to listing.name))
         scope.launch {
             try {
@@ -521,10 +525,12 @@ class ModelBrowser(
                             else -> ThingiverseApi.detail(listing, thingiverseToken)
                         }
                     }
-                _state.value = _state.value.copy(detail = detail, loadingDetail = false)
+                if (gen != detailGeneration) return@launch
+                _state.update { it.copy(detail = detail, loadingDetail = false) }
                 loadComments(detail.listing)
             } catch (e: Exception) {
-                _state.value = _state.value.copy(loadingDetail = false, error = readable(e))
+                if (gen != detailGeneration) return@launch
+                _state.update { it.copy(loadingDetail = false, error = readable(e)) }
             }
         }
     }
@@ -579,7 +585,7 @@ class ModelBrowser(
         val key = "${listing.source}|${listing.id}"
         if (key in commentsCache || key == commentsFetching) return
         commentsFetching = key
-        _state.value = _state.value.copy(commentsLoading = true, commentsMoreError = null)
+        _state.update { it.copy(commentsLoading = true, commentsMoreError = null) }
         scope.launch {
             val page = runCatching { withContext(Dispatchers.IO) { fetcher(0, commentsPageSize) } }
             android.util.Log.i(
@@ -590,18 +596,19 @@ class ModelBrowser(
             )
             if (commentsFetching == key) {
                 commentsFetching = null
-                _state.value = _state.value.copy(commentsLoading = false)
+                _state.update { it.copy(commentsLoading = false) }
             }
-            val state = _state.value
-            state.detail
-                ?.takeIf { "${it.listing.source}|${it.listing.id}" == key }
-                ?.let {
-                    if (page.isFailure) {
-                        _state.value = state.copy(commentsMoreError = page.exceptionOrNull()?.message)
+            if (page.isFailure) {
+                _state.update { st ->
+                    if (st.detail?.let { "${it.listing.source}|${it.listing.id}" == key } == true) {
+                        st.copy(commentsMoreError = page.exceptionOrNull()?.message)
                     } else {
-                        saveComments(key, page.getOrThrow())
+                        st
                     }
                 }
+            } else {
+                saveComments(key, page.getOrThrow())
+            }
         }
     }
 
@@ -646,9 +653,9 @@ class ModelBrowser(
             } else {
                 android.util.Log.i("ModelBrowser", "comments more $key offset=$askOffset failed: ${page.exceptionOrNull()}")
             }
-            val open = _state.value.detail
-            _state.value =
-                _state.value.copy(
+            _state.update { st ->
+                val open = st.detail?.takeIf { "${it.listing.source}|${it.listing.id}" == key }
+                st.copy(
                     commentsLoadingMore = false,
                     commentsExhausted = key in commentThreadsComplete,
                     commentsMoreError = page.exceptionOrNull()?.message,
@@ -656,8 +663,9 @@ class ModelBrowser(
                         open?.copy(
                             comments = threadComments(cached),
                             commentsTotal = page.getOrNull()?.total ?: open.commentsTotal,
-                        ),
+                        ) ?: st.detail,
                 )
+            }
         }
     }
 
@@ -668,31 +676,22 @@ class ModelBrowser(
     ) {
         commentsCache[key] = page.rows.toMutableList()
         page.nextOffset?.let { commentsOffsets[key] = it }
-        val st = _state.value
-        val detail = st.detail ?: return
-        if ("${detail.listing.source}|${detail.listing.id}" != key) return
-        // Prefer the count the comment service itself stated over the one the
-        // detail response carries: model-row counters keep counting deleted
-        // comments (Nexprint says 6 where its service returns 4). A zero from
-        // the list must not erase a real count — comment gating can hand back an
-        // empty tree for a model the site counts higher, and there the site
-        // number is the honest one.
-        val effectiveTotal =
-            page.total?.takeIf { it > 0 }
-                ?: detail.commentsTotal
-                ?: page.rows.size
-        // The thread is finished once the rows match that count (flat sources and full
-        // fetches) or the source returns nothing at all on a counted model (its pool is
-        // empty — deleted votes); "Load more" goes away either way.
-        if (page.rows.isEmpty() || page.rows.size >= effectiveTotal) {
-            commentThreadsComplete += key
-        }
-        _state.value =
+        _state.update { st ->
+            val detail = st.detail ?: return@update st
+            if ("${detail.listing.source}|${detail.listing.id}" != key) return@update st
+            val effectiveTotal =
+                page.total?.takeIf { it > 0 }
+                    ?: detail.commentsTotal
+                    ?: page.rows.size
+            if (page.rows.isEmpty() || page.rows.size >= effectiveTotal) {
+                commentThreadsComplete += key
+            }
             st.copy(
                 commentsExhausted = key in commentThreadsComplete,
                 commentsMoreError = null,
                 detail = detail.copy(comments = threadComments(page.rows), commentsTotal = effectiveTotal),
             )
+        }
     }
 
     /** Stable library key for a file: the name alone, so the star is shared everywhere the
@@ -714,18 +713,18 @@ class ModelBrowser(
             return
         }
         if (_state.value.favoritingFile != null) return
-        _state.value = _state.value.copy(favoritingFile = file.name, downloadProgress = 0, error = null)
+        _state.update { it.copy(favoritingFile = file.name, downloadProgress = 0, error = null) }
         scope.launch {
             try {
                 val path = withContext(Dispatchers.IO) { downloadToCache(file) }
                 val entry = favorites.add(File(path), file.name, detail.listing.source, key, detail.listing.id)
                 favorites.setThumb(entry, detail.listing.thumbnailUrl ?: detail.images.firstOrNull())
                 android.util.Log.i("ModelBrowser", "favorited ${file.name} (${entry.path})")
-                _state.value = _state.value.copy(favoritingFile = null)
+                _state.update { it.copy(favoritingFile = null) }
                 onDone(true)
             } catch (e: Exception) {
                 android.util.Log.w("ModelBrowser", "favorite failed", e)
-                _state.value = _state.value.copy(favoritingFile = null, error = readable(e))
+                _state.update { it.copy(favoritingFile = null, error = readable(e)) }
                 onDone(false)
             }
         }
@@ -738,7 +737,8 @@ class ModelBrowser(
     }
 
     fun closeDetail() {
-        _state.value = _state.value.copy(detail = null)
+        detailGeneration++
+        _state.update { it.copy(detail = null, loadingDetail = false) }
     }
 
     fun download(
@@ -747,7 +747,7 @@ class ModelBrowser(
     ) {
         android.util.Log.i("ModelBrowser", "download tapped: ${file.name} busy=${_state.value.downloadingFile}")
         if (_state.value.downloadingFile != null) return
-        _state.value = _state.value.copy(downloadingFile = file.name, downloadProgress = 0, error = null)
+        _state.update { it.copy(downloadingFile = file.name, downloadProgress = 0, error = null) }
         scope.launch {
             try {
                 val path =
@@ -758,21 +758,22 @@ class ModelBrowser(
                     "model_downloaded",
                     mapOf("source" to file.url, "file" to file.name),
                 )
-                _state.value = _state.value.copy(downloadingFile = null, downloadProgress = 100)
+                _state.update { it.copy(downloadingFile = null, downloadProgress = 100) }
                 onDone(path)
             } catch (e: Exception) {
                 val msg = readable(e)
                 android.util.Log.w("ModelBrowser", "download failed: $msg", e)
-                _state.value =
-                    _state.value.copy(
+                _state.update {
+                    it.copy(
                         downloadingFile = null,
                         downloadProgress = 0,
                         error = msg,
                         // Token expired: show the MakerWorld sign-in card again.
                         bambuSignedIn =
-                            _state.value.bambuSignedIn &&
+                            it.bambuSignedIn &&
                                 !(file.url.startsWith("makerworld://") && msg.contains("Sign in")),
                     )
+                }
             }
         }
     }
@@ -824,7 +825,7 @@ class ModelBrowser(
                         if (total > 0) {
                             val pct = ((done * 100) / total).toInt()
                             if (pct != _state.value.downloadProgress) {
-                                _state.value = _state.value.copy(downloadProgress = pct)
+                                _state.update { it.copy(downloadProgress = pct) }
                             }
                         }
                     }

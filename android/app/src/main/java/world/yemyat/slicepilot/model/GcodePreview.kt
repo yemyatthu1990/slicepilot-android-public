@@ -55,12 +55,12 @@ class GcodeStats(
 object GcodePreviewParser {
     private const val MAX_SEGMENTS_PER_LAYER = 60000
 
-    // Global cap (~48MB of heap) on the preview geometry kept for all layers.
-    // Past the budget the parser degrades gracefully: first it drops infill /
-    // support geometry for later layers, then keeps only perimeters, and
-    // finally keeps perimeters on every other layer. This bounds memory so
-    // tall prints cannot OOM the app (256MB heap).
-    private const val MAX_TOTAL_FLOATS = 12L * 1024 * 1024
+    // Soft (~24 MB) and hard (~48 MB) caps on preview geometry kept for all layers.
+    // Past the soft budget the parser drops infill/support, then keeps only perimeters,
+    // then every other layer's perimeters, and stops adding vertices past the hard cap
+    // so massive prints can never OOM during post-slice parsing.
+    private const val MAX_TOTAL_FLOATS = 6L * 1024 * 1024
+    private const val MAX_HARD_FLOATS = 12L * 1024 * 1024
 
     fun parseStats(file: File): GcodeStats {
         var est: Long? = null
@@ -210,15 +210,15 @@ object GcodePreviewParser {
                 val overBudget = when {
                     totalFloats < MAX_TOTAL_FLOATS -> 0
                     totalFloats < MAX_TOTAL_FLOATS * 3 / 2 -> 1
-                    totalFloats < MAX_TOTAL_FLOATS * 2 -> 2
+                    totalFloats < MAX_HARD_FLOATS -> 2
                     else -> 3
                 }
                 val keepPart = when (overBudget) {
                     0 -> true
                     1 -> part == GcodePart.PERIMETER || part == GcodePart.TOP_SHELL ||
                         part == GcodePart.BOTTOM_SHELL
-                    2 -> part == GcodePart.PERIMETER
-                    else -> part == GcodePart.PERIMETER && layerIndex % 2 == 0
+                    2 -> part == GcodePart.PERIMETER && layerIndex % 2 == 0
+                    else -> false
                 }
                 if (op == "G1" && extruding && keepPart) {
                     val dx = nx - x; val dy = ny - y

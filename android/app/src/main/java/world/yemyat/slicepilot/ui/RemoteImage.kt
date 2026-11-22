@@ -40,10 +40,13 @@ private const val IMAGE_LOG_TAG = "RemoteImage"
  */
 private object ImageEngine {
     /** Refuse absurd responses outright; an unbounded readBytes() once OOMed the app. */
-    private const val MAX_DOWNLOAD_BYTES = 16L * 1024 * 1024
+    private const val MAX_DOWNLOAD_BYTES = 8L * 1024 * 1024
 
     /** Total on-disk budget before the oldest cached images are dropped. */
     private const val MAX_DISK_BYTES = 64L * 1024 * 1024
+
+    /** Hard pixel cap on either edge so no remote image can ever exceed Android's 100 MB Canvas limit. */
+    private const val MAX_DECODE_DIM = 1600
 
     private var client: OkHttpClient? = null
     private var memory: LruCache<String, ImageBitmap>? = null
@@ -59,7 +62,7 @@ private object ImageEngine {
             if (memory == null) {
                 memory =
                     object : LruCache<String, ImageBitmap>(
-                        (Runtime.getRuntime().maxMemory() / 4).toInt(),
+                        minOf((Runtime.getRuntime().maxMemory() / 8).toInt(), 32 * 1024 * 1024),
                     ) {
                         // An ImageBitmap is not an android.graphics.Bitmap, so the size must be
                         // computed here; a wrong sizeOf turns the LRU into an unbounded map.
@@ -126,7 +129,7 @@ private object ImageEngine {
         peek(url, maxDim)?.let { return it }
         return withContext(Dispatchers.IO) {
             val target = File(diskRoot, digest(key(url, maxDim)))
-            decodeFile(target)?.let { bitmap ->
+            decodeFile(target, maxDim)?.let { bitmap ->
                 memory?.put(key(url, maxDim), bitmap)
                 Log.d(IMAGE_LOG_TAG, "disk   ${maxDim}px ${url.hostOf()} ${target.length()}B")
                 return@withContext bitmap
@@ -161,6 +164,10 @@ private object ImageEngine {
                 )
                 bitmap
             }
+        } catch (error: OutOfMemoryError) {
+            memory?.evictAll()
+            Log.w(IMAGE_LOG_TAG, "OOM fetching $url: ${error.message}")
+            null
         } catch (error: Exception) {
             Log.w(IMAGE_LOG_TAG, "fetch failed for $url: ${error.message}")
             null
@@ -169,45 +176,82 @@ private object ImageEngine {
 
     /** Read at most [MAX_DOWNLOAD_BYTES]; returns null when the response is bigger. */
     private fun readCapped(input: java.io.InputStream): ByteArray? {
-        val out = java.io.ByteArrayOutputStream(64 * 1024)
-        val chunk = ByteArray(64 * 1024)
-        var total = 0L
-        while (true) {
-            val read = input.read(chunk)
-            if (read < 0) break
-            total += read
-            if (total > MAX_DOWNLOAD_BYTES) return null
-            out.write(chunk, 0, read)
+        return try {
+            val out = java.io.ByteArrayOutputStream(64 * 1024)
+            val chunk = ByteArray(64 * 1024)
+            var total = 0L
+            while (true) {
+                val read = input.read(chunk)
+                if (read < 0) break
+                total += read
+                if (total > MAX_DOWNLOAD_BYTES) return null
+                out.write(chunk, 0, read)
+            }
+            out.toByteArray()
+        } catch (_: OutOfMemoryError) {
+            memory?.evictAll()
+            null
         }
-        return out.toByteArray()
     }
 
-    /** Decode downsampled to ~[maxDim] so a thumbnail costs a thumbnail, not the original. */
+    private fun computeSampleSize(
+        outWidth: Int,
+        outHeight: Int,
+        maxDim: Int,
+    ): Int {
+        val cap = maxDim.coerceIn(64, MAX_DECODE_DIM)
+        var sample = 1
+        while (outWidth / sample > cap || outHeight / sample > cap) {
+            sample *= 2
+        }
+        return sample
+    }
+
+    /** Decode downsampled so neither edge exceeds [maxDim] (and never above [MAX_DECODE_DIM]). */
     private fun decodeBytes(
         bytes: ByteArray,
         maxDim: Int,
-    ): ImageBitmap? {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-        var sample = 1
-        while (bounds.outWidth / (sample * 2) >= maxDim && bounds.outHeight / (sample * 2) >= maxDim) {
-            sample *= 2
+    ): ImageBitmap? =
+        try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                null
+            } else {
+                val sample = computeSampleSize(bounds.outWidth, bounds.outHeight, maxDim)
+                BitmapFactory.decodeByteArray(
+                    bytes,
+                    0,
+                    bytes.size,
+                    BitmapFactory.Options().apply { inSampleSize = sample },
+                )?.asImageBitmap()
+            }
+        } catch (_: OutOfMemoryError) {
+            memory?.evictAll()
+            null
         }
-        val bitmap =
-            BitmapFactory.decodeByteArray(
-                bytes,
-                0,
-                bytes.size,
-                BitmapFactory.Options().apply { inSampleSize = sample },
-            ) ?: return null
-        return bitmap.asImageBitmap()
-    }
 
-    private fun decodeFile(file: File): ImageBitmap? {
+    private fun decodeFile(
+        file: File,
+        maxDim: Int,
+    ): ImageBitmap? {
         if (!file.isFile || file.length() == 0L) return null
-        val bytes = runCatching { file.readBytes() }.getOrNull() ?: return null
-        return decodeBytes(bytes, MAX_DIM_ANY)
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                null
+            } else {
+                val sample = computeSampleSize(bounds.outWidth, bounds.outHeight, maxDim)
+                BitmapFactory.decodeFile(
+                    file.absolutePath,
+                    BitmapFactory.Options().apply { inSampleSize = sample },
+                )?.asImageBitmap()
+            }
+        } catch (_: OutOfMemoryError) {
+            memory?.evictAll()
+            null
+        }
     }
 
     private fun writeCache(
@@ -235,8 +279,6 @@ private object ImageEngine {
         }
 
     private fun String.hostOf(): String = substringAfter("://").substringBefore('/')
-
-    private const val MAX_DIM_ANY = 4096
 }
 
 /** A previously loaded rendition of [url], or null; never triggers a download. */

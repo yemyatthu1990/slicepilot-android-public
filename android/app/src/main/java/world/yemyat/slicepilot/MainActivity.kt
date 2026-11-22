@@ -501,18 +501,26 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // Full-screen pushed browse overlays sit above Scaffold so the bottom tab bar
-            // stays hidden while browsing a source list or viewing a model's detail page.
-            expanded?.let { section ->
-                SourceListOverlay(
-                    section = section,
-                    onBack = { expandedSource = null },
-                    favoritedListings = favoritedListings,
-                    onLoadMore = { browser.loadMore(section.source) },
-                    onOpen = { browser.openDetail(it) },
+            // Full-screen pushed browse overlays belong to Home and sit above Scaffold so the
+            // bottom tab bar stays hidden while browsing a source list or viewing a model's
+            // detail page. Gating on Screen.Home ensures PrintSetup is revealed immediately once
+            // a download finishes instead of sitting hidden behind SourceListOverlay / ModelDetail.
+            if (screen == Screen.Home) {
+                expanded?.let { section ->
+                    SourceListOverlay(
+                        section = section,
+                        onBack = { expandedSource = null },
+                        favoritedListings = favoritedListings,
+                        onLoadMore = { browser.loadMore(section.source) },
+                        onOpen = { browser.openDetail(it) },
+                    )
+                }
+                ModelDetailHost(
+                    vm = vm,
+                    browser = browser,
+                    onModelDownloaded = { expandedSource = null },
                 )
             }
-            ModelDetailHost(vm, browser)
         }
 
         // Rationale before the Android 13+ notification prompt: explain the value,
@@ -584,11 +592,15 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        // Answering the ask with "Connect" can land on PrintSetup while this sheet is still
-        // open (the sheet does not close itself when a printer is picked); close it so the
-        // page it just promised is what the user sees.
+        // Leaving Home (e.g. entering PrintSetup after a download or printer selection) must
+        // always dismiss any open connect sheet or browse overlays so PrintSetup is visible
+        // immediately without pressing Back.
         LaunchedEffect(screen) {
             if (screen == Screen.PrintSetup) showConnect = false
+            if (screen != Screen.Home) {
+                expandedSource = null
+                browser.closeDetail()
+            }
         }
 
         // A model is loaded but nothing is connected to print it on: ask before the setup

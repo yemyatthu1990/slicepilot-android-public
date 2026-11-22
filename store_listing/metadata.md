@@ -1,6 +1,7 @@
 # Play Store listing
 
 Published 2026-11-13 from Play edit `13677982899649546337` (en-US listing + phone screenshots).
+**v1.9.10 (43) went to production at 100 % on 2026-11-22** (Play edit `17732108991673397774`; internal upload edit `14373001468196358516`, bundle sha1 `e61deeb95622a515dd91c2356246aae57830cc27`, ProGuard mapping + native symbols uploaded).
 **v1.9.9 (42) went to production at 100 % on 2026-11-22** (Play edit `04999452179185381205`; internal upload edit `01648696905188893446`, internal publish edit `13562093267041175623`, bundle sha1 `20fe9b5c98f9b1cb214eb569afeffdc80fa18e77`, ProGuard mapping + native symbols uploaded).
 **v1.9.8 (41) is on the internal track since 2026-11-22** (Play edit `12439253403719215867`, bundle sha1 `b0a0c17f1e61baa2a6c7afecd51a0ad5c59decb7`, ProGuard mapping + native symbols uploaded).
 **v1.9.7 (40) is on the internal track since 2026-11-22** (Play edit `00964468449163369777`, bundle sha1 `6786fcf2c1df5bb84cb0dbbd99b8890e384f4e2b`, ProGuard mapping + native symbols uploaded).
@@ -48,6 +49,11 @@ AND THE NICE TOUCHES
 - Open STL/3MF files directly from your Files app
 
 SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint or Elegoo. All trademarks belong to their respective owners.
+
+## What's new (1.9.10)
+• Print setup now opens immediately as soon as a model download finishes without pressing Back from Model detail or "See more"
+• Fixed out-of-memory crashes during slicing, G-code preview, and remote model image loading (including huge 256 MB MakerWorld bitmaps)
+• Fixed Android 15+ 6-hour foreground-service timeout crashes during long prints
 
 ## What's new (1.9.9)
 <!-- Production rollout ships the 457-character summary below (Play caps notes at 500) covering 1.9.7–1.9.9 since production jumped from 1.9.6:

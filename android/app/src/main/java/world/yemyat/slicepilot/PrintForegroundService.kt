@@ -55,8 +55,17 @@ class PrintForegroundService : Service() {
 
         val commands = MutableSharedFlow<String>(extraBufferCapacity = 8)
 
+        /**
+         * Set when Android 15+ enforces the 6-hour dataSync foreground-service timeout via
+         * [onTimeout]. While set, live status updates keep refreshing the notification directly
+         * without re-starting a foreground service into an exhausted quota.
+         */
+        @Volatile
+        private var fgsTimedOut = false
+
         /** Begin monitoring print [printer] with a live progress notification. */
         fun start(context: Context, printer: String) {
+            fgsTimedOut = false
             ensureChannel(context)
             startService(
                 context,
@@ -69,6 +78,10 @@ class PrintForegroundService : Service() {
         /** Mirror a live status update into the progress notification. */
         fun notifyStatus(context: Context, printer: String, st: PrintStatus) {
             ensureChannel(context)
+            if (fgsTimedOut) {
+                postDirectStatusNotification(context, printer, st)
+                return
+            }
             startService(
                 context,
                 Intent(context, PrintForegroundService::class.java)
@@ -84,7 +97,14 @@ class PrintForegroundService : Service() {
 
         /** Show a terminal result notification and stop the foreground service. */
         fun finish(context: Context, printer: String, text: String) {
+            val timedOut = fgsTimedOut
+            fgsTimedOut = false
             ensureChannel(context)
+            if (timedOut) {
+                runCatching { NotificationManagerCompat.from(context).cancel(PROGRESS_NOTIFICATION_ID) }
+                postDirectResultNotification(context, "Printing on $printer", text)
+                return
+            }
             startService(
                 context,
                 Intent(context, PrintForegroundService::class.java)
@@ -96,6 +116,7 @@ class PrintForegroundService : Service() {
 
         /** Stop monitoring quietly (user left the monitor; the print itself continues). */
         fun clear(context: Context) {
+            fgsTimedOut = false
             // Plain startService: when the service is not running there is nothing to clear,
             // and startForegroundService() on a service that only stopSelf()s crashes the
             // app (startForeground() contract).
@@ -105,6 +126,73 @@ class PrintForegroundService : Service() {
                 )
             } catch (_: Exception) {
             }
+        }
+
+        private fun postDirectStatusNotification(context: Context, printer: String, st: PrintStatus) {
+            val nm = NotificationManagerCompat.from(context)
+            if (!nm.areNotificationsEnabled()) return
+            val body = formatBody(st.state.name, st.progress, st.currentLayer, st.totalLayer, st.remainingSec ?: -1)
+            val content = Intent(context, MainActivity::class.java)
+                .putExtra("open_device_status", true)
+                .addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                )
+            val contentIntent = PendingIntent.getActivity(context, 4301, content, PendingIntent.FLAG_IMMUTABLE)
+            val n = NotificationCompat.Builder(context, PROGRESS_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setContentTitle("Printing on $printer")
+                .setContentText(body)
+                .setOnlyAlertOnce(true)
+                .setSilent(true)
+                .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setContentIntent(contentIntent)
+                .build()
+            runCatching { nm.notify(PROGRESS_NOTIFICATION_ID, n) }
+        }
+
+        private fun postDirectResultNotification(context: Context, title: String, text: String) {
+            context.getSharedPreferences("slicer_prefs", Context.MODE_PRIVATE)
+                .edit().putBoolean("pending_device_status", true).apply()
+            val nm = NotificationManagerCompat.from(context)
+            if (!nm.areNotificationsEnabled()) return
+            val content = Intent(context, MainActivity::class.java)
+                .putExtra("open_device_status", true)
+                .addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                )
+            val intent = PendingIntent.getActivity(context, 4302, content, PendingIntent.FLAG_IMMUTABLE)
+            val n = NotificationCompat.Builder(context, RESULT_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                .setAutoCancel(true)
+                .setContentIntent(intent)
+                .build()
+            runCatching { nm.notify(RESULT_NOTIFICATION_ID, n) }
+        }
+
+        private fun formatBody(state: String, percent: Int, layer: Int, layers: Int, remainingSeconds: Int): String =
+            when (state) {
+                PrintJobState.PAUSED.name -> "Paused · $percent% · ${fmtRemaining(remainingSeconds)} left"
+                PrintJobState.PRINTING.name -> "Printing $percent% · Layer $layer/$layers · ${fmtRemaining(remainingSeconds)} left"
+                PrintJobState.COMPLETED.name -> "Print completed"
+                PrintJobState.STOPPED.name -> "Print stopped"
+                PrintJobState.ERROR.name -> "Printer reported an error"
+                PrintJobState.PAUSING.name -> "Pausing…"
+                PrintJobState.RESUMING.name -> "Resuming…"
+                PrintJobState.STOPPING.name -> "Stopping…"
+                else -> "Starting print…"
+            }
+
+        private fun fmtRemaining(seconds: Int): String {
+            if (seconds <= 0) return "calculating"
+            val h = seconds / 3600
+            val m = (seconds % 3600) / 60
+            return if (h > 0) "${h}h ${m}m" else "${m}m"
         }
 
         private fun startService(context: Context, intent: Intent) {
@@ -273,6 +361,15 @@ class PrintForegroundService : Service() {
         }
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        // Android 15+ enforces a 6-hour per-24h cap on dataSync foreground services and kills the
+        // process with ForegroundServiceDidNotStopInTimeException if the service doesn't stop here.
+        // Drop foreground status cleanly; subsequent updates keep refreshing a regular notification.
+        fgsTimedOut = true
+        endForeground()
+        stopSelf()
     }
 
     override fun onDestroy() {

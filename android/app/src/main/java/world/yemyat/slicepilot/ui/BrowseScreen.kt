@@ -298,6 +298,7 @@ private fun FeedStillLoading(sources: List<String>) {
 fun ModelDetailHost(
     vm: AppViewModel,
     browser: ModelBrowser,
+    onModelDownloaded: () -> Unit = {},
 ): Boolean {
     val st by browser.state.collectAsState()
     val detail = st.detail
@@ -329,6 +330,7 @@ fun ModelDetailHost(
             onBack = { browser.closeDetail() },
             onDownload = { file ->
                 browser.download(file) { path ->
+                    onModelDownloaded()
                     browser.closeDetail()
                     vm.requestLoadModel(path)
                 }

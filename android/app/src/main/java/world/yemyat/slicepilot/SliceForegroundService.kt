@@ -247,6 +247,25 @@ class SliceForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onTimeout(
+        startId: Int,
+        fgsType: Int,
+    ) {
+        // Android 15+ enforces a 6-hour per-24h cap on dataSync foreground services. Stop cleanly
+        // instead of letting the system kill the process with ForegroundServiceDidNotStopInTimeException.
+        sliceJob?.cancel()
+        NativeLib.nativeCancel()
+        _state.update {
+            it.copy(
+                isRunning = false,
+                progress = 0f,
+                status = "Slice timed out",
+                error = "Background slicing reached Android's time limit",
+            )
+        }
+        stopAndClear()
+    }
+
     override fun onDestroy() {
         sliceJob?.cancel()
         if (_state.value.isRunning) {
@@ -496,8 +515,10 @@ class SliceForegroundService : Service() {
                         showProgressNotification()
                     }
                 }
-            } catch (_: Exception) {
-                null
+            } catch (_: Throwable) {
+                // Catch OutOfMemoryError as well as Exception so a massive G-code never kills the
+                // app after slicing already succeeded — fall back to an empty preview so Print & Save stay usable.
+                world.yemyat.slicepilot.model.GcodePreview(emptyList(), 0f, 0f, 1f, 1f, 1f)
             }
 
         var stats: GcodeStats? = null
@@ -505,7 +526,7 @@ class SliceForegroundService : Service() {
             _state.update { it.copy(status = "Parsing G-code stats", progress = 0.98f) }
             showProgressNotification(force = true)
             stats = GcodePreviewParser.parseStats(File(outPath))
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             if (_state.value.jobId == jobId) {
                 _state.update { it.copy(stats = null) }
             }

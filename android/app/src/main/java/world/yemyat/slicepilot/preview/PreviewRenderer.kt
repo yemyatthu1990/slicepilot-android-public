@@ -144,9 +144,16 @@ class PreviewRenderer(
             }
             modelIndexCount = 0
             if (model != null) {
-                modelVbo = uploadVertices(model.vertices)
-                modelIbo = uploadIndices(model.indices)
-                modelIndexCount = model.indices.size
+                try {
+                    modelVbo = uploadVertices(model.vertices)
+                    modelIbo = uploadIndices(model.indices)
+                    modelIndexCount = model.indices.size
+                } catch (_: OutOfMemoryError) {
+                    Log.w(TAG, "OOM uploading model preview geometry")
+                    modelVbo = 0
+                    modelIbo = 0
+                    modelIndexCount = 0
+                }
             }
             uploadedModel = model
         }
@@ -158,7 +165,15 @@ class PreviewRenderer(
                 GLES30.glDeleteBuffers(1, single, 0)
                 plateVbo = 0
             }
-            if (plate != null) plateVbo = uploadVertices(plate.vertices)
+            if (plate != null) {
+                plateVbo =
+                    try {
+                        uploadVertices(plate.vertices)
+                    } catch (_: OutOfMemoryError) {
+                        Log.w(TAG, "OOM uploading plate geometry")
+                        0
+                    }
+            }
             uploadedPlate = plate
         }
 
@@ -168,9 +183,15 @@ class PreviewRenderer(
                 single[0] = part.vbo
                 GLES30.glDeleteBuffers(1, single, 0)
             }
-            gpuGcode = gcode?.map {
-                GpuPart(uploadVertices(it.vertices), it.cumulativeVertices, it.layerCount)
-            } ?: emptyList()
+            gpuGcode =
+                try {
+                    gcode?.map {
+                        GpuPart(uploadVertices(it.vertices), it.cumulativeVertices, it.layerCount)
+                    } ?: emptyList()
+                } catch (_: OutOfMemoryError) {
+                    Log.w(TAG, "OOM uploading gcode preview geometry")
+                    emptyList()
+                }
             uploadedGcode = gcode
         }
     }
@@ -426,7 +447,7 @@ class PreviewRenderer(
         private const val STRIDE_BYTES = 24
         private const val POSITION_STRIDE_BYTES = 12
         private const val NORMAL_OFFSET_BYTES = 12
-        private const val UPLOAD_CHUNK_FLOATS = 1 shl 20 // 4 MB staging chunks
+        private const val UPLOAD_CHUNK_FLOATS = 1 shl 18 // 1 MB staging chunks
         private const val UPLOAD_CHUNK_BYTES = UPLOAD_CHUNK_FLOATS * 4
         private const val NO_CLIP = 1.0e9f
         private const val PLATE_ALPHA = 0.5f
