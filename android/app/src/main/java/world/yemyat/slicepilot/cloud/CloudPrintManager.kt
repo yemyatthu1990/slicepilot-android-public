@@ -12,6 +12,8 @@ import io.agora.rtm.RtmConstants
 import io.agora.rtm.RtmEventListener
 import io.agora.rtm.SubscribeOptions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -40,8 +42,12 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
 
     private data class Res(val ok: Boolean, val message: String)
 
+    private val rtmMutex = Mutex()
     private var client: RtmClient? = null
     private var currentRtmUser: String? = null
+    private val subscribedChannels = ConcurrentHashMap.newKeySet<String>()
+    @Volatile private var cachedCred: ElegooCloudClient.AgoraCredential? = null
+    @Volatile private var cachedCredAtMs: Long = 0L
     private val pending = ConcurrentHashMap<Int, PendingRequest>()
     private val requestCounter = AtomicInteger(1000)
 
@@ -77,7 +83,13 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
         if (id < 0) return
         val p = pending[id] ?: return
         val result = json.optJSONObject("result")
-        val code = result?.optInt("error_code", -1) ?: -1
+        val code =
+            when {
+                result == null -> -1
+                result.has("error_code") -> result.optInt("error_code", -1)
+                result.has("code") -> result.optInt("code", 0)
+                else -> 0
+            }
         p.ok = code == 0
         if (!p.ok) {
             p.error = result?.optString("error_msg", "").orEmpty()
@@ -185,9 +197,9 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
         }
 
     /**
-     * Cloud print control (pause 1021 / stop 1022 / resume 1023) over Agora RTM, verified
-     * against the Elegoo Matrix app (blutter of libapp.so: ElegooRtmHelper.pausePrint/
-     * resumePrint/cancelPrint publish `{"id":n,"method":m,"params":{}}` via RTM).
+     * Cloud print control (pause 1021 / stop 1022 / resume 1023 / light 1029 / temps / fans)
+     * over Agora RTM, verified against the Elegoo Matrix app. Automatically re-logs into RTM
+     * once if the cached connection or token went stale.
      */
     suspend fun control(
         printer: CloudPrinter,
@@ -196,18 +208,29 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
     ): CloudResult<Unit> =
         withContext(Dispatchers.IO) {
             try {
-                val cred = when (val r = cloud.getAgoraCredential()) {
-                    is CloudResult.Ok -> r.value
-                    is CloudResult.Err -> return@withContext CloudResult.Err(r.message)
+                for (attempt in 0..1) {
+                    val forceRefresh = attempt > 0
+                    val cred = when (val r = getCredential(forceRefresh)) {
+                        is CloudResult.Ok -> r.value
+                        is CloudResult.Err -> return@withContext CloudResult.Err(r.message)
+                    }
+                    ensureLoggedIn(cred, forceReconnect = forceRefresh)
+                    val c = client ?: return@withContext CloudResult.Err("RTM not connected")
+                    val channel = cred.userId + printer.id
+                    subscribeChannel(c, channel)
+                    val res = send(channel, method, params, 15_000)
+                    if (res.ok) return@withContext CloudResult.Ok(Unit)
+                    if (attempt == 0 && isRtmTransportError(res.message)) {
+                        Log.w(TAG, "control($method) transport error (${res.message}), reconnecting RTM")
+                        cachedCred = null
+                        continue
+                    }
+                    return@withContext CloudResult.Err(res.message)
                 }
-                ensureLoggedIn(cred)
-                val c = client ?: return@withContext CloudResult.Err("RTM not connected")
-                val channel = cred.userId + printer.id
-                subscribeChannel(c, channel)
-                val res = send(channel, method, params, 15_000)
-                if (res.ok) CloudResult.Ok(Unit) else CloudResult.Err(res.message)
+                CloudResult.Err("control failed")
             } catch (e: Exception) {
                 Log.e(TAG, "control($method) failed", e)
+                cachedCred = null
                 CloudResult.Err(e.message ?: "control failed")
             }
         }
@@ -221,37 +244,76 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
     suspend fun publishRaw(printer: CloudPrinter, payload: JSONObject): CloudResult<Unit> =
         withContext(Dispatchers.IO) {
             try {
-                val cred = when (val r = cloud.getAgoraCredential()) {
-                    is CloudResult.Ok -> r.value
-                    is CloudResult.Err -> return@withContext CloudResult.Err(r.message)
+                for (attempt in 0..1) {
+                    val forceRefresh = attempt > 0
+                    val cred = when (val r = getCredential(forceRefresh)) {
+                        is CloudResult.Ok -> r.value
+                        is CloudResult.Err -> return@withContext CloudResult.Err(r.message)
+                    }
+                    ensureLoggedIn(cred, forceReconnect = forceRefresh)
+                    val c = client ?: return@withContext CloudResult.Err("RTM not connected")
+                    val channel = cred.userId + printer.id
+                    subscribeChannel(c, channel)
+                    val envelope = JSONObject()
+                        .put("id", requestCounter.incrementAndGet())
+                        .put("method", 1054)
+                        .put("params", payload)
+                    val options = PublishOptions().apply {
+                        customType = "PlainText"
+                        setChannelType(RtmConstants.RtmChannelType.USER)
+                    }
+                    val done = CountDownLatch(1)
+                    var err: String? = null
+                    c.publish(channel, envelope.toString(), options, object : ResultCallback<Void> {
+                        override fun onSuccess(info: Void?) { done.countDown() }
+                        override fun onFailure(e: ErrorInfo) { err = e.toString(); done.countDown() }
+                    })
+                    val result =
+                        when {
+                            !done.await(10, TimeUnit.SECONDS) -> CloudResult.Err("publish timed out")
+                            err != null -> CloudResult.Err(err!!)
+                            else -> CloudResult.Ok(Unit)
+                        }
+                    if (result is CloudResult.Ok) return@withContext result
+                    if (attempt == 0) {
+                        Log.w(TAG, "publishRaw failed (${(result as CloudResult.Err).message}), reconnecting RTM")
+                        cachedCred = null
+                        continue
+                    }
+                    return@withContext result
                 }
-                ensureLoggedIn(cred)
-                val c = client ?: return@withContext CloudResult.Err("RTM not connected")
-                val channel = cred.userId + printer.id
-                subscribeChannel(c, channel)
-                val envelope = JSONObject()
-                    .put("id", requestCounter.incrementAndGet())
-                    .put("method", 1054)
-                    .put("params", payload)
-                val options = PublishOptions().apply {
-                    customType = "PlainText"
-                    setChannelType(RtmConstants.RtmChannelType.USER)
-                }
-                val done = CountDownLatch(1)
-                var err: String? = null
-                c.publish(channel, envelope.toString(), options, object : ResultCallback<Void> {
-                    override fun onSuccess(info: Void?) { done.countDown() }
-                    override fun onFailure(e: ErrorInfo) { err = e.toString(); done.countDown() }
-                })
-                when {
-                    !done.await(10, TimeUnit.SECONDS) -> CloudResult.Err("publish timed out")
-                    err != null -> CloudResult.Err(err!!)
-                    else -> CloudResult.Ok(Unit)
-                }
+                CloudResult.Err("publish failed")
             } catch (e: Exception) {
+                cachedCred = null
                 CloudResult.Err(e.message ?: "publish failed")
             }
         }
+
+    private suspend fun getCredential(forceRefresh: Boolean = false): CloudResult<ElegooCloudClient.AgoraCredential> {
+        val cached = cachedCred
+        val now = System.currentTimeMillis()
+        if (!forceRefresh && cached != null && now - cachedCredAtMs < CRED_TTL_MS) {
+            return CloudResult.Ok(cached)
+        }
+        return when (val r = cloud.getAgoraCredential()) {
+            is CloudResult.Ok -> {
+                cachedCred = r.value
+                cachedCredAtMs = System.currentTimeMillis()
+                r
+            }
+            is CloudResult.Err -> r
+        }
+    }
+
+    private fun isRtmTransportError(msg: String): Boolean {
+        val m = msg.lowercase()
+        return m.contains("timed out") ||
+            m.contains("not connected") ||
+            m.contains("not logged in") ||
+            m.contains("token") ||
+            m.contains("publish") ||
+            m.contains("connection")
+    }
 
     private fun slotMapJson(slots: List<PrintSlot>): JSONArray = JSONArray().apply {
         slots.forEach { put(JSONObject().put("t", it.t).put("canvas_id", it.canvasId).put("tray_id", it.trayId)) }
@@ -267,6 +329,7 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
             .put("method", method)
             .put("params", params)
             .toString()
+        Log.i(TAG, "rtm tx: $payload")
 
         val published = CountDownLatch(1)
         var publishError: String? = null
@@ -303,60 +366,73 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
         return if (!got) Res(false, "printer response timed out") else Res(pendingRequest.ok, pendingRequest.error)
     }
 
-    private suspend fun ensureLoggedIn(cred: ElegooCloudClient.AgoraCredential) {
-        val existing = client
-        if (existing != null && currentRtmUser == cred.rtmUserId) {
-            val latch = CountDownLatch(1)
-            existing.renewToken(cred.rtmToken, object : ResultCallback<Void> {
-                override fun onSuccess(responseInfo: Void?) { latch.countDown() }
-                override fun onFailure(errorInfo: ErrorInfo) { latch.countDown() }
-            })
-            latch.await(10, TimeUnit.SECONDS)
-            return
-        }
-
-        existing?.let {
-            try {
-                val l = CountDownLatch(1)
-                it.logout(object : ResultCallback<Void> {
-                    override fun onSuccess(responseInfo: Void?) { l.countDown() }
-                    override fun onFailure(errorInfo: ErrorInfo) { l.countDown() }
+    private suspend fun ensureLoggedIn(
+        cred: ElegooCloudClient.AgoraCredential,
+        forceReconnect: Boolean = false,
+    ) =
+        rtmMutex.withLock {
+            val existing = client
+            if (!forceReconnect && existing != null && currentRtmUser == cred.rtmUserId) {
+                val latch = CountDownLatch(1)
+                var renewErr: String? = null
+                existing.renewToken(cred.rtmToken, object : ResultCallback<Void> {
+                    override fun onSuccess(responseInfo: Void?) { latch.countDown() }
+                    override fun onFailure(errorInfo: ErrorInfo) {
+                        renewErr = errorInfo.toString()
+                        latch.countDown()
+                    }
                 })
-                l.await(5, TimeUnit.SECONDS)
+                val completed = latch.await(10, TimeUnit.SECONDS)
+                if (completed && renewErr == null) {
+                    return@withLock
+                }
+                Log.w(TAG, "RTM renewToken failed (completed=$completed err=$renewErr), re-logging in")
+            }
+
+            existing?.let {
+                try {
+                    val l = CountDownLatch(1)
+                    it.logout(object : ResultCallback<Void> {
+                        override fun onSuccess(responseInfo: Void?) { l.countDown() }
+                        override fun onFailure(errorInfo: ErrorInfo) { l.countDown() }
+                    })
+                    l.await(5, TimeUnit.SECONDS)
+                } catch (_: Exception) {
+                }
+            }
+            try {
+                RtmClient.release()
             } catch (_: Exception) {
             }
+            client = null
+            currentRtmUser = null
+            subscribedChannels.clear()
+
+            val config = RtmConfig.Builder(AGORA_APP_ID, cred.rtmUserId)
+                .eventListener(listener)
+                .build()
+            val c = RtmClient.create(config)
+
+            val loginLatch = CountDownLatch(1)
+            var loginError: String? = null
+            c.login(cred.rtmToken, object : ResultCallback<Void> {
+                override fun onSuccess(responseInfo: Void?) { loginLatch.countDown() }
+                override fun onFailure(errorInfo: ErrorInfo) {
+                    loginError = errorInfo.toString()
+                    loginLatch.countDown()
+                }
+            })
+            if (!loginLatch.await(15, TimeUnit.SECONDS)) throw RuntimeException("RTM login timed out")
+            loginError?.let { throw RuntimeException("RTM login failed: $it") }
+
+            client = c
+            currentRtmUser = cred.rtmUserId
+
+            subscribeChannel(c, cred.userId)
         }
-        try {
-            RtmClient.release()
-        } catch (_: Exception) {
-        }
-        client = null
-        currentRtmUser = null
-
-        val config = RtmConfig.Builder(AGORA_APP_ID, cred.rtmUserId)
-            .eventListener(listener)
-            .build()
-        val c = RtmClient.create(config)
-
-        val loginLatch = CountDownLatch(1)
-        var loginError: String? = null
-        c.login(cred.rtmToken, object : ResultCallback<Void> {
-            override fun onSuccess(responseInfo: Void?) { loginLatch.countDown() }
-            override fun onFailure(errorInfo: ErrorInfo) {
-                loginError = errorInfo.toString()
-                loginLatch.countDown()
-            }
-        })
-        if (!loginLatch.await(15, TimeUnit.SECONDS)) throw RuntimeException("RTM login timed out")
-        loginError?.let { throw RuntimeException("RTM login failed: $it") }
-
-        client = c
-        currentRtmUser = cred.rtmUserId
-
-        subscribeChannel(c, cred.userId)
-    }
 
     private suspend fun subscribeChannel(c: RtmClient, channel: String) {
+        if (subscribedChannels.contains(channel)) return
         val latch = CountDownLatch(1)
         var err: String? = null
         val options = SubscribeOptions().apply { setWithMessage(true) }
@@ -365,7 +441,11 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
             override fun onFailure(errorInfo: ErrorInfo) { err = errorInfo.toString(); latch.countDown() }
         })
         latch.await(10, TimeUnit.SECONDS)
-        if (err != null) Log.w(TAG, "subscribe $channel failed: $err")
+        if (err != null) {
+            Log.w(TAG, "subscribe $channel failed: $err")
+        } else {
+            subscribedChannels.add(channel)
+        }
     }
 
     fun release() {
@@ -382,6 +462,8 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
         }
         client = null
         currentRtmUser = null
+        cachedCred = null
+        subscribedChannels.clear()
     }
 
     private fun md5Hex(file: File): String {
@@ -415,5 +497,6 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
     private companion object {
         val AGORA_APP_ID = BuildConfig.AGORA_APP_ID
         const val TAG = "CloudPrint"
+        const val CRED_TTL_MS = 5 * 60_000L
     }
 }

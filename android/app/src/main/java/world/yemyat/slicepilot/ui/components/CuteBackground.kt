@@ -1,5 +1,6 @@
 package world.yemyat.slicepilot.ui.components
 
+import android.provider.Settings
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -16,11 +17,11 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.platform.LocalContext
 import world.yemyat.slicepilot.ui.theme.LanternGold
 import world.yemyat.slicepilot.ui.theme.RiverTeal
 import world.yemyat.slicepilot.ui.theme.SakuraPink
 import kotlin.math.PI
-import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.random.Random
 
@@ -37,28 +38,53 @@ private data class FloatingSpirit(
 fun SpiritedBackground(
     modifier: Modifier = Modifier,
     darkTheme: Boolean = isSystemInDarkTheme(),
+    animate: Boolean = true,
 ) {
-    val transition = rememberInfiniteTransition(label = "spiritedBackground")
-    val time by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 24000),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "spiritedTime",
-    )
+    val context = LocalContext.current
+    val motionEnabled =
+        remember(context, animate) {
+            if (!animate) {
+                false
+            } else {
+                val scale =
+                    runCatching {
+                        Settings.Global.getFloat(
+                            context.contentResolver,
+                            Settings.Global.ANIMATOR_DURATION_SCALE,
+                            1f,
+                        )
+                    }.getOrDefault(1f)
+                scale > 0f
+            }
+        }
+    val time =
+        if (motionEnabled) {
+            val transition = rememberInfiniteTransition(label = "spiritedBackground")
+            val animated by transition.animateFloat(
+                initialValue = 0f,
+                targetValue = 1f,
+                animationSpec =
+                    infiniteRepeatable(
+                        animation = tween(durationMillis = 24000),
+                        repeatMode = RepeatMode.Restart,
+                    ),
+                label = "spiritedTime",
+            )
+            animated
+        } else {
+            0f
+        }
 
     val spirits = remember {
         val random = Random(1708)
-        List(30) {
+        List(20) {
             FloatingSpirit(
                 x = random.nextFloat(),
                 y = random.nextFloat(),
                 radius = 10f + random.nextFloat() * 34f,
                 speed = 0.08f + random.nextFloat() * 0.22f,
                 phase = random.nextFloat() * 100f,
-                kind = random.nextInt(3),
+                kind = random.nextInt(2),
             )
         }
     }
@@ -106,7 +132,6 @@ fun SpiritedBackground(
 
             when (spirit.kind) {
                 0 -> drawSoftBlob(center, spirit.radius * pulse, accentB, if (darkTheme) 0.12f else 0.18f)
-                1 -> drawSootSprite(center, spirit.radius * 0.36f * pulse, if (darkTheme) 0.32f else 0.28f, time + spirit.phase)
                 else -> drawSparkle(center, spirit.radius * 0.28f * pulse, sparkle, if (darkTheme) 0.34f else 0.42f, time + spirit.phase)
             }
         }
@@ -122,52 +147,6 @@ private fun DrawScope.drawSoftBlob(center: Offset, radius: Float, color: Color, 
         ),
         radius = radius.coerceAtLeast(1f),
         center = center,
-    )
-}
-
-private fun DrawScope.drawSootSprite(center: Offset, radius: Float, alpha: Float, wiggle: Float) {
-    val body = Color(0xFF151515)
-    val fluff = Color(0xFF242424)
-    val eyeWhite = Color.White
-    val pupil = Color(0xFF080808)
-
-    for (i in 0 until 8) {
-        val angle = (i / 8f) * (2f * PI.toFloat()) + wiggle * 0.35f
-        drawCircle(
-            color = fluff,
-            radius = radius * 0.58f,
-            center = Offset(
-                x = center.x + cos(angle) * radius * 0.72f,
-                y = center.y + sin(angle) * radius * 0.72f,
-            ),
-            alpha = alpha,
-        )
-    }
-
-    drawCircle(color = body, radius = radius, center = center, alpha = alpha)
-    drawCircle(
-        color = eyeWhite,
-        radius = radius * 0.25f,
-        center = Offset(center.x - radius * 0.28f, center.y - radius * 0.08f),
-        alpha = alpha,
-    )
-    drawCircle(
-        color = eyeWhite,
-        radius = radius * 0.25f,
-        center = Offset(center.x + radius * 0.28f, center.y - radius * 0.08f),
-        alpha = alpha,
-    )
-    drawCircle(
-        color = pupil,
-        radius = radius * 0.11f,
-        center = Offset(center.x - radius * 0.24f, center.y - radius * 0.05f),
-        alpha = alpha,
-    )
-    drawCircle(
-        color = pupil,
-        radius = radius * 0.11f,
-        center = Offset(center.x + radius * 0.32f, center.y - radius * 0.05f),
-        alpha = alpha,
     )
 }
 

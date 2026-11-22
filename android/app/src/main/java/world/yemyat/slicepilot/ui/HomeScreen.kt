@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -14,7 +15,6 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Print
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -51,7 +51,7 @@ fun HomeScreen(
     vm: AppViewModel,
     onPickLocalFile: () -> Unit,
     onOpenConnect: () -> Unit,
-    onOpenConfigure: () -> Unit,
+    onSeeMore: (ModelSource) -> Unit,
     browser: ModelBrowser,
 ) {
     val modelLoading by vm.modelLoading.collectAsState()
@@ -63,26 +63,20 @@ fun HomeScreen(
     val modelPath = vm.modelPath
     val hasModel = modelPath != null
     val printerReady = selectedPrinter != null
+    val demoMode by vm.demoModeState.collectAsState()
+    // A print that still needs this model: its own banner owns the screen, so the model row
+    // stops offering to replace or discard it. State alone is not enough - an idle printer that
+    // answers status probes is not printing - hence live + PrintJobState.isInProgress.
+    val printLive = printStatus?.live == true && printStatus?.state?.isInProgress == true
 
-    // "See more" from the feed draws one source's full list over the page.
-    val browseState by browser.state.collectAsState()
-    var expandedSource by remember { mutableStateOf<ModelSource?>(null) }
-    val expanded = expandedSource?.let { src -> browseState.sections.firstOrNull { it.source == src } }
-    // A new search replaces the sections: drop an overlay whose source went away.
-    LaunchedEffect(expandedSource, expanded) {
-        if (expandedSource != null && expanded == null) expandedSource = null
+    val listState = rememberLazyListState()
+    val fabExpanded by remember {
+        derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < 80 }
     }
-    val favEntries by browser.favorites.entries.collectAsState()
-    val favoritedListings =
-        remember(favEntries) {
-            favEntries
-                .mapNotNull { e ->
-                    e.listingId.takeIf { it.isNotBlank() }?.let { "${e.source}|$it" }
-                }.toSet()
-        }
 
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
+            state = listState,
             // Home draws under the status bar unless it pads for it itself — the
             // root Scaffold has contentWindowInsets = 0 (see MainActivity).
             modifier =
@@ -90,22 +84,13 @@ fun HomeScreen(
                     .fillMaxSize()
                     .statusBarsPadding(),
             contentPadding =
-                PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 120.dp),
+                PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 104.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             // Print in progress (started by this app, e.g. before a swipe-away):
             // the monitor is restored at startup, so this banner shows live
             // status like the download bar. Tap opens the print monitor.
-            if (printStatus?.live == true &&
-                printStatus?.state in
-                setOf(
-                    world.yemyat.slicepilot.cloud.PrintJobState.CONNECTING,
-                    world.yemyat.slicepilot.cloud.PrintJobState.PRINTING,
-                    world.yemyat.slicepilot.cloud.PrintJobState.PAUSING,
-                    world.yemyat.slicepilot.cloud.PrintJobState.PAUSED,
-                    world.yemyat.slicepilot.cloud.PrintJobState.RESUMING,
-                )
-            ) {
+            if (printLive) {
                 item {
                     printStatus?.let { st ->
                         PrintInProgressBanner(status = st, onClick = { vm.openPrintMonitor() })
@@ -113,21 +98,19 @@ fun HomeScreen(
                 }
             }
 
-            // Header: wordmark + actions, one compact row.
+            // Header: wordmark + ambient printer status pill + theme toggle.
             item {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     BrandWordmark()
                     Spacer(Modifier.weight(1f))
-                    val dark = LocalIsDarkTheme.current
-                    BrandIconButton(
-                        icon = Icons.Filled.Tune,
-                        contentDescription = "Printer settings",
-                        onClick = onOpenConfigure,
-                        role = ButtonRole.Secondary,
+                    PrinterStatusPill(
+                        printer = selectedPrinter,
+                        onClick = onOpenConnect,
                     )
+                    val dark = LocalIsDarkTheme.current
                     BrandIconButton(
                         icon = if (dark) Icons.Filled.LightMode else Icons.Filled.DarkMode,
                         contentDescription = if (dark) "Light mode" else "Dark mode",
@@ -210,30 +193,27 @@ fun HomeScreen(
             }
 
             if (hasModel) {
-                // Home only reports what is loaded and lets you change it — the 3D
-                // render lives in the Slice flow (SlicePreviewScreen,
-                // FullscreenViewer), next to the settings that produced it.
+                // Home used to stop at a name and a "Replace" button: the model was on screen
+                // but useless, because nothing there led back to the page that prints it (the
+                // 3D render and every setting live in the Print setup / Slice flow). The row now
+                // opens that flow, replaces the file, or ends it — which is also what backing out
+                // of print setup does, asked first (AppViewModel.leavePrintSetup).
                 item {
-                    val modelFile = modelPath?.let { java.io.File(it) }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            modelFile?.let {
-                                Text(
-                                    it.name,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    "%.1f MB".format(it.length() / 1024.0 / 1024.0),
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                        TextButton(onClick = onPickLocalFile) { Text("Replace") }
-                    }
+                    LoadedModelRow(
+                        modelPath = modelPath.orEmpty(),
+                        onOpen = {
+                            if (printLive) vm.openPrintMonitor() else vm.openPrintSetup()
+                        },
+                        onReplace = onPickLocalFile,
+                        // The app's own demo cube is not the user's file to throw away, and a
+                        // running print needs it.
+                        onDiscard =
+                            if (printLive || vm.printJobHoldsModel() || demoMode) {
+                                null
+                            } else {
+                                { vm.discardModel() }
+                            },
+                    )
                 }
 
                 // Loaded but no printer: connecting is the next step.
@@ -293,39 +273,133 @@ fun HomeScreen(
             item {
                 ModelFindFeed(
                     browser = browser,
-                    onSeeMore = { expandedSource = it },
+                    onSeeMore = onSeeMore,
                 )
             }
         }
 
-        // Local files float above the feed: wide, rounded-rectangle (not a circle),
-        // so the label says what it opens.
+        // Collapses to icon-only while scrolling down so feed cards and "See more" stay clear.
         ExtendedFloatingActionButton(
             onClick = onPickLocalFile,
+            expanded = fabExpanded,
             shape = RoundedCornerShape(18.dp),
             containerColor = MaterialTheme.colorScheme.primary,
             contentColor = MaterialTheme.colorScheme.onPrimary,
-            icon = { Icon(Icons.Filled.FolderOpen, null) },
+            icon = { Icon(Icons.Filled.FolderOpen, "Local model") },
             text = { Text("Local model", fontWeight = FontWeight.SemiBold) },
             modifier =
                 Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = 20.dp, bottom = 20.dp),
+                    .padding(end = 20.dp, bottom = 16.dp),
         )
+    }
+}
 
-        // Full list for one source, opened from the feed's "See more".
-        expanded?.let { section ->
-            SourceListOverlay(
-                section = section,
-                onBack = { expandedSource = null },
-                favoritedListings = favoritedListings,
-                onLoadMore = { browser.loadMore(section.source) },
-                onOpen = { browser.openDetail(it) },
+/**
+ * Compact header pill showing whether a printer is connected (green/gold dot + model) or
+ * disconnected ("Connect"). Tapping opens the connect sheet.
+ */
+@Composable
+private fun PrinterStatusPill(
+    printer: ConnectedPrinter?,
+    onClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(999.dp)
+    val dotColor =
+        when {
+            printer == null -> MaterialTheme.colorScheme.outline
+            printer.online -> MossGreen
+            else -> LanternGold
+        }
+    val label =
+        when {
+            printer == null -> "Connect"
+            printer.model.isNotBlank() -> printer.model
+            else -> "Connected"
+        }
+    Surface(
+        onClick = onClick,
+        shape = shape,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+        border = BorderStroke(1.dp, LanternGold.copy(alpha = 0.25f)),
+        modifier = Modifier.heightIn(min = 38.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(dotColor),
+            )
+            Text(
+                text = label,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 128.dp),
             )
         }
+    }
+}
 
-        // Model detail opened from the feed or a source list, over everything.
-        ModelDetailHost(vm, browser)
+/**
+ * The loaded model as one compact row, shaped like a Files entry: name and size, tap to open
+ * whatever the model is in (print setup, or the live print), plus the two answers a loaded
+ * model can still take — pick another file, or discard this one.
+ */
+@Composable
+private fun LoadedModelRow(
+    modelPath: String,
+    onOpen: () -> Unit,
+    onReplace: () -> Unit,
+    onDiscard: (() -> Unit)?,
+) {
+    val file = java.io.File(modelPath)
+    val shape = RoundedCornerShape(Radius.md)
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .clip(shape)
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
+                .border(BorderStroke(1.dp, LanternGold.copy(alpha = 0.22f)), shape)
+                .clickable(onClick = onOpen)
+                .padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                file.name,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                if (file.exists()) {
+                    "%.1f MB".format(file.length() / 1024.0 / 1024.0)
+                } else {
+                    "File missing"
+                },
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        TextButton(onClick = onReplace) { Text("Replace") }
+        onDiscard?.let {
+            TextButton(onClick = it) {
+                Text("Discard", color = MaterialTheme.colorScheme.error)
+            }
+        }
     }
 }
 
@@ -523,6 +597,7 @@ private fun PrintInProgressBanner(
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        style = MaterialTheme.typography.titleSmall.copy(fontFeatureSettings = "tnum"),
                     )
                 }
             }

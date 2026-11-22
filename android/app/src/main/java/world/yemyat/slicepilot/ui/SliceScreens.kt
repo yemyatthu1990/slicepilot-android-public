@@ -7,10 +7,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -107,6 +110,7 @@ fun SlicingScreen(vm: AppViewModel) {
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.titleLarge.copy(fontFeatureSettings = "tnum"),
                     )
                 }
                 if (stalled) {
@@ -261,7 +265,7 @@ fun SlicePreviewScreen(
                 Pair(half, half)
             }
         }
-    Scaffold { padding ->
+    Scaffold(contentWindowInsets = WindowInsets(0)) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             Box(Modifier.weight(1f)) {
                 GcodePreviewCanvas(
@@ -273,12 +277,33 @@ fun SlicePreviewScreen(
                     modifier = Modifier.fillMaxSize(),
                 )
                 FilledIconButton(
+                    onClick = { vm.goBack() },
+                    colors =
+                        IconButtonDefaults.filledIconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                        ),
+                    modifier =
+                        Modifier
+                            .align(Alignment.TopStart)
+                            .statusBarsPadding()
+                            .padding(12.dp),
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        "Back to ${vm.previewReturnTo.backLabel}",
+                    )
+                }
+                FilledIconButton(
                     onClick = { fullscreen = !fullscreen },
                     colors =
                         IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
                         ),
-                    modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
+                    modifier =
+                        Modifier
+                            .align(Alignment.TopEnd)
+                            .statusBarsPadding()
+                            .padding(12.dp),
                 ) {
                     Icon(
                         if (fullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
@@ -287,6 +312,7 @@ fun SlicePreviewScreen(
                 }
             }
             if (!fullscreen) {
+                val currentLayer = layerCount.toInt().coerceIn(1, maxLayer)
                 Surface(
                     color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
                     shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
@@ -294,7 +320,9 @@ fun SlicePreviewScreen(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Column(
-                        Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+                        Modifier
+                            .navigationBarsPadding()
+                            .padding(horizontal = 20.dp, vertical = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         stats?.let { s ->
@@ -310,35 +338,57 @@ fun SlicePreviewScreen(
                             Spacer(Modifier.height(2.dp))
                         }
                         Text(
-                            "Layer ${layerCount.toInt().coerceIn(1, maxLayer)} of $total",
+                            "Layer $currentLayer of $total",
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 15.sp,
+                            style = MaterialTheme.typography.titleSmall.copy(fontFeatureSettings = "tnum"),
                         )
-                        Slider(
-                            value = layerCount,
-                            onValueChange = { layerCount = it },
-                            valueRange = 1f..maxLayer.toFloat(),
-                            steps = 0,
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            BrandIconButton(
+                                icon = Icons.Filled.Remove,
+                                contentDescription = "Previous layer",
+                                onClick = { layerCount = (currentLayer - 1).coerceAtLeast(1).toFloat() },
+                                enabled = currentLayer > 1,
+                                size = 38.dp,
+                                role = ButtonRole.Secondary,
+                            )
+                            Slider(
+                                value = layerCount,
+                                onValueChange = { layerCount = it },
+                                valueRange = 1f..maxLayer.toFloat(),
+                                steps = 0,
+                                modifier = Modifier.weight(1f),
+                            )
+                            BrandIconButton(
+                                icon = Icons.Filled.Add,
+                                contentDescription = "Next layer",
+                                onClick = { layerCount = (currentLayer + 1).coerceAtMost(maxLayer).toFloat() },
+                                enabled = currentLayer < maxLayer,
+                                size = 38.dp,
+                                role = ButtonRole.Secondary,
+                            )
+                        }
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            OutlinedButton(
+                            BrandButton(
+                                text = "Save G-code",
                                 onClick = onSaveGcode,
-                                shape = RoundedCornerShape(Radius.md),
-                                modifier = Modifier.weight(1f).height(54.dp),
-                            ) {
-                                Icon(Icons.Filled.Save, null)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Save G-code")
-                            }
+                                role = ButtonRole.Secondary,
+                                icon = { Icon(Icons.Filled.Save, null) },
+                                modifier = Modifier.weight(1f),
+                                height = ButtonSize.Large,
+                            )
                             BrandButton(
                                 text = "Print",
                                 onClick = onPrint,
                                 icon = { Icon(Icons.Filled.Print, null, tint = Color.White) },
                                 modifier = Modifier.weight(1f),
-                                height = 54.dp,
+                                height = ButtonSize.Large,
                             )
                         }
-                        TextButton(onClick = { vm.backHome() }) { Text("Back to home") }
                     }
                 }
             }
@@ -352,7 +402,13 @@ private fun StatCell(
     value: String,
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(value, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+        Text(
+            value,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.titleSmall.copy(fontFeatureSettings = "tnum"),
+        )
         Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

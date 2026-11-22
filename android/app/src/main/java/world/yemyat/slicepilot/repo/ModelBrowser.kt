@@ -1483,7 +1483,10 @@ private object ThingiverseApi {
 private fun stripHtml(html: String): String =
     html
         .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
-        .replace(Regex("</p>", RegexOption.IGNORE_CASE), "\n\n")
+        .replace(Regex("<hr\\s*/?>", RegexOption.IGNORE_CASE), "\n\n")
+        .replace(Regex("<li[^>]*>", RegexOption.IGNORE_CASE), "• ")
+        .replace(Regex("</(?:li|tr)>", RegexOption.IGNORE_CASE), "\n")
+        .replace(Regex("</(?:p|div|h[1-6]|blockquote|pre|section|article|ul|ol|table)>", RegexOption.IGNORE_CASE), "\n\n")
         .replace(Regex("<[^>]+>"), "")
         .replace("&amp;", "&")
         // Non-breaking spaces arrive as &nbsp; (or &#160;/&#032;), and a double-escaped

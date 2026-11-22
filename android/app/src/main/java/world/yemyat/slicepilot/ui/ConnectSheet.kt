@@ -51,7 +51,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import world.yemyat.slicepilot.R
 import world.yemyat.slicepilot.cloud.CloudPrinter
+import world.yemyat.slicepilot.ui.theme.BrandButton
+import world.yemyat.slicepilot.ui.theme.BrandSectionLabel
+import world.yemyat.slicepilot.ui.theme.ButtonRole
+import world.yemyat.slicepilot.ui.theme.ButtonSize
 import world.yemyat.slicepilot.ui.theme.LanternGold
+import world.yemyat.slicepilot.ui.theme.Radius
+import world.yemyat.slicepilot.ui.theme.SegmentedControl
+import world.yemyat.slicepilot.ui.theme.SwatchDot
+import world.yemyat.slicepilot.ui.theme.filamentColor
 
 private data class PrinterBrand(
     val id: String,
@@ -79,7 +87,7 @@ fun ConnectSheet(
     val selectedPrinter by vm.selectedPrinterState.collectAsState()
 
     var selectedBrand by rememberSaveable {
-        mutableStateOf(if (vm.selectedPrinter != null) "elegoo" else null)
+        mutableStateOf(supportedPrinterBrands.first().id)
     }
     var selectedTab by rememberSaveable {
         mutableIntStateOf(
@@ -89,14 +97,14 @@ fun ConnectSheet(
 
     LaunchedEffect(selectedPrinter) {
         if (selectedPrinter != null) {
-            selectedBrand = "elegoo"
+            selectedBrand = supportedPrinterBrands.first().id
         }
     }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        containerColor = MaterialTheme.colorScheme.surface,
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
         dragHandle = { BottomSheetDefaults.DragHandle(color = LanternGold.copy(alpha = 0.45f)) },
@@ -110,17 +118,17 @@ fun ConnectSheet(
         ) {
             val connectedPrinter = selectedPrinter
             if (connectedPrinter != null) {
-                Text("Printer connected", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                Text("Manage printer", fontSize = 24.sp, fontWeight = FontWeight.Bold)
                 Text(
-                    "Connected to Elegoo over ${if (connectedPrinter.isLocal) "local Wi-Fi" else "cloud"}.",
+                    "Connected over ${if (connectedPrinter.isLocal) "local Wi-Fi" else "cloud"} — switch printers or disconnect below.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 14.sp,
                 )
 
                 Surface(
-                    shape = RoundedCornerShape(16.dp),
+                    shape = RoundedCornerShape(Radius.md),
                     color = MaterialTheme.colorScheme.primaryContainer,
-                    border = BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
+                    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Row(
@@ -165,35 +173,34 @@ fun ConnectSheet(
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(
+                    BrandButton(
+                        text = "Done",
                         onClick = onDismiss,
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.weight(1f).height(52.dp),
-                    ) {
-                        Text("Done", fontSize = 16.sp)
-                    }
-                    OutlinedButton(
+                        role = ButtonRole.Primary,
+                        height = ButtonSize.Medium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    BrandButton(
+                        text = "Disconnect",
                         onClick = { vm.clearSelectedPrinter() },
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.weight(1f).height(52.dp),
-                    ) {
-                        Text("Disconnect", fontSize = 16.sp)
-                    }
+                        role = ButtonRole.Secondary,
+                        height = ButtonSize.Medium,
+                        modifier = Modifier.weight(1f),
+                    )
                 }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
             } else {
                 Text("Connect your printer", fontSize = 24.sp, fontWeight = FontWeight.Bold)
                 Text(
-                    "Choose a printer brand, then connect over local Wi-Fi or cloud.",
+                    "Connect your Elegoo printer over Cloud or local Wi-Fi.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 14.sp,
                 )
+            }
 
-                Text(
-                    "Printer brand",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            if (supportedPrinterBrands.size > 1) {
+                BrandSectionLabel("Printer brand")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     supportedPrinterBrands.forEach { brand ->
                         FilterChip(
@@ -203,66 +210,39 @@ fun ConnectSheet(
                         )
                     }
                 }
+            }
 
-                when (selectedBrand) {
-                    "elegoo" -> {
-                        PrimaryTabRow(
-                            selectedTabIndex = selectedTab,
-                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)),
-                        ) {
-                            Tab(
-                                selected = selectedTab == 0,
-                                onClick = { selectedTab = 0 },
-                                text = { Text("Cloud", fontWeight = FontWeight.SemiBold) },
-                                icon = {
-                                    Icon(
-                                        if (vm.cloudLoggedIn) Icons.Filled.CloudDone else Icons.Filled.CloudOff,
-                                        contentDescription = null,
-                                    )
-                                },
-                            )
-                            Tab(
-                                selected = selectedTab == 1,
-                                onClick = { selectedTab = 1 },
-                                text = { Text("Local Network", fontWeight = FontWeight.SemiBold) },
-                                icon = { Icon(Icons.Filled.Wifi, contentDescription = null) },
-                            )
-                        }
+            when (selectedBrand) {
+                "elegoo" -> {
+                    SegmentedControl(
+                        options = listOf("Cloud", "Local Network"),
+                        selectedIndex = selectedTab,
+                        onSelect = { selectedTab = it },
+                    )
 
-                        if (selectedTab == 0) {
-                            CloudSection(
-                                vm = vm,
-                                printers = printers,
-                                filaments = filaments,
-                                selectedPrinter = selectedPrinter,
-                                onDismiss = onDismiss,
-                                onAddPrinter = onAddPrinter,
-                            )
-                        } else {
-                            LocalNetworkSection(
-                                vm = vm,
-                                selectedPrinter = selectedPrinter,
-                                filaments = filaments,
-                                onDismiss = onDismiss,
-                            )
-                        }
-                    }
-
-                    null -> {
-                        Text(
-                            "Select a printer brand to continue.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 14.sp,
+                    if (selectedTab == 0) {
+                        CloudSection(
+                            vm = vm,
+                            printers = printers,
+                            filaments = filaments,
+                            selectedPrinter = selectedPrinter,
+                            onAddPrinter = onAddPrinter,
+                        )
+                    } else {
+                        LocalNetworkSection(
+                            vm = vm,
+                            selectedPrinter = selectedPrinter,
+                            filaments = filaments,
                         )
                     }
+                }
 
-                    else -> {
-                        Text(
-                            "More printer brands coming soon.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 14.sp,
-                        )
-                    }
+                else -> {
+                    Text(
+                        "More printer brands coming soon.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 14.sp,
+                    )
                 }
             }
 
@@ -276,7 +256,6 @@ private fun LocalNetworkSection(
     vm: AppViewModel,
     selectedPrinter: ConnectedPrinter?,
     filaments: Map<String, world.yemyat.slicepilot.cloud.FilamentInfo>,
-    onDismiss: () -> Unit,
 ) {
     val ctx = LocalContext.current
     val scanning by vm.lanScanning.collectAsState()
@@ -294,25 +273,18 @@ private fun LocalNetworkSection(
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 
-    Button(
+    BrandButton(
+        text = if (scanning) "Scanning Wi-Fi…" else "Scan for printers",
         onClick = { vm.scanLan(ctx) },
         enabled = !scanning,
-        shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.fillMaxWidth().height(52.dp),
-    ) {
-        if (scanning) {
-            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
-            Spacer(Modifier.width(10.dp))
-            Text("Scanning Wi-Fi…", fontSize = 16.sp)
-        } else {
-            Icon(Icons.Filled.Wifi, null)
-            Spacer(Modifier.width(8.dp))
-            Text("Scan for printers", fontSize = 16.sp)
-        }
-    }
+        loading = scanning,
+        icon = { Icon(Icons.Filled.Wifi, null) },
+        height = ButtonSize.Medium,
+        modifier = Modifier.fillMaxWidth(),
+    )
 
     if (lanPrinters.isNotEmpty()) {
-        Text("Found printers", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        BrandSectionLabel("Found printers")
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             var showFilamentPicker by remember { mutableStateOf(false) }
             val curLanFilament =
@@ -394,25 +366,8 @@ private fun LocalNetworkSection(
                                     }
                                 trays.forEachIndexed { idx, tray ->
                                     if (idx > 0) Spacer(Modifier.width(12.dp))
-                                    val swatchColor =
-                                        remember(tray.colorHex) {
-                                            tray.colorHex?.let {
-                                                try {
-                                                    android.graphics.Color.parseColor(it)
-                                                } catch (_: Exception) {
-                                                    null
-                                                }
-                                            }
-                                        }
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Box(
-                                            Modifier
-                                                .size(16.dp)
-                                                .background(
-                                                    swatchColor?.let { Color(it) } ?: MaterialTheme.colorScheme.outline,
-                                                    CircleShape,
-                                                ).border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
-                                        )
+                                        SwatchDot(filamentColor(tray.colorHex), Modifier.size(16.dp))
                                         Spacer(Modifier.width(6.dp))
                                         Text(
                                             tray.type.ifBlank { tray.name }.ifBlank { "Filament" },
@@ -429,25 +384,23 @@ private fun LocalNetworkSection(
 
             if (selectedPrinter?.isLocal == true) {
                 Spacer(Modifier.height(4.dp))
-                OutlinedButton(
+                BrandButton(
+                    text = "Access code",
                     onClick = { vm.requestAccessCodeEntry() },
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth().height(46.dp),
-                ) {
-                    Icon(Icons.Filled.Visibility, null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Access code", fontSize = 14.sp)
-                }
+                    role = ButtonRole.Secondary,
+                    icon = { Icon(Icons.Filled.Visibility, null, modifier = Modifier.size(16.dp)) },
+                    height = ButtonSize.Small,
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 Spacer(Modifier.height(4.dp))
-                OutlinedButton(
+                BrandButton(
+                    text = "Change loaded filament",
                     onClick = { showFilamentPicker = true },
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth().height(46.dp),
-                ) {
-                    Icon(Icons.Filled.Tune, null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Change loaded filament", fontSize = 14.sp)
-                }
+                    role = ButtonRole.Secondary,
+                    icon = { Icon(Icons.Filled.Tune, null, modifier = Modifier.size(16.dp)) },
+                    height = ButtonSize.Small,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
 
             if (showFilamentPicker) {
@@ -484,19 +437,6 @@ private fun LocalNetworkSection(
             }
         }
     }
-
-    if (selectedPrinter?.isLocal == true) {
-        Spacer(Modifier.height(4.dp))
-        Button(
-            onClick = onDismiss,
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-        ) {
-            Icon(Icons.Filled.Check, null)
-            Spacer(Modifier.width(8.dp))
-            Text("Done", fontSize = 16.sp)
-        }
-    }
 }
 
 @Composable
@@ -505,7 +445,6 @@ private fun CloudSection(
     printers: List<CloudPrinter>,
     filaments: Map<String, world.yemyat.slicepilot.cloud.FilamentInfo>,
     selectedPrinter: ConnectedPrinter?,
-    onDismiss: () -> Unit,
     onAddPrinter: () -> Unit = {},
 ) {
     val demoMode by vm.demoModeState.collectAsState()
@@ -521,7 +460,7 @@ private fun CloudSection(
 
         val linkStyle =
             SpanStyle(
-                color = LanternGold,
+                color = MaterialTheme.colorScheme.primary,
                 textDecoration = TextDecoration.Underline,
             )
         // Written once, shown twice: beside the checkbox and inside the consent dialog.
@@ -661,18 +600,14 @@ private fun CloudSection(
                 },
             )
         }
-        Button(
+        BrandButton(
+            text = "Sign in",
             onClick = { doSignIn() },
             enabled = !busy && email.isNotBlank() && password.isNotBlank() && agreedToElegooTerms,
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth().height(56.dp),
-        ) {
-            if (busy) {
-                CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-            } else {
-                Text("Sign in", fontSize = 17.sp)
-            }
-        }
+            loading = busy,
+            height = ButtonSize.Large,
+            modifier = Modifier.fillMaxWidth(),
+        )
         if (showTermsDialog) {
             ElegooTermsDialog(
                 termsText = termsText,
@@ -708,7 +643,7 @@ private fun CloudSection(
             }
         }
         if (printers.isNotEmpty()) {
-            Text("Cloud printers", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            BrandSectionLabel("Cloud printers")
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 printers.forEach { p ->
                     val isSelected = selectedPrinter?.let { !it.isLocal && it.id == p.id } == true
@@ -722,36 +657,23 @@ private fun CloudSection(
             }
         } else {
             Text("No printers found yet in your Elegoo account.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Button(
+            BrandButton(
+                text = "Add printer",
                 onClick = onAddPrinter,
-                shape = RoundedCornerShape(14.dp),
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
-            ) {
-                Icon(Icons.Filled.Add, null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Add printer", fontSize = 15.sp)
-            }
+                icon = { Icon(Icons.Filled.Add, null, modifier = Modifier.size(18.dp)) },
+                height = ButtonSize.Medium,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.Start,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TextButton(onClick = { vm.signOut() }) {
                 Icon(Icons.Filled.CloudOff, null)
                 Spacer(Modifier.width(6.dp))
                 Text(if (demoMode) "Exit demo" else "Sign out")
-            }
-            if (selectedPrinter?.isLocal == false) {
-                Button(
-                    onClick = onDismiss,
-                    shape = RoundedCornerShape(14.dp),
-                ) {
-                    Text("Done")
-                }
             }
         }
     }

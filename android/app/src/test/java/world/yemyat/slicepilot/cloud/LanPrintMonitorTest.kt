@@ -303,4 +303,52 @@ class LanPrintMonitorTest {
         assertEquals(210.5f, s.nozzleTemp, 0.01f)
         assertEquals(215f, s.nozzleTarget, 0.01f)
     }
+
+    @Test
+    fun ledStatusParsesPowerBrightnessAndNestedShapes() {
+        val fromPower = LanPrintMonitor.mergePrintStatus(PrintStatus(), JSONObject("""{"led": {"power": 1}}"""))
+        assertEquals(true, fromPower.lightOn)
+        val fromBrightness = LanPrintMonitor.mergePrintStatus(fromPower, JSONObject("""{"led": {"brightness": 0}}"""))
+        assertEquals(false, fromBrightness.lightOn)
+        val fromNested = LanPrintMonitor.mergePrintStatus(fromBrightness, JSONObject("""{"led": {"led": {"status": 1}}}"""))
+        assertEquals(true, fromNested.lightOn)
+    }
+
+    @Test
+    fun mergeSnapshotWithLivePreservesFullFieldsAndAdvancesProgress() {
+        val snapshot =
+            PrintStatus(
+                state = PrintJobState.PRINTING,
+                filename = "insole.gcode",
+                progress = 18,
+                currentLayer = 4,
+                totalLayer = 32,
+                elapsedSec = 1380,
+                nozzleTemp = 230f,
+                nozzleTarget = 230f,
+                bedTemp = 34f,
+                bedTarget = 35f,
+                lightOn = true,
+                live = true,
+            )
+        val mqttDelta =
+            PrintStatus(
+                state = PrintJobState.PRINTING,
+                filename = "",
+                progress = 19,
+                currentLayer = 5,
+                totalLayer = 0,
+                elapsedSec = 1405,
+                lightOn = null,
+                live = true,
+            )
+        val merged = MqttManager.mergeSnapshotWithLive(snapshot = snapshot, live = mqttDelta)
+        assertEquals("insole.gcode", merged.filename)
+        assertEquals(32, merged.totalLayer)
+        assertEquals(5, merged.currentLayer)
+        assertEquals(19, merged.progress)
+        assertEquals(1405, merged.elapsedSec)
+        assertEquals(230f, merged.nozzleTarget, 0.01f)
+        assertEquals(true, merged.lightOn)
+    }
 }

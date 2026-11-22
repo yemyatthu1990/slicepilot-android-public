@@ -3,13 +3,23 @@ package world.yemyat.slicepilot
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.core.view.ViewCompat
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -65,6 +75,7 @@ class MainActivity : ComponentActivity() {
                 .getBoolean("notifications_asked", false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         NativeLib.init(this)
         TrackingBootstrap.ensure(this)
@@ -101,13 +112,24 @@ class MainActivity : ComponentActivity() {
         setContent {
             val darkTheme by vm.themeDark.collectAsState()
             ElegooSlicerTheme(darkTheme = darkTheme) {
-                Box(Modifier.fillMaxSize()) {
-                    SpiritedBackground(Modifier.fillMaxSize(), darkTheme = darkTheme)
-                    Surface(Modifier.fillMaxSize(), color = Color.Transparent) {
-                        AppRoot(vm)
-                    }
+                Surface(
+                    Modifier.fillMaxSize(),
+                    color = Color.Transparent,
+                    contentColor = androidx.compose.material3.MaterialTheme.colorScheme.onBackground,
+                ) {
+                    AppRoot(vm, darkTheme = darkTheme)
                 }
             }
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Re-apply window insets after orientation changes (e.g. exiting landscape CameraFullscreen)
+        // so statusBarsPadding() and navigationBarsPadding() never stay stuck at 0.
+        window?.decorView?.let { decor ->
+            ViewCompat.requestApplyInsets(decor)
+            decor.post { ViewCompat.requestApplyInsets(decor) }
         }
     }
 
@@ -238,7 +260,10 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun AppRoot(vm: AppViewModel) {
+    private fun AppRoot(
+        vm: AppViewModel,
+        darkTheme: Boolean,
+    ) {
         val screen by vm.screen.collectAsState()
         val cloudMessage by vm.cloudMessage.collectAsState()
         val slicing by vm.slicing.collectAsState()
@@ -246,17 +271,18 @@ class MainActivity : ComponentActivity() {
         val askPrinterForModel by vm.askPrinterForModel.collectAsState()
         val accessCodePrompt by vm.accessCodePrompt.collectAsState()
         val pairingAttempt by vm.pairingAttempt.collectAsState()
+        val discardOnExitModel by vm.discardOnExitModel.collectAsState()
         androidx.activity.compose.BackHandler(enabled = screen != Screen.Home) { vm.goBack() }
         var showConnect by remember { mutableStateOf(false) }
         var showAddPrinter by remember { mutableStateOf(false) }
         var showQrScanner by remember { mutableStateOf(false) }
+        var expandedSource by remember { mutableStateOf<world.yemyat.slicepilot.repo.ModelSource?>(null) }
         // The PIN is the only thing worth typing; the machine line keeps the pcode or serial a scan
         // read, so the dialog can show which printer pairing would claim. Kept here because the
         // scanner lives outside the dialog and writes into it.
         var pairingPcode by remember { mutableStateOf("") }
         var pairingPincode by remember { mutableStateOf("") }
         var pairingVia by remember { mutableStateOf("pin") }
-        var showConfigure by remember { mutableStateOf(false) }
         var showNotifRationale by remember { mutableStateOf(needsNotificationRationale()) }
         val favorites =
             remember {
@@ -342,97 +368,151 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        androidx.compose.material3.Scaffold(
-            snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
-            // Each screen draws its own status-bar padding; taking the inset here
-            // too would stack a second status bar of space above every tab.
-            contentWindowInsets = WindowInsets(0),
-            bottomBar = { AppTabBar(vm) },
-        ) { frame ->
-            val browse by browser.state.collectAsState()
-            Box(Modifier.padding(frame).fillMaxSize()) {
-                when (screen) {
-                    is Screen.Home -> {
-                        HomeScreen(
-                            vm = vm,
-                            onPickLocalFile = { modelPicker.launch(arrayOf("*/*")) },
-                            onOpenConnect = { showConnect = true },
-                            onOpenConfigure = { showConfigure = true },
-                            browser = browser,
-                        )
-                    }
+        val browse by browser.state.collectAsState()
+        val favEntries by browser.favorites.entries.collectAsState()
+        val favoritedListings =
+            remember(favEntries) {
+                favEntries
+                    .mapNotNull { e ->
+                        e.listingId.takeIf { it.isNotBlank() }?.let { "${e.source}|$it" }
+                    }.toSet()
+            }
+        val expanded = expandedSource?.let { src -> browse.sections.firstOrNull { it.source == src } }
+        LaunchedEffect(expandedSource, expanded) {
+            if (expandedSource != null && expanded == null) expandedSource = null
+        }
 
-                    is Screen.Printer -> {
-                        PrinterScreen(
-                            vm = vm,
-                            onOpenConnect = { showConnect = true },
-                        )
-                    }
+        // Pause the ambient background animation whenever an opaque full-screen canvas or pushed
+        // browse overlay covers it, saving GPU/battery during 3D preview, slicing, and live video.
+        val animateBackground =
+            (screen == Screen.Home || screen == Screen.Printer || screen == Screen.Library) &&
+                expanded == null &&
+                browse.detail == null &&
+                !browse.loadingDetail
 
-                    is Screen.PrintSetup -> {
-                        PrintSetupScreen(vm)
-                    }
+        Box(Modifier.fillMaxSize()) {
+            SpiritedBackground(
+                modifier = Modifier.fillMaxSize(),
+                darkTheme = darkTheme,
+                animate = animateBackground,
+            )
+            androidx.compose.material3.Scaffold(
+                containerColor = Color.Transparent,
+                snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
+                // Each screen draws its own status-bar padding; taking the inset here
+                // too would stack a second status bar of space above every tab.
+                contentWindowInsets = WindowInsets(0),
+                bottomBar = { AppTabBar(vm) },
+            ) { frame ->
+                Box(Modifier.padding(frame).fillMaxSize()) {
+                    AnimatedContent(
+                        targetState = screen,
+                        transitionSpec = {
+                            if (initialState == Screen.CameraFull || targetState == Screen.CameraFull) {
+                                EnterTransition.None togetherWith ExitTransition.None
+                            } else {
+                                fadeIn(tween(180)) togetherWith fadeOut(tween(140))
+                            }
+                        },
+                        label = "screenTransition",
+                    ) { currentScreen ->
+                        when (currentScreen) {
+                            is Screen.Home -> {
+                                HomeScreen(
+                                    vm = vm,
+                                    onPickLocalFile = { modelPicker.launch(arrayOf("*/*")) },
+                                    onOpenConnect = { showConnect = true },
+                                    onSeeMore = { expandedSource = it },
+                                    browser = browser,
+                                )
+                            }
 
-                    is Screen.Library -> {
-                        LibraryScreen(
-                            vm = vm,
-                            favorites = favorites,
-                            onFindModels = { vm.openScreen(Screen.Home) },
-                        )
-                    }
+                            is Screen.Printer -> {
+                                PrinterScreen(
+                                    vm = vm,
+                                    onOpenConnect = { showConnect = true },
+                                )
+                            }
 
-                    is Screen.Slice -> {
-                        SliceScreen(vm)
-                    }
+                            is Screen.PrintSetup -> {
+                                PrintSetupScreen(vm)
+                            }
 
-                    is Screen.Slicing -> {
-                        SlicingScreen(vm)
-                    }
+                            is Screen.Library -> {
+                                LibraryScreen(
+                                    vm = vm,
+                                    favorites = favorites,
+                                    onFindModels = { vm.openScreen(Screen.Home) },
+                                )
+                            }
 
-                    is Screen.Preview -> {
-                        val gp = vm.gcodePreview.collectAsState().value
-                        if (gp != null) {
-                            SlicePreviewScreen(
-                                vm = vm,
-                                preview = gp,
-                                onSaveGcode = { gcodeSaver.launch(vm.suggestedGcodeName) },
-                                onPrint = { vm.startPrint(this@MainActivity) },
-                            )
-                        } else {
-                            LaunchedEffect(Unit) { vm.backHome() }
+                            is Screen.Slice -> {
+                                SliceScreen(vm)
+                            }
+
+                            is Screen.Slicing -> {
+                                SlicingScreen(vm)
+                            }
+
+                            is Screen.Preview -> {
+                                val gp = vm.gcodePreview.collectAsState().value
+                                if (gp != null) {
+                                    SlicePreviewScreen(
+                                        vm = vm,
+                                        preview = gp,
+                                        onSaveGcode = { gcodeSaver.launch(vm.suggestedGcodeName) },
+                                        onPrint = { vm.startPrint(this@MainActivity) },
+                                    )
+                                } else {
+                                    LaunchedEffect(Unit) { vm.backHome() }
+                                }
+                            }
+
+                            is Screen.Printing -> {
+                                PrintingScreen(
+                                    vm = vm,
+                                    onBack = { vm.cancelPrint() },
+                                )
+                            }
+
+                            is Screen.DeviceStatus -> {
+                                DeviceStatusScreen(vm = vm)
+                            }
+
+                            is Screen.CameraFull -> {
+                                CameraFullscreen(
+                                    vm = vm,
+                                    onClose = { vm.closeCameraFull() },
+                                )
+                            }
                         }
                     }
-
-                    is Screen.Printing -> {
-                        PrintingScreen(
-                            vm = vm,
-                            onBack = { vm.cancelPrint() },
+                    val downloading = browse.downloadingFile
+                    if (downloading != null) {
+                        DownloadProgressBanner(
+                            name = downloading,
+                            progress = browse.downloadProgress,
+                            modifier =
+                                Modifier
+                                    .align(Alignment.TopCenter)
+                                    .fillMaxWidth(),
                         )
                     }
-
-                    is Screen.DeviceStatus -> {
-                        DeviceStatusScreen(vm = vm)
-                    }
-
-                    is Screen.CameraFull -> {
-                        CameraFullscreen(
-                            vm = vm,
-                            onClose = { vm.closeCameraFull() },
-                        )
-                    }
-                }
-                val downloading = browse.downloadingFile
-                if (downloading != null) {
-                    DownloadProgressBanner(
-                        name = downloading,
-                        progress = browse.downloadProgress,
-                        modifier =
-                            Modifier
-                                .align(Alignment.TopCenter)
-                                .fillMaxWidth(),
-                    )
                 }
             }
+
+            // Full-screen pushed browse overlays sit above Scaffold so the bottom tab bar
+            // stays hidden while browsing a source list or viewing a model's detail page.
+            expanded?.let { section ->
+                SourceListOverlay(
+                    section = section,
+                    onBack = { expandedSource = null },
+                    favoritedListings = favoritedListings,
+                    onLoadMore = { browser.loadMore(section.source) },
+                    onOpen = { browser.openDetail(it) },
+                )
+            }
+            ModelDetailHost(vm, browser)
         }
 
         // Rationale before the Android 13+ notification prompt: explain the value,
@@ -474,6 +554,36 @@ class MainActivity : ComponentActivity() {
             )
         }
 
+        // Backing out of print setup ends the model's flow, so it asks before throwing the
+        // model away (AppViewModel.leavePrintSetup); "Keep editing" leaves the page as it was.
+        discardOnExitModel?.let { model ->
+            val name = File(model).name
+            val body =
+                (
+                    if (vm.gcodePath != null) {
+                        "$name is sliced but not printed — discarding it loses that g-code."
+                    } else {
+                        "$name is not sliced yet."
+                    }
+                ) +
+                    " You'd have to pick the file again to print it."
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { vm.dismissDiscardPrompt() },
+                title = { androidx.compose.material3.Text("Discard this model?") },
+                text = { androidx.compose.material3.Text(body) },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = { vm.confirmDiscardModel() }) {
+                        androidx.compose.material3.Text("Discard")
+                    }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = { vm.dismissDiscardPrompt() }) {
+                        androidx.compose.material3.Text("Keep editing")
+                    }
+                },
+            )
+        }
+
         // Answering the ask with "Connect" can land on PrintSetup while this sheet is still
         // open (the sheet does not close itself when a printer is picked); close it so the
         // page it just promised is what the user sees.
@@ -504,8 +614,6 @@ class MainActivity : ComponentActivity() {
                 },
             )
         }
-        if (showConfigure) ConfigureSheet(vm, onDismiss = { showConfigure = false })
-
         // Pairing lives above the sheet rather than inside it: the QR scanner needs a full-screen
         // camera surface, and a dialog stacked on a bottom sheet renders badly.
         if (showAddPrinter) {

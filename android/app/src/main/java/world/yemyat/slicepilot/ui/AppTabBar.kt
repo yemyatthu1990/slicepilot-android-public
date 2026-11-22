@@ -1,10 +1,13 @@
 package world.yemyat.slicepilot.ui
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CollectionsBookmark
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Print
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Text
@@ -13,6 +16,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
+import world.yemyat.slicepilot.ui.theme.LanternGold
 
 /**
  * The app's top-level destinations. Every other [Screen] is a task flow (print
@@ -48,14 +53,20 @@ fun AppTabBar(
 ) {
     val screen by vm.screen.collectAsState()
     val selected = AppTab.forScreen(screen) ?: return
-    NavigationBar(modifier = modifier) {
-        AppTab.values().forEach { tab ->
-            NavigationBarItem(
-                selected = tab == selected,
-                onClick = { vm.openScreen(tab.target) },
-                icon = { Icon(tab.icon, contentDescription = tab.label) },
-                label = { Text(tab.label) },
-            )
+    Column(modifier = modifier) {
+        HorizontalDivider(thickness = 1.dp, color = LanternGold.copy(alpha = 0.22f))
+        NavigationBar(
+            containerColor = MaterialTheme.colorScheme.surface,
+            tonalElevation = 0.dp,
+        ) {
+            AppTab.values().forEach { tab ->
+                NavigationBarItem(
+                    selected = tab == selected,
+                    onClick = { vm.openScreen(tab.target) },
+                    icon = { Icon(tab.icon, contentDescription = tab.label) },
+                    label = { Text(tab.label) },
+                )
+            }
         }
     }
 }

@@ -40,6 +40,8 @@ val Violet200 = Color(0xFFEADCF2)
 
 val Green600 = MossGreen
 val Green200 = Color(0xFFD8EAD1)
+val SuccessLight = Color(0xFF2E6B3E)
+val SuccessDark = Color(0xFFA7D9A0)
 
 val Red600 = Vermillion
 val Red200 = Color(0xFFFFDAD2)

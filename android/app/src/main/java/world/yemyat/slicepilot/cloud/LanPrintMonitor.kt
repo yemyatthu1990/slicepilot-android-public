@@ -38,6 +38,17 @@ enum class PrintJobState {
 
     /** True when a user pause is active or in progress. */
     val isPaused: Boolean get() = this == PAUSED || this == PAUSING
+
+    /**
+     * True while the printer is working on a job or getting one started. `live` alone is not
+     * enough - a connected, idle printer answers status probes too - so every "is something
+     * printing?" question has to ask this instead of reinventing the state list (Home's banner,
+     * the print-setup exit and the print monitor each had their own copy).
+     */
+    val isInProgress: Boolean
+        get() =
+            this == CONNECTING || this == PRINTING || this == PAUSING || this == PAUSED ||
+                this == RESUMING
 }
 
 /** A snapshot of a running print, merged from the CC2 status stream (method 1002 / 6000 pushes). */
@@ -66,12 +77,13 @@ data class PrintStatus(
     /** True once the printer has sent at least one real status message. */
     val live: Boolean = false,
 ) {
-    val speedPercent: Int get() = when (speedMode) {
-        0 -> 50
-        2 -> 150
-        3 -> 200
-        else -> 100
-    }
+    val speedPercent: Int get() =
+        when (speedMode) {
+            0 -> 50
+            2 -> 150
+            3 -> 200
+            else -> 100
+        }
 }
 
 /**
@@ -82,27 +94,51 @@ data class PrintStatus(
  *  - JSON PING heartbeat every 10 s (the printer drops silent clients),
  *  - pause (1021) / resume (1023) / stop (1022) print control.
  */
+
 /**
  * Live-monitor + control backend for a LAN printer. [LanPrintMonitor] speaks the CC2
  * MQTT protocol, [LanPrintMonitorCC1] the CC1 SDCP WebSocket; the UI drives either.
  */
 interface PrintMonitor {
     val status: kotlinx.coroutines.flow.StateFlow<PrintStatus?>
-    suspend fun start(ip: String, serial: String, accessCode: String): Boolean
+
+    suspend fun start(
+        ip: String,
+        serial: String,
+        accessCode: String,
+    ): Boolean
+
     fun pausePrint()
+
     fun resumePrint()
+
     fun stopPrint()
-    fun setTemperature(extruder: Int?, bed: Int?)
-    fun setFanSpeed(target: String, speed: Int)
+
+    fun setTemperature(
+        extruder: Int?,
+        bed: Int?,
+    )
+
+    fun setFanSpeed(
+        target: String,
+        speed: Int,
+    )
+
     fun setLight(on: Boolean)
+
     fun setCamera(enable: Boolean)
+
     fun shutdown()
+
     /** CC2 needs method 1042 to wake its camera; the CC1 streams unconditionally. */
     val cameraNeedsArm: Boolean get() = true
+
     /** Settle time after arming the camera (CC2 pipeline lag; CC1: none). */
     val cameraWarmupMs: Long get() = 2500L
+
     /** MJPEG stream endpoint for [CameraStream]. */
     fun cameraStreamUrl(ip: String): String = "http://$ip:8080/?action=stream"
+
     /**
      * One-shot: if the print lands in PAUSED shortly after starting (CC1
      * firmware with a Canvas starts paused for filament confirmation), send
@@ -112,135 +148,224 @@ interface PrintMonitor {
 }
 
 class LanPrintMonitor : PrintMonitor {
-
     private val scope = CoroutineScope(Dispatchers.IO)
     private var client: Mqtt3AsyncClient? = null
     private var heartbeatJob: Job? = null
     private var pollJob: Job? = null
+    private var reconnectJob: Job? = null
 
     private var clientId = ""
     private var requestId = ""
     private var serial = ""
+    private var lastIp = ""
+    private var lastAccessCode = ""
 
     private val _status = MutableStateFlow<PrintStatus?>(null)
-override     val status: StateFlow<PrintStatus?> = _status.asStateFlow()
+    override val status: StateFlow<PrintStatus?> = _status.asStateFlow()
 
     @Volatile var running: Boolean = false
         private set
 
-override     suspend fun start(ip: String, serialNumber: String, accessCode: String): Boolean =
+    override suspend fun start(
+        ip: String,
+        serialNumber: String,
+        accessCode: String,
+    ): Boolean =
         withContext(Dispatchers.IO) {
             shutdown()
             if (ip.isBlank() || serialNumber.isBlank()) return@withContext false
+            lastIp = ip
             serial = serialNumber
-            val token = accessCode.ifBlank { LanPrintManager.CC2_DEFAULT_TOKEN }
-            clientId = "1_PC_" + (100000..999999).random()
-            requestId = clientId + "_req"
+            lastAccessCode = accessCode
             _status.value = PrintStatus(state = PrintJobState.CONNECTING)
+            val ok = connectAndRegister(ip, serialNumber, accessCode)
+            if (!ok) {
+                shutdown()
+            }
+            ok
+        }
 
-            val registrations = ConcurrentLinkedQueue<String>()
-            try {
-                val auth = Mqtt3SimpleAuth.builder()
+    private suspend fun connectAndRegister(
+        ip: String,
+        serialNumber: String,
+        accessCode: String,
+    ): Boolean {
+        heartbeatJob?.cancel()
+        pollJob?.cancel()
+        try {
+            client?.disconnect()
+        } catch (_: Exception) {
+        }
+        client = null
+
+        val token = accessCode.ifBlank { LanPrintManager.CC2_DEFAULT_TOKEN }
+        clientId = "1_PC_" + (100000..999999).random()
+        requestId = clientId + "_req"
+
+        val registrations = ConcurrentLinkedQueue<String>()
+        return try {
+            val auth =
+                Mqtt3SimpleAuth
+                    .builder()
                     .username(LanPrintManager.DEFAULT_MQTT_USER)
                     .password(token.toByteArray(Charsets.UTF_8))
                     .build()
-                val c = MqttClient.builder()
+            val thisClientId = clientId
+            val c =
+                MqttClient
+                    .builder()
                     .useMqttVersion3()
-                    .identifier(clientId)
+                    .identifier(thisClientId)
                     .serverHost(ip)
                     .serverPort(1883)
                     .addDisconnectedListener { d ->
-                        Log.d(TAG, "monitor disconnected: ${d.cause}")
-                        updateStatus { it.copy(live = false) }
+                        Log.d(TAG, "monitor disconnected ($thisClientId): ${d.cause}")
+                        if (clientId == thisClientId) {
+                            updateStatus { it.copy(live = false) }
+                            if (running) scheduleReconnect()
+                        }
+                    }.buildAsync()
+            client = c
+
+            c
+                .connectWith()
+                .cleanSession(true)
+                .keepAlive(30)
+                .simpleAuth(auth)
+                .send()
+                .get(10, TimeUnit.SECONDS)
+
+            c
+                .subscribeWith()
+                .topicFilter("elegoo/$serialNumber/$clientId/api_response")
+                .callback { pub -> handlePayload(String(pub.payloadAsBytes, Charsets.UTF_8)) }
+                .send()
+                .get(5, TimeUnit.SECONDS)
+            c
+                .subscribeWith()
+                .topicFilter("elegoo/$serialNumber/$requestId/register_response")
+                .callback { pub -> registrations.add(String(pub.payloadAsBytes, Charsets.UTF_8)) }
+                .send()
+                .get(5, TimeUnit.SECONDS)
+            c
+                .subscribeWith()
+                .topicFilter("elegoo/$serialNumber/api_status")
+                .callback { pub -> handlePayload(String(pub.payloadAsBytes, Charsets.UTF_8)) }
+                .send()
+                .get(5, TimeUnit.SECONDS)
+
+            publish(
+                "elegoo/$serialNumber/api_register",
+                JSONObject()
+                    .put("client_id", clientId)
+                    .put("request_id", requestId)
+                    .toString(),
+            )
+
+            val regDeadline = System.currentTimeMillis() + 5000
+            while (System.currentTimeMillis() < regDeadline && registrations.isEmpty()) {
+                delay(100)
+            }
+            val regMsg = registrations.poll()
+            if (regMsg != null) {
+                val err =
+                    try {
+                        JSONObject(regMsg).optString("error", "ok")
+                    } catch (_: Exception) {
+                        "ok"
                     }
-                    .buildAsync()
-                client = c
-
-                c.connectWith().cleanSession(true).keepAlive(30).simpleAuth(auth)
-                    .send().get(10, TimeUnit.SECONDS)
-
-                c.subscribeWith().topicFilter("elegoo/$serial/$clientId/api_response")
-                    .callback { pub -> handlePayload(String(pub.payloadAsBytes, Charsets.UTF_8)) }
-                    .send().get(5, TimeUnit.SECONDS)
-                c.subscribeWith().topicFilter("elegoo/$serial/$requestId/register_response")
-                    .callback { pub -> registrations.add(String(pub.payloadAsBytes, Charsets.UTF_8)) }
-                    .send().get(5, TimeUnit.SECONDS)
-                c.subscribeWith().topicFilter("elegoo/$serial/api_status")
-                    .callback { pub -> handlePayload(String(pub.payloadAsBytes, Charsets.UTF_8)) }
-                    .send().get(5, TimeUnit.SECONDS)
-
-                publish("elegoo/$serial/api_register",
-                    JSONObject()
-                        .put("client_id", clientId)
-                        .put("request_id", requestId)
-                        .toString())
-
-                val regDeadline = System.currentTimeMillis() + 5000
-                while (System.currentTimeMillis() < regDeadline && registrations.isEmpty()) {
-                    delay(100)
+                if (err != "ok") {
+                    Log.w(TAG, "monitor registration failed: $err")
+                    return false
                 }
-                val regMsg = registrations.poll()
-                if (regMsg != null) {
-                    val err = try { JSONObject(regMsg).optString("error", "ok") } catch (_: Exception) { "ok" }
-                    if (err != "ok") {
-                        Log.w(TAG, "monitor registration failed: $err")
-                        shutdown()
-                        return@withContext false
-                    }
-                }
+            }
 
-                running = true
-                Log.i(TAG, "print monitor live on $ip (sn=$serial)")
-                requestStatus()
+            running = true
+            Log.i(TAG, "print monitor live on $ip (sn=$serialNumber)")
+            requestStatus()
 
-                heartbeatJob = scope.launch {
+            heartbeatJob =
+                scope.launch {
                     while (isActive) {
                         delay(10_000)
                         publish("elegoo/$serial/$clientId/api_request", """{"type":"PING"}""")
                     }
                 }
-                // Safety net: deltas can be missed; a full status every 30 s re-syncs the view.
-                pollJob = scope.launch {
+            // Safety net: deltas can be missed; a full status every 30 s re-syncs the view.
+            pollJob =
+                scope.launch {
                     while (isActive) {
                         delay(30_000)
                         requestStatus()
                     }
                 }
-                true
-            } catch (e: Exception) {
-                Log.d(TAG, "monitor start failed for $ip: ${e.message}")
-                shutdown()
-                false
+            true
+        } catch (e: Exception) {
+            Log.d(TAG, "monitor connect failed for $ip: ${e.message}")
+            try {
+                client?.disconnect()
+            } catch (_: Exception) {
             }
+            client = null
+            false
         }
+    }
 
-override     fun pausePrint() {
+    private fun scheduleReconnect() {
+        if (reconnectJob?.isActive == true || !running) return
+        val ip = lastIp
+        val sn = serial
+        val code = lastAccessCode
+        if (ip.isBlank() || sn.isBlank()) return
+        reconnectJob =
+            scope.launch {
+                val backoffs = longArrayOf(2_000, 4_000, 8_000, 15_000)
+                var attempt = 0
+                while (isActive && running) {
+                    val waitMs = backoffs[attempt.coerceAtMost(backoffs.lastIndex)]
+                    delay(waitMs)
+                    if (!isActive || !running) break
+                    Log.i(TAG, "reconnecting LAN monitor to $ip (attempt ${attempt + 1})")
+                    if (connectAndRegister(ip, sn, code)) {
+                        Log.i(TAG, "LAN monitor reconnected to $ip")
+                        break
+                    }
+                    attempt++
+                }
+            }
+    }
+
+    override fun pausePrint() {
         sendControl(1021) { it.copy(state = PrintJobState.PAUSING) }
         resendUntilConfirmed(1021) { it == PrintJobState.PAUSED }
     }
 
-override     fun resumePrint() {
+    override fun resumePrint() {
         sendControl(1023) { it.copy(state = PrintJobState.RESUMING) }
         resendUntilConfirmed(1023) { it == PrintJobState.PRINTING }
     }
 
-override     fun stopPrint() {
+    override fun stopPrint() {
         sendControl(1022) { it.copy(state = PrintJobState.STOPPING) }
         resendUntilConfirmed(1022) { it == PrintJobState.STOPPED || it == PrintJobState.COMPLETED }
     }
 
-    private fun sendControl(method: Int, optimistic: (PrintStatus) -> PrintStatus) {
+    private fun sendControl(
+        method: Int,
+        optimistic: (PrintStatus) -> PrintStatus,
+    ) {
         updateStatus(optimistic)
         publishControl(method)
     }
 
     private fun publishControl(method: Int) {
         val c = client ?: return
-        val msg = JSONObject()
-            .put("id", (1000..9999).random())
-            .put("method", method)
-            .put("params", JSONObject())
-            .toString()
+        val msg =
+            JSONObject()
+                .put("id", (1000..9999).random())
+                .put("method", method)
+                .put("params", JSONObject())
+                .toString()
         scope.launch {
             publish("elegoo/$serial/$clientId/api_request", msg)
         }
@@ -250,7 +375,10 @@ override     fun stopPrint() {
      * Method 1028 SET_TEMPERATURE: set nozzle/bed targets (params `{"extruder": n,
      * "heater_bed": n}`, verified against Matrix `setTargetTemp`).
      */
-override     fun setTemperature(extruder: Int?, bed: Int?) {
+    override fun setTemperature(
+        extruder: Int?,
+        bed: Int?,
+    ) {
         val params = JSONObject()
         if (extruder != null) params.put("extruder", extruder)
         if (bed != null) params.put("heater_bed", bed)
@@ -261,30 +389,60 @@ override     fun setTemperature(extruder: Int?, bed: Int?) {
      * Method 1030 SET_FAN_SPEED: fan PWM 0-255 for `fan` (part cooling), `aux_fan`
      * (chamber circulation) or `box_fan` (enclosure exhaust); Matrix `fanControl`.
      */
-override     fun setFanSpeed(target: String, speed: Int) {
+    override fun setFanSpeed(
+        target: String,
+        speed: Int,
+    ) {
         publishMethod(1030, JSONObject().put(target, speed.coerceIn(0, 255)))
     }
 
+    private var lightRetryJob: Job? = null
+
     /**
-     * Method 1029 SET_LIGHT: case light on/off (params `{"power": 1|0}`, verified
-     * against Matrix `lightSwitch`).
+     * Method 1029 SET_LIGHT: case light on/off. Sends both `power` (1|0) and `brightness`
+     * (255|0) — matching elegoo-homeassistant / OctoEverywhere — because CC2 firmware
+     * revisions differ on which key toggles the LED while still returning error_code 0.
+     * Resends up to twice while busy printing if the status stream hasn't confirmed yet.
      */
-override     fun setLight(on: Boolean) {
-        publishMethod(1029, JSONObject().put("power", if (on) 1 else 0))
+    override fun setLight(on: Boolean) {
+        fun lightPayload() =
+            JSONObject()
+                .put("power", if (on) 1 else 0)
+                .put("brightness", if (on) 255 else 0)
+        publishMethod(1029, lightPayload())
+        lightRetryJob?.cancel()
+        lightRetryJob =
+            scope.launch {
+                repeat(2) {
+                    val confirmed =
+                        withTimeoutOrNull(2_500) {
+                            status.first { it?.lightOn == on }
+                            true
+                        } ?: false
+                    if (confirmed) return@launch
+                    Log.i(TAG, "light=$on not confirmed yet, resending method 1029")
+                    publishMethod(1029, lightPayload())
+                    requestStatus()
+                }
+            }
     }
 
     /** Method 1042 VIDEO_STREAM: enable/disable the camera stream served on port 8080. */
-override     fun setCamera(enable: Boolean) {
+    override fun setCamera(enable: Boolean) {
         publishMethod(1042, JSONObject().put("enable", enable))
     }
 
-    private fun publishMethod(method: Int, params: JSONObject) {
+    private fun publishMethod(
+        method: Int,
+        params: JSONObject,
+    ) {
         val c = client ?: return
-        val msg = JSONObject()
-            .put("id", (1000..9999).random())
-            .put("method", method)
-            .put("params", params)
-            .toString()
+        val msg =
+            JSONObject()
+                .put("id", (1000..9999).random())
+                .put("method", method)
+                .put("params", params)
+                .toString()
         scope.launch {
             publish("elegoo/$serial/$clientId/api_request", msg)
         }
@@ -297,50 +455,71 @@ override     fun setCamera(enable: Boolean) {
      * printer is busy (observed: stop ignored, UI flipped back to Printing). Resend the
      * command until the status stream confirms it, so one tap is enough.
      */
-    private fun resendUntilConfirmed(method: Int, confirm: (PrintJobState) -> Boolean) {
+    private fun resendUntilConfirmed(
+        method: Int,
+        confirm: (PrintJobState) -> Boolean,
+    ) {
         controlRetryJob?.cancel()
-        controlRetryJob = scope.launch {
-            repeat(2) {
-                val confirmed = withTimeoutOrNull(6_000) {
-                    status.first { it != null && confirm(it.state) }
-                    true
-                } ?: false
-                if (confirmed) return@launch
-                Log.i(TAG, "control method $method not confirmed, resending")
-                publishControl(method)
+        controlRetryJob =
+            scope.launch {
+                repeat(2) {
+                    val confirmed =
+                        withTimeoutOrNull(6_000) {
+                            status.first { it != null && confirm(it.state) }
+                            true
+                        } ?: false
+                    if (confirmed) return@launch
+                    Log.i(TAG, "control method $method not confirmed, resending")
+                    publishControl(method)
+                }
             }
-        }
     }
 
     private fun requestStatus() {
         val c = client ?: return
-        val msg = JSONObject()
-            .put("id", METHOD_GET_STATUS)
-            .put("method", METHOD_GET_STATUS)
-            .put("params", JSONObject())
-            .toString()
+        val msg =
+            JSONObject()
+                .put("id", METHOD_GET_STATUS)
+                .put("method", METHOD_GET_STATUS)
+                .put("params", JSONObject())
+                .toString()
         scope.launch {
             publish("elegoo/$serial/$clientId/api_request", msg)
         }
     }
 
-override     fun shutdown() {
+    override fun shutdown() {
         running = false
+        reconnectJob?.cancel()
+        reconnectJob = null
         heartbeatJob?.cancel()
         pollJob?.cancel()
+        lightRetryJob?.cancel()
+        controlRetryJob?.cancel()
         heartbeatJob = null
         pollJob = null
-        try { client?.disconnect() } catch (_: Exception) {}
+        lightRetryJob = null
+        controlRetryJob = null
+        try {
+            client?.disconnect()
+        } catch (_: Exception) {
+        }
         client = null
         _status.value = null
     }
 
-    private fun publish(topic: String, payload: String) {
+    private fun publish(
+        topic: String,
+        payload: String,
+    ) {
         val c = client ?: return
         try {
-            c.publishWith().topic(topic)
+            c
+                .publishWith()
+                .topic(topic)
                 .payload(payload.toByteArray(Charsets.UTF_8))
-                .send().get(5, TimeUnit.SECONDS)
+                .send()
+                .get(5, TimeUnit.SECONDS)
         } catch (e: Exception) {
             Log.d(TAG, "monitor publish to $topic failed: ${e.message}")
         }
@@ -348,10 +527,16 @@ override     fun shutdown() {
 
     /** Handles both api_response (method 1002 replies) and api_status pushes (method 6000). */
     private fun handlePayload(payload: String) {
-        val json = try { JSONObject(payload) } catch (_: Exception) { return }
+        val json =
+            try {
+                JSONObject(payload)
+            } catch (_: Exception) {
+                return
+            }
         when (json.optInt("method", -1)) {
-            METHOD_GET_STATUS, METHOD_STATUS_PUSH ->
+            METHOD_GET_STATUS, METHOD_STATUS_PUSH -> {
                 json.optJSONObject("result")?.let { applyResult(it) }
+            }
         }
     }
 
@@ -373,12 +558,20 @@ override     fun shutdown() {
          * Merge a full (method 1002) or delta (method 6000) status [result] into [base].
          * Fields absent from the delta keep their previous values, so deltas apply incrementally.
          */
-        fun mergePrintStatus(base: PrintStatus, result: JSONObject): PrintStatus {
+        fun mergePrintStatus(
+            base: PrintStatus,
+            result: JSONObject,
+        ): PrintStatus {
             var json = result
             // Status deltas may wrap the real payload in a JSON string.
             val report = json.optString("reportValue", "")
             if (report.startsWith("{")) {
-                json = try { JSONObject(report) } catch (_: Exception) { json }
+                json =
+                    try {
+                        JSONObject(report)
+                    } catch (_: Exception) {
+                        json
+                    }
             }
 
             var s = base
@@ -439,8 +632,13 @@ override     fun shutdown() {
                     if (it.has("speed")) s = s.copy(boxFanSpeed = it.optInt("speed", s.boxFanSpeed))
                 }
             }
-            json.optJSONObject("led")?.let { led ->
-                if (led.has("status")) s = s.copy(lightOn = led.optInt("status") != 0)
+            json.optJSONObject("led")?.let { ledRaw ->
+                val led = ledRaw.optJSONObject("led") ?: ledRaw
+                when {
+                    led.has("status") -> s = s.copy(lightOn = led.optInt("status") != 0)
+                    led.has("power") -> s = s.copy(lightOn = led.optInt("power") != 0)
+                    led.has("brightness") -> s = s.copy(lightOn = led.optInt("brightness") > 0)
+                }
             }
 
             // The CC2 estimate (`total_duration - print_duration`, i.e. the slicer's linear
@@ -473,41 +671,84 @@ override     fun shutdown() {
             previous: PrintJobState,
         ): PrintJobState? {
             stateStr?.let { s ->
-                val mapped = when (s) {
-                    "printing" -> PrintJobState.PRINTING
-                    "paused" -> PrintJobState.PAUSED
-                    "complete" -> PrintJobState.COMPLETED
-                    "cancelled" -> PrintJobState.STOPPED
-                    "error" -> PrintJobState.ERROR
-                    "standby" -> PrintJobState.IDLE // printer back at its main screen
-                    else -> null
-                }
+                val mapped =
+                    when (s) {
+                        "printing" -> PrintJobState.PRINTING
+
+                        "paused" -> PrintJobState.PAUSED
+
+                        "complete" -> PrintJobState.COMPLETED
+
+                        "cancelled" -> PrintJobState.STOPPED
+
+                        "error" -> PrintJobState.ERROR
+
+                        "standby" -> PrintJobState.IDLE
+
+                        // printer back at its main screen
+                        else -> null
+                    }
                 return mapped?.let { latchState(it, previous) }
             }
             subStatus?.let { sub ->
-                val mapped = when (sub) {
-                    2075, 2402, 2802, 2902, 1045, 1096, 1405, 1906 -> PrintJobState.PRINTING // printing, resume/auto-level done, preheating
-                    2401 -> PrintJobState.RESUMING
-                    2501 -> PrintJobState.PAUSING
-                    2502, 2505 -> PrintJobState.PAUSED
-                    2503 -> PrintJobState.STOPPING
-                    // The CC2 keeps the last sub_status when idling: stopped + machine
-                    // idle (1/26) means "back at the main screen", not an active stop.
-                    2504 -> if (machineStatus == 1 || machineStatus == 26) PrintJobState.IDLE
-                    else PrintJobState.STOPPED
-                    2077 -> PrintJobState.COMPLETED
-                    else -> null
-                }
+                val mapped =
+                    when (sub) {
+                        2075, 2402, 2802, 2902, 1045, 1096, 1405, 1906 -> {
+                            PrintJobState.PRINTING
+                        }
+
+                        // printing, resume/auto-level done, preheating
+                        2401 -> {
+                            PrintJobState.RESUMING
+                        }
+
+                        2501 -> {
+                            PrintJobState.PAUSING
+                        }
+
+                        2502, 2505 -> {
+                            PrintJobState.PAUSED
+                        }
+
+                        2503 -> {
+                            PrintJobState.STOPPING
+                        }
+
+                        // The CC2 keeps the last sub_status when idling: stopped + machine
+                        // idle (1/26) means "back at the main screen", not an active stop.
+                        2504 -> {
+                            if (machineStatus == 1 || machineStatus == 26) {
+                                PrintJobState.IDLE
+                            } else {
+                                PrintJobState.STOPPED
+                            }
+                        }
+
+                        2077 -> {
+                            PrintJobState.COMPLETED
+                        }
+
+                        else -> {
+                            null
+                        }
+                    }
                 if (mapped != null) return latchState(mapped, previous)
             }
             machineStatus?.let { m ->
-                val mapped = when (m) {
-                    2, 15 -> PrintJobState.PRINTING // printing, power-loss recovery
-                    14 -> PrintJobState.ERROR // emergency stop
-                    1, 26 -> PrintJobState.IDLE // idle at the main screen (26 = manual-ready,
-                    // the same idle gate Matrix uses for fan control)
-                    else -> null
-                }
+                val mapped =
+                    when (m) {
+                        2, 15 -> PrintJobState.PRINTING
+
+                        // printing, power-loss recovery
+                        14 -> PrintJobState.ERROR
+
+                        // emergency stop
+                        1, 26 -> PrintJobState.IDLE
+
+                        // idle at the main screen (26 = manual-ready,
+                        // the same idle gate Matrix uses for fan control)
+                        else -> null
+                    }
                 return mapped?.let { latchState(it, previous) }
             }
             return null
@@ -519,15 +760,22 @@ override     fun shutdown() {
          * 30 s full-status resync can deliver stale `printing` after the job already stopped.
          * Without latching, the UI flickers STOPPED→PRINTING→STOPPED.
          */
-        internal fun latchState(mapped: PrintJobState, previous: PrintJobState): PrintJobState = when {
-            // Explicit idle releases a latched terminal state (printer is back at its
-            // main screen) — terminal states would otherwise show "Print stopped" forever.
-            mapped == PrintJobState.IDLE -> PrintJobState.IDLE
-            // Terminal states latch: late messages for the finished job keep the terminal state.
-            previous.isTerminal && mapped != previous -> previous
-            // While stopping, the printer legitimately keeps printing briefly — don't regress.
-            previous == PrintJobState.STOPPING && mapped == PrintJobState.PRINTING -> previous
-            else -> mapped
-        }
+        internal fun latchState(
+            mapped: PrintJobState,
+            previous: PrintJobState,
+        ): PrintJobState =
+            when {
+                // Explicit idle releases a latched terminal state (printer is back at its
+                // main screen) — terminal states would otherwise show "Print stopped" forever.
+                mapped == PrintJobState.IDLE -> PrintJobState.IDLE
+
+                // Terminal states latch: late messages for the finished job keep the terminal state.
+                previous.isTerminal && mapped != previous -> previous
+
+                // While stopping, the printer legitimately keeps printing briefly — don't regress.
+                previous == PrintJobState.STOPPING && mapped == PrintJobState.PRINTING -> previous
+
+                else -> mapped
+            }
     }
 }

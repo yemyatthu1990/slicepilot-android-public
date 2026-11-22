@@ -36,7 +36,9 @@ data class FilamentInfo(
 
 class MqttManager {
 
+    private val lock = Any()
     private var client: Mqtt5AsyncClient? = null
+    private var desiredTopics: List<String> = emptyList()
     private val filamentMap = ConcurrentHashMap<String, FilamentInfo>()
     private val _filaments = MutableStateFlow<Map<String, FilamentInfo>>(emptyMap())
     val filaments: StateFlow<Map<String, FilamentInfo>> = _filaments.asStateFlow()
@@ -50,10 +52,32 @@ class MqttManager {
     private val _printStatuses = MutableStateFlow<Map<String, PrintStatus>>(emptyMap())
     val printStatuses: StateFlow<Map<String, PrintStatus>> = _printStatuses.asStateFlow()
 
+    /** Live online/offline events from `.../device/onoffline` (`onlineStatus: 0|1`). */
+    private val onlineStatusMap = ConcurrentHashMap<String, Boolean>()
+    private val _onlineStatuses = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val onlineStatuses: StateFlow<Map<String, Boolean>> = _onlineStatuses.asStateFlow()
+
     @Volatile var connected: Boolean = false
         private set
 
     fun filamentFor(deviceCode: String): FilamentInfo? = filamentMap[deviceCode]
+
+    /**
+     * Seed or refresh the per-device baseline from a full REST report snapshot so
+     * incremental MQTT deltas (which omit `total_layer`, `filename`, targets, etc.)
+     * never clobber the full print status.
+     */
+    fun seedPrintStatus(deviceCode: String, snapshot: PrintStatus) {
+        if (deviceCode.isBlank()) return
+        printStatusMap.compute(deviceCode) { _, existing ->
+            if (existing == null || !existing.live) {
+                snapshot
+            } else {
+                mergeSnapshotWithLive(snapshot = snapshot, live = existing)
+            }
+        }
+        _printStatuses.value = HashMap(printStatusMap)
+    }
 
     fun start(
         host: String,
@@ -65,9 +89,13 @@ class MqttManager {
         topicFilter: String,
         extraTopicFilters: List<String> = emptyList(),
     ) {
+        val allTopics = (listOf(topicFilter) + extraTopicFilters).distinct()
+        val oldClient: Mqtt5AsyncClient?
+        val newClient: Mqtt5AsyncClient
+        val auth: com.hivemq.client.mqtt.mqtt5.message.auth.Mqtt5SimpleAuth
         try {
             val ws = com.hivemq.client.mqtt.MqttWebSocketConfig.builder().serverPath(path).build()
-            val auth = com.hivemq.client.mqtt.mqtt5.message.auth.Mqtt5SimpleAuth.builder()
+            auth = com.hivemq.client.mqtt.mqtt5.message.auth.Mqtt5SimpleAuth.builder()
                 .username(username)
                 .password(password.toByteArray(Charsets.UTF_8))
                 .build()
@@ -79,48 +107,90 @@ class MqttManager {
                 .webSocketConfig(ws)
                 .sslWithDefaultConfig()
                 .automaticReconnectWithDefaultConfig()
-                .addConnectedListener { connected = true; Log.i("Mqtt", "connected") }
-                .addDisconnectedListener { d -> connected = false; Log.i("Mqtt", "disconnected: ${d.cause}") }
+                .addConnectedListener { ctx ->
+                    val current = synchronized(lock) { client }
+                    if (ctx.clientConfig.clientIdentifier.orElse(null)?.toString() != clientId || current == null) {
+                        return@addConnectedListener
+                    }
+                    connected = true
+                    Log.i("Mqtt", "connected ($clientId), subscribing $allTopics")
+                    subscribeAll(current, allTopics)
+                }
+                .addDisconnectedListener { d ->
+                    val isCurrent = synchronized(lock) {
+                        client?.config?.clientIdentifier?.orElse(null)?.toString() == clientId
+                    }
+                    if (isCurrent) {
+                        connected = false
+                    }
+                    Log.i("Mqtt", "disconnected ($clientId): ${d.cause}")
+                }
                 .buildAsync()
-            client = c
-            c.connectWith()
+            synchronized(lock) {
+                oldClient = client
+                client = c
+                desiredTopics = allTopics
+                connected = false
+            }
+            newClient = c
+        } catch (e: Exception) {
+            Log.e("Mqtt", "start failed", e)
+            return
+        }
+
+        // Always tear down any prior client so automaticReconnect never leaves zombie connections.
+        if (oldClient != null) {
+            try {
+                oldClient.disconnectWith().send()
+            } catch (_: Exception) {
+            }
+        }
+
+        try {
+            newClient.connectWith()
                 .cleanStart(true)
+                .keepAlive(60)
                 .simpleAuth(auth)
                 .send()
                 .whenComplete { _, err ->
                     if (err != null) {
-                        Log.e("Mqtt", "connect failed", err)
-                    } else {
-                        val allTopics = (listOf(topicFilter) + extraTopicFilters).distinct()
-                        Log.i("Mqtt", "connected, subscribing $allTopics")
-                        for (topic in allTopics) {
-                            c.subscribeWith()
-                                .topicFilter(topic)
-                                .callback { publish ->
-                                    val payload = publish.payloadAsBytes.toString(Charsets.UTF_8)
-                                    Log.i("Mqtt", "MSG ${publish.topic} => ${payload.take(800)}")
-                                    handle(publish.topic.toString(), payload)
-                                }
-                                .send()
-                                .whenComplete { _, serr ->
-                                    if (serr != null) Log.e("Mqtt", "subscribe failed ($topic)", serr)
-                                    else Log.i("Mqtt", "subscribed $topic")
-                                }
-                        }
+                        Log.e("Mqtt", "connect failed ($clientId)", err)
                     }
                 }
         } catch (e: Exception) {
-            Log.e("Mqtt", "start failed", e)
+            Log.e("Mqtt", "connect send failed", e)
+        }
+    }
+
+    private fun subscribeAll(c: Mqtt5AsyncClient, topics: List<String>) {
+        for (topic in topics) {
+            c.subscribeWith()
+                .topicFilter(topic)
+                .callback { publish ->
+                    val payload = publish.payloadAsBytes.toString(Charsets.UTF_8)
+                    Log.i("Mqtt", "MSG ${publish.topic} => ${payload.take(800)}")
+                    handle(publish.topic.toString(), payload)
+                }
+                .send()
+                .whenComplete { _, serr ->
+                    if (serr != null) Log.e("Mqtt", "subscribe failed ($topic)", serr)
+                    else Log.i("Mqtt", "subscribed $topic")
+                }
         }
     }
 
     fun stop() {
+        val old = synchronized(lock) {
+            val c = client
+            client = null
+            desiredTopics = emptyList()
+            connected = false
+            c
+        }
         try {
-            client?.disconnectWith()?.send()
+            old?.disconnectWith()?.send()
         } catch (_: Exception) {
         }
-        client = null
-        connected = false
     }
 
     private fun handle(topic: String, payload: String) {
@@ -128,6 +198,17 @@ class MqttManager {
         try {
             val json = JSONObject(payload)
             val deviceCode = extractDeviceCode(json) ?: return
+            if (json.has("onlineStatus")) {
+                val isOnline =
+                    when (val v = json.opt("onlineStatus")) {
+                        is Boolean -> v
+                        is Number -> v.toInt() == 1
+                        is String -> v == "1" || v.equals("online", ignoreCase = true) || v.equals("true", ignoreCase = true)
+                        else -> false
+                    }
+                onlineStatusMap[deviceCode] = isOnline
+                _onlineStatuses.value = HashMap(onlineStatusMap)
+            }
             extractPrintStatus(deviceCode, json)
             val info = extractFilament(json)
             if (info != null) {
@@ -142,20 +223,22 @@ class MqttManager {
     /** Merge any CC2 status node carried by a cloud MQTT message into the per-device print status. */
     private fun extractPrintStatus(deviceCode: String, json: JSONObject) {
         val node = findStatusNode(json, 0) ?: return
-        val merged = LanPrintMonitor.mergePrintStatus(printStatusMap[deviceCode] ?: PrintStatus(), node)
+        val merged = printStatusMap.compute(deviceCode) { _, existing ->
+            LanPrintMonitor.mergePrintStatus(existing ?: PrintStatus(), node)
+        } ?: return
         Log.i("Mqtt", "status merged: state=${merged.state} progress=${merged.progress} layer=${merged.currentLayer}/${merged.totalLayer}")
-        printStatusMap[deviceCode] = merged
         _printStatuses.value = HashMap(printStatusMap)
     }
 
     /**
-     * Find the object carrying `machine_status` / `print_status`. Cloud payloads nest reports
-     * as objects, JSON-string values (reportValue), arrays of {reportLinkKey, reportValue}
+     * Find the object carrying CC2 status fields (`machine_status`, `print_status`, `extruder`,
+     * `heater_bed`, `ztemperature_sensor`, `fans`, `led`, `gcode_move_inf`). Cloud payloads nest
+     * reports as objects, JSON-string values (`reportValue`), arrays of `{reportLinkKey, reportValue}`
      * entries, and generic `data`/`result` wrappers — all are walked.
      */
     private fun findStatusNode(json: JSONObject, depth: Int): JSONObject? {
         if (depth > 6) return null
-        if (json.has("machine_status") || json.has("print_status")) return flattenReportArrays(json)
+        if (STATUS_NODE_KEYS.any { json.has(it) }) return flattenReportArrays(json)
         val keys = json.keys()
         while (keys.hasNext()) {
             when (val v = json.get(keys.next())) {
@@ -174,6 +257,42 @@ class MqttManager {
             }
         }
         return null
+    }
+
+    companion object {
+        private val STATUS_NODE_KEYS = setOf(
+            "machine_status",
+            "print_status",
+            "extruder",
+            "heater_bed",
+            "ztemperature_sensor",
+            "chamber",
+            "fans",
+            "led",
+            "gcode_move_inf",
+            "gcode_move",
+        )
+
+        /**
+         * Combine a full REST snapshot with live MQTT delta state: REST carries fields deltas omit
+         * (`totalLayer`, `filename`, targets, fans, `lightOn`), while live MQTT may be a few seconds
+         * ahead on `elapsedSec`, `currentLayer`, or `progress` for the same in-progress job.
+         */
+        internal fun mergeSnapshotWithLive(snapshot: PrintStatus, live: PrintStatus): PrintStatus {
+            val sameActiveJob =
+                snapshot.state.isInProgress &&
+                    live.state.isInProgress &&
+                    (snapshot.filename.isBlank() || live.filename.isBlank() || snapshot.filename == live.filename)
+            return snapshot.copy(
+                filename = snapshot.filename.ifBlank { if (sameActiveJob) live.filename else "" },
+                totalLayer = if (snapshot.totalLayer > 0) snapshot.totalLayer else if (sameActiveJob) live.totalLayer else 0,
+                currentLayer = if (sameActiveJob) maxOf(snapshot.currentLayer, live.currentLayer) else snapshot.currentLayer,
+                progress = if (sameActiveJob) maxOf(snapshot.progress, live.progress) else snapshot.progress,
+                elapsedSec = if (sameActiveJob) maxOf(snapshot.elapsedSec, live.elapsedSec) else snapshot.elapsedSec,
+                lightOn = snapshot.lightOn ?: live.lightOn,
+                live = true,
+            )
+        }
     }
 
     /**

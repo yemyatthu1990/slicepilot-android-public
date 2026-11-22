@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.CollectionsBookmark
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Print
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -40,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -51,6 +53,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import world.yemyat.slicepilot.repo.FavoriteModel
 import world.yemyat.slicepilot.repo.FavoritesStore
+import world.yemyat.slicepilot.repo.GcodeHistoryEntry
+import world.yemyat.slicepilot.repo.GcodeHistoryStore
 import world.yemyat.slicepilot.ui.theme.BrandButton
 import world.yemyat.slicepilot.ui.theme.BrandCard
 import world.yemyat.slicepilot.ui.theme.BrandIconButton
@@ -63,13 +67,15 @@ import java.io.File
 import java.util.Date
 
 /**
- * The Files tab: everything the app keeps on this device, in two shelves —
- * the models you saved and the pictures the printer's camera took.
+ * The Files tab: everything the app keeps on this device, in three shelves —
+ * the models you saved, the g-code you sliced, and the pictures the printer's camera took.
  *
- * The shelves are a segmented control rather than two chips because the tab has
- * exactly two states-worth of content and nothing else to navigate. Each segment
- * carries its own count, so the tab says what is inside — before and after —
- * without a second heading repeating it per shelf.
+ * The shelves are a segmented control rather than chips because the tab has nothing else
+ * to navigate. Each segment carries its own count, so the tab says what is inside —
+ * before and after — without a second heading repeating it per shelf.
+ *
+ * G-code gets its own shelf because it is a different thing to keep: the slice is what a
+ * print is sent from, and until now the app remembered exactly one of them.
  */
 @Composable
 fun LibraryScreen(
@@ -79,6 +85,7 @@ fun LibraryScreen(
 ) {
     val tab by vm.libraryTab.collectAsState()
     val entries by favorites.entries.collectAsState()
+    val gcodes by vm.gcodeHistory.entries.collectAsState()
     val photos by vm.photos.collectAsState()
 
     Column(
@@ -103,6 +110,7 @@ fun LibraryScreen(
             counts =
                 mapOf(
                     LibraryTab.MODELS to entries.size,
+                    LibraryTab.GCODE to gcodes.size,
                     LibraryTab.PHOTOS to photos.size,
                 ),
         )
@@ -117,6 +125,10 @@ fun LibraryScreen(
                 )
             }
 
+            LibraryTab.GCODE -> {
+                SlicedGcode(vm = vm, onFindModels = onFindModels)
+            }
+
             LibraryTab.PHOTOS -> {
                 CameraPhotos(vm = vm)
             }
@@ -125,7 +137,7 @@ fun LibraryScreen(
 }
 
 /**
- * Models | Photos as one control. Each half carries its own count, so the tab says
+ * Models | G-code | Photos as one control. Each half carries its own count, so the tab says
  * what is inside without opening either shelf.
  */
 @Composable
@@ -202,96 +214,231 @@ private fun ModelRow(
     onRemove: () -> Unit,
 ) {
     val missing = !File(entry.path).exists()
-    val shape = RoundedCornerShape(Radius.md)
-    val thumb =
-        remember(entry.thumbPath) {
-            entry.thumbPath
-                ?.takeIf { File(it).exists() }
-                ?.let { BitmapFactory.decodeFile(it)?.asImageBitmap() }
-        }
+    FileRow(
+        title = entry.name,
+        detail =
+            if (missing) {
+                "File missing — download it again"
+            } else {
+                "${entry.source.replaceFirstChar { it.uppercase() }} · " +
+                    "${fileSize(entry.sizeBytes)} · ${fileDate(entry.addedAt)}"
+            },
+        detailColor =
+            if (missing) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        enabled = !missing,
+        onClick = onOpen,
+        onDelete = onRemove,
+        leading = { FileTile(entry.thumbPath) },
+    )
+}
 
+/**
+ * The Files tab's row shape: a 60dp tile, a title, one line of detail, and a delete.
+ * Every shelf uses it, so a saved model and a g-code read the same way, and the
+ * destructive tap always looks destructive.
+ */
+@Composable
+private fun FileRow(
+    title: String,
+    detail: String,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+    detailColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    enabled: Boolean = true,
+    leading: @Composable () -> Unit,
+) {
+    val shape = RoundedCornerShape(Radius.md)
     Row(
         modifier =
             Modifier
                 .fillMaxWidth()
                 .clip(shape)
                 .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
-                .border(
-                    BorderStroke(1.dp, LanternGold.copy(alpha = if (missing) 0.12f else 0.22f)),
-                    shape,
-                ).clickable(enabled = !missing, onClick = onOpen)
+                .border(BorderStroke(1.dp, LanternGold.copy(alpha = if (enabled) 0.22f else 0.12f)), shape)
+                .clickable(enabled = enabled, onClick = onClick)
                 .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Box(
-            modifier =
-                Modifier
-                    .size(60.dp)
-                    .clip(RoundedCornerShape(Radius.sm))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center,
-        ) {
-            val img: ImageBitmap? = thumb
-            if (img != null) {
-                Image(
-                    bitmap = img,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                )
-            } else {
-                Icon(
-                    Icons.Filled.FolderOpen,
-                    null,
-                    modifier = Modifier.size(22.dp),
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-            }
-        }
-
+        leading()
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(
-                entry.name,
+                title,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 color =
-                    if (missing) {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    } else {
+                    if (enabled) {
                         MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
                     },
             )
             Text(
-                if (missing) {
-                    "File missing — download it again"
-                } else {
-                    "${entry.source.replaceFirstChar { it.uppercase() }} · " +
-                        "${fileSize(entry.sizeBytes)} · ${fileDate(entry.addedAt)}"
-                },
+                detail,
                 fontSize = 11.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                color =
-                    if (missing) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
+                color = detailColor,
             )
         }
-
         // Destructive rather than a plain grey circle: the row's own tap opens the
-        // model, so the second tap has to say out loud that it deletes.
+        // file, so the second tap has to say out loud that it deletes.
         BrandIconButton(
             icon = Icons.Filled.Delete,
-            contentDescription = "Remove",
-            onClick = onRemove,
-            size = 34.dp,
+            contentDescription = "Delete",
+            onClick = onDelete,
+            size = 42.dp,
             role = ButtonRole.Destructive,
         )
+    }
+}
+
+/**
+ * The "G-code" shelf: every slice the app finished, newest first. Tapping one reopens its
+ * preview, which is also the screen a print starts from — so a job that was sliced but
+ * never printed is no longer gone the moment its model is left behind on Home.
+ */
+@Composable
+private fun SlicedGcode(
+    vm: AppViewModel,
+    onFindModels: () -> Unit,
+) {
+    val history by vm.gcodeHistory.entries.collectAsState()
+    var confirmDelete by remember { mutableStateOf<GcodeHistoryEntry?>(null) }
+
+    val pending = confirmDelete
+    if (pending != null) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text("Delete this g-code?") },
+            text = {
+                Text(
+                    "Sliced from \"${pending.modelName}\" " +
+                        "${fileDate(pending.slicedAt)} — it cannot be printed after this.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = null
+                    vm.deleteGcodeFromHistory(pending)
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = null }) { Text("Keep") }
+            },
+        )
+    }
+
+    if (history.isEmpty()) {
+        EmptyShelf(
+            icon = Icons.Filled.Print,
+            title = "Nothing sliced yet",
+            body = "Slice a model and its g-code is filed here until it prints.",
+            action = "Find models" to onFindModels,
+        )
+    } else {
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            items(history, key = { it.id }) { entry ->
+                GcodeRow(
+                    entry = entry,
+                    onOpen = { vm.openGcodeFromHistory(entry) },
+                    onDelete = { confirmDelete = entry },
+                )
+            }
+            item { Spacer(Modifier.height(24.dp)) }
+        }
+    }
+}
+
+/**
+ * One archived slice. The profile it was cut for is not on this line: "Elegoo Centauri
+ * Carbon 2 0 · 3.3 MB · Nov 22, 2026" truncates the date on a 1080dp-wide phone, and the
+ * preview the row opens already names the profile.
+ */
+@Composable
+private fun GcodeRow(
+    entry: GcodeHistoryEntry,
+    onOpen: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val missing = !File(entry.gcodePath).exists()
+    FileRow(
+        title = entry.modelName,
+        detail =
+            if (missing) {
+                "File missing"
+            } else {
+                "${fileSize(entry.sizeBytes)} · ${fileDate(entry.slicedAt)}"
+            },
+        detailColor =
+            if (missing) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        enabled = !missing,
+        onClick = onOpen,
+        onDelete = onDelete,
+        leading = { FileTile(entry.thumbPath, Icons.Filled.Print) },
+    )
+}
+
+/**
+ * A file shelf's 60dp tile: the picture at [path] when there is one, otherwise a glyph for
+ * the kind. Both shelves go through here, so a model and its g-code are drawn the same way
+ * and decode the same way (small, so a list of ten costs ten tiles and not ten big bitmaps).
+ */
+@Composable
+private fun FileTile(
+    path: String?,
+    icon: ImageVector = Icons.Filled.FolderOpen,
+) {
+    val shape = RoundedCornerShape(Radius.sm)
+    val thumb: ImageBitmap? =
+        remember(path) {
+            path
+                ?.takeIf { File(it).exists() }
+                ?.let {
+                    runCatching {
+                        BitmapFactory
+                            .decodeFile(it, BitmapFactory.Options().apply { inSampleSize = 4 })
+                            ?.asImageBitmap()
+                    }.getOrNull()
+                }
+        }
+    Box(
+        modifier =
+            Modifier
+                .size(60.dp)
+                .clip(shape)
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center,
+    ) {
+        val img: ImageBitmap? = thumb
+        if (img != null) {
+            Image(
+                bitmap = img,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+        } else {
+            Icon(
+                icon,
+                null,
+                modifier = Modifier.size(22.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        }
     }
 }
 

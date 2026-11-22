@@ -62,7 +62,8 @@ data class ModelTransform(
         copy(
             rotX =
                 when (face) {
-                    Face.BOTTOM, Face.TOP -> 0f
+                    Face.BOTTOM -> 0f
+                    Face.TOP -> 180f
                     Face.FRONT -> 90f
                     Face.BACK -> 270f
                     else -> 0f
@@ -77,6 +78,24 @@ data class ModelTransform(
                 },
             rotZ = if (face == Face.TOP) 0f else rotZ,
         ).normalized()
+
+    /**
+     * Which authored bounding-box face currently rests on the build plate (points along world -Z),
+     * or null if the model is tilted between cardinal faces. Checking the rotation matrix directly
+     * stays accurate across any sequence of Face taps, 90° rotations, Z-axis turns, and mirrors.
+     */
+    fun downFace(): Face? {
+        val m = copy(mirrorX = false, mirrorY = false, mirrorZ = false).matrix3()
+        return when {
+            m[8] > 0.99f -> Face.BOTTOM
+            m[8] < -0.99f -> Face.TOP
+            m[7] > 0.99f -> Face.FRONT
+            m[7] < -0.99f -> Face.BACK
+            m[6] > 0.99f -> Face.LEFT
+            m[6] < -0.99f -> Face.RIGHT
+            else -> null
+        }
+    }
 
     /** Wraps each axis into 0..359 so repeated 90° turns never accumulate (720° → 0°). */
     fun normalized(): ModelTransform =

@@ -1,6 +1,9 @@
 # Play Store listing
 
 Published 2026-11-13 from Play edit `13677982899649546337` (en-US listing + phone screenshots).
+**v1.9.9 (42) went to production at 100 % on 2026-11-22** (Play edit `04999452179185381205`; internal upload edit `01648696905188893446`, internal publish edit `13562093267041175623`, bundle sha1 `20fe9b5c98f9b1cb214eb569afeffdc80fa18e77`, ProGuard mapping + native symbols uploaded).
+**v1.9.8 (41) is on the internal track since 2026-11-22** (Play edit `12439253403719215867`, bundle sha1 `b0a0c17f1e61baa2a6c7afecd51a0ad5c59decb7`, ProGuard mapping + native symbols uploaded).
+**v1.9.7 (40) is on the internal track since 2026-11-22** (Play edit `00964468449163369777`, bundle sha1 `6786fcf2c1df5bb84cb0dbbd99b8890e384f4e2b`, ProGuard mapping + native symbols uploaded).
 **v1.9.6 (39) went to production at 100 % on 2026-11-14** (Play edit `10678779014496414016`);
 production had been v1.9.5 (38) for a few hours, and internal matches at 39 (upload edit
 `10814106495084609895`).
@@ -45,6 +48,26 @@ AND THE NICE TOUCHES
 - Open STL/3MF files directly from your Files app
 
 SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint or Elegoo. All trademarks belong to their respective owners.
+
+## What's new (1.9.9)
+<!-- Production rollout ships the 457-character summary below (Play caps notes at 500) covering 1.9.7–1.9.9 since production jumped from 1.9.6:
+     • Streamlined Print setup: inline multi-part controls, quick Supports toggle, collapsible Advanced settings, and direct Slice
+     • Archived G-code shelf in Files with per-slice thumbnails and model search source filters
+     • Stabilized cloud & LAN Centauri Carbon 2 connections with auto-reconnect and reliable case light control
+     • Fixed full-screen 3D preview bottom bar insets & Face/Rotate/Mirror/part selection, camera rotation insets, and dark-mode contrast
+-->
+• Full-screen 3D preview now renders directly in the main edge-to-edge window so the bottom control dock always clears the system navigation bar cleanly
+• Fixed Face, Rotate, Mirror, and part selection updates on single-part and rotated models, prevented touches in dock gaps from orbiting the 3D view, and auto-scrolled the selected part into view
+
+## What's new (1.9.8)
+• Fixed the full-screen 3D preview tool dock and comments dialog sitting behind the bottom navigation bar on edge-to-edge Android 15/16 screens
+• Includes all 1.9.7 updates: streamlined multi-part Print setup, collapsible Advanced settings, archived G-code shelf, stabilized cloud/LAN printer connections, and dark-mode contrast fixes
+
+## What's new (1.9.7)
+• Streamlined Print setup: multi-part controls in the 3D card, quick Supports toggle, collapsible Advanced settings, and direct Slice
+• Archived G-code shelf in Files with per-slice thumbnails and model search source filter chips
+• Stabilized cloud & LAN printer connections with automatic reconnect and reliable case light control
+• Fixed full-screen camera rotation insets, dark-mode card titles, and cleaner background styling
 
 ## What's new (1.9.6)
 • Sign in with Google: the Google login on your Elegoo account now works in the app, so you don't have to type a password

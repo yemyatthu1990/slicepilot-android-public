@@ -3,11 +3,13 @@ package world.yemyat.slicepilot.ui.theme
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,15 +26,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material3.*
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.LocalContentColor
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,7 +44,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -278,7 +282,7 @@ fun SettingsRow(
                         ?: Modifier,
                 ).clickable(
                     interactionSource = interactionSource,
-                    indication = null,
+                    indication = LocalIndication.current,
                     onClick = onClick,
                 ).padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -321,6 +325,138 @@ fun SettingsRow(
             modifier = Modifier.size(18.dp),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/**
+ * A label with its value on one line - the shape every summary card in the app drew by hand
+ * ("Printer", the value, SpaceBetween, 13.sp, its own corner radius and padding, four copies
+ * across three screens). One component so a summary inside a [BrandCard] looks the same on
+ * Print setup and on the slice step.
+ */
+@Composable
+fun DetailRow(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(end = Space.md),
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+    }
+}
+
+/**
+ * One choice in a [DropdownRow]: the words the field and the menu row show, the thing picking it
+ * selects, and the colour to draw next to it. Carrying the value (not just the text) is what lets
+ * Print setup hand back a `MaterialOption.key` instead of guessing which of two identically named
+ * PLA spools was meant.
+ */
+data class MenuOption<T>(
+    val label: String,
+    val value: T,
+    val swatch: Color? = null,
+)
+
+/** A filament colour as every menu and spool row draws it: the colour inside a thin ring. */
+@Composable
+fun SwatchDot(
+    color: Color?,
+    modifier: Modifier = Modifier.size(18.dp),
+) {
+    Box(
+        modifier
+            .clip(CircleShape)
+            .background(color ?: MaterialTheme.colorScheme.outline)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
+    )
+}
+
+/** "#FF8800" as a colour; a printer profile or spool can report a blank or malformed one. */
+fun filamentColor(colorHex: String?): Color? =
+    colorHex?.let { hex ->
+        try {
+            Color(android.graphics.Color.parseColor(hex))
+        } catch (_: IllegalArgumentException) {
+            null
+        }
+    }
+
+/**
+ * A labelled setting whose value opens a menu - the third shape a setting comes in, next to
+ * [SegmentedControl] (short lists) and the steppers in AdvancedSettings (value ladders). Every
+ * screen had its own copy of this (MaterialDropdown on Print setup, PickerDropdown on Home,
+ * SliceDropdown on the slice step) with its own radius and height, so the same control looked
+ * different everywhere; the swatch one Print setup drew for filament colours used to be a fourth
+ * copy, so it lives here too.
+ *
+ * [enabled] covers the states where a field exists but has nothing to offer yet - a printer with
+ * no processes, a process with no filaments - which the local copies each greyed out differently.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun <T> DropdownRow(
+    label: String,
+    options: List<MenuOption<T>>,
+    selected: T?,
+    onSelect: (T) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    placeholder: String = "Not set",
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedOption = options.firstOrNull { it.value == selected }
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(Space.xs),
+    ) {
+        BrandSectionLabel(label)
+        ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = { if (enabled) expanded = it },
+        ) {
+            OutlinedTextField(
+                value = selectedOption?.label ?: placeholder,
+                onValueChange = {},
+                readOnly = true,
+                enabled = enabled,
+                maxLines = 2,
+                leadingIcon = selectedOption?.swatch?.let { swatch -> { SwatchDot(swatch) } },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+                shape = RoundedCornerShape(Radius.md),
+                modifier = Modifier.menuAnchor().fillMaxWidth(),
+            )
+            ExposedDropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+            ) {
+                options.forEach { option ->
+                    DropdownMenuItem(
+                        leadingIcon = option.swatch?.let { swatch -> { SwatchDot(swatch) } },
+                        text = { Text(option.label) },
+                        onClick = {
+                            onSelect(option.value)
+                            expanded = false
+                        },
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -373,7 +509,7 @@ fun BrandButton(
                         ?: Modifier,
                 ).clickable(
                     interactionSource = interactionSource,
-                    indication = null,
+                    indication = LocalIndication.current,
                     enabled = enabled && !loading,
                     onClick = onClick,
                 ),
@@ -463,7 +599,7 @@ fun BrandIconButton(
                         ?: Modifier,
                 ).clickable(
                     interactionSource = interactionSource,
-                    indication = null,
+                    indication = LocalIndication.current,
                     enabled = enabled,
                     onClick = onClick,
                 ),
@@ -498,7 +634,101 @@ fun BrandCard(
                 .background(background)
                 .border(BorderStroke(1.dp, LanternGold.copy(alpha = 0.18f)), shape)
                 .padding(contentPadding),
-    ) { content() }
+    ) {
+        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface) {
+            content()
+        }
+    }
+}
+
+/**
+ * A boolean setting with the same body as [SettingsRow]. The row existed only for settings that
+ * open something else, so every screen that needed a switch went back to hand-building one (a bare
+ * Row, a Switch at the end, padding and text size to taste) and no two switch rows in the app
+ * matched. The switch also stays the switch: tapping the row toggles it, so the 64.dp row is the
+ * touch target instead of the small control.
+ */
+@Composable
+fun SwitchRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    role: ButtonRole = ButtonRole.Secondary,
+) {
+    val paint = buttonPaint(role, enabled = true)
+    val shape = RoundedCornerShape(Radius.md)
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.99f else 1f,
+        animationSpec = spring(dampingRatio = 0.55f),
+        label = "switchRowScale",
+    )
+
+    Row(
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .heightIn(min = 64.dp)
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                }.clip(shape)
+                .background(paint.background)
+                .then(
+                    paint.ring?.let { Modifier.border(it, shape) }
+                        ?: Modifier,
+                ).toggleable(
+                    value = checked,
+                    interactionSource = interactionSource,
+                    indication = LocalIndication.current,
+                    role = Role.Switch,
+                    onValueChange = onCheckedChange,
+                ).padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            modifier =
+                Modifier
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                title,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                subtitle,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        // The switch shows the state; the row owns the toggleable interaction, so the whole
+        // 64.dp height is the touch target without double-firing on direct switch taps.
+        Switch(
+            checked = checked,
+            onCheckedChange = null,
+        )
+    }
 }
 
 @Composable
@@ -527,37 +757,36 @@ fun BrandWordmark(
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = modifier,
     ) {
         Box(
             modifier =
                 Modifier
-                    .requiredWidth(40.dp)
-                    .height(36.dp)
+                    .size(34.dp)
                     .shadow(
-                        10.dp,
-                        RoundedCornerShape(13.dp),
+                        8.dp,
+                        RoundedCornerShape(11.dp),
                         ambientColor = LanternGold.copy(alpha = 0.35f),
                         spotColor = Vermillion.copy(alpha = 0.35f),
-                    ).clip(RoundedCornerShape(13.dp))
+                    ).clip(RoundedCornerShape(11.dp))
                     .background(brandPrimaryGradient)
-                    .border(1.5.dp, LanternGold.copy(alpha = 0.55f), RoundedCornerShape(13.dp)),
+                    .border(1.5.dp, LanternGold.copy(alpha = 0.55f), RoundedCornerShape(11.dp)),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                "S",
-                fontSize = 23.sp,
-                fontWeight = FontWeight.Black,
-                color = Color.White,
+            Icon(
+                Icons.Filled.Layers,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(19.dp),
             )
         }
         Text(
-            "LICEPILOT",
-            fontSize = 16.sp,
+            "SLICEPILOT",
+            fontSize = 15.sp,
             fontWeight = FontWeight.Black,
             color = if (dark) PaperCream else BrandInk,
-            letterSpacing = 1.5.sp,
+            letterSpacing = 1.2.sp,
             maxLines = 1,
             softWrap = false,
             modifier = Modifier.requiredWidth(IntrinsicSize.Max),

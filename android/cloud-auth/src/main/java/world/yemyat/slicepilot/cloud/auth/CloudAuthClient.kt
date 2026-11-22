@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.util.Base64
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -259,26 +261,31 @@ class CloudAuthClient(
         nickname = data.nickname.ifBlank { nicknameIfBlank }.ifBlank { nickname }
     }
 
+    private val refreshMutex = Mutex()
+
     suspend fun refreshTokens(): Boolean =
         withContext(Dispatchers.IO) {
-            val rt = refreshToken ?: return@withContext false
-            try {
-                val resp =
-                    apiPost(
-                        accountApi + "/account-auth/token/refresh",
-                        JSONObject().put("refreshToken", rt).put("clientId", clientId),
-                        authed = false,
-                    )
-                if (!isSuccess(resp)) return@withContext false
-                val data = resp.optJSONObject("data") ?: return@withContext false
-                val token = data.optString("accessToken", "")
-                if (token.isBlank()) return@withContext false
-                accessToken = token
-                data.optString("refreshToken").takeIf { it.isNotBlank() }?.let { refreshToken = it }
-                accessTokenExpire = data.optLong("accessTokenExpireTime", 0L)
-                true
-            } catch (e: Exception) {
-                false
+            refreshMutex.withLock {
+                if (tokenUsable()) return@withLock true
+                val rt = refreshToken ?: return@withLock false
+                try {
+                    val resp =
+                        apiPost(
+                            accountApi + "/account-auth/token/refresh",
+                            JSONObject().put("refreshToken", rt).put("clientId", clientId),
+                            authed = false,
+                        )
+                    if (!isSuccess(resp)) return@withLock false
+                    val data = resp.optJSONObject("data") ?: return@withLock false
+                    val token = data.optString("accessToken", "")
+                    if (token.isBlank()) return@withLock false
+                    accessToken = token
+                    data.optString("refreshToken").takeIf { it.isNotBlank() }?.let { refreshToken = it }
+                    accessTokenExpire = data.optLong("accessTokenExpireTime", 0L)
+                    true
+                } catch (e: Exception) {
+                    false
+                }
             }
         }
 

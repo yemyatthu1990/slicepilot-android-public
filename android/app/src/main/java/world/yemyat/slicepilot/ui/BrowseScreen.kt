@@ -25,6 +25,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Email
@@ -33,6 +34,8 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.*
 import androidx.compose.material3.IconButton
@@ -101,37 +104,80 @@ fun ModelFindFeed(
                 }.toSet()
         }
     val focusManager = LocalFocusManager.current
+    var selectedSourceId by rememberSaveable { mutableStateOf<String?>(null) }
 
     // Empty search bar shows each site's popular models.
     LaunchedEffect(Unit) { browser.loadHome() }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = st.query,
-                onValueChange = { browser.setQuery(it) },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Search all sites…") },
-                singleLine = true,
-                shape = RoundedCornerShape(Radius.sm),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions =
-                    KeyboardActions(
-                        onSearch = {
-                            focusManager.clearFocus()
-                            browser.search()
-                        },
-                    ),
-                leadingIcon = { Icon(Icons.Filled.Search, null) },
+        OutlinedTextField(
+            value = st.query,
+            onValueChange = { browser.setQuery(it) },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("Search all sites…") },
+            singleLine = true,
+            shape = RoundedCornerShape(Radius.sm),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions =
+                KeyboardActions(
+                    onSearch = {
+                        focusManager.clearFocus()
+                        browser.search()
+                    },
+                ),
+            leadingIcon = { Icon(Icons.Filled.Search, null) },
+            trailingIcon = {
+                if (st.query.isNotBlank()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = {
+                                browser.setQuery("")
+                                focusManager.clearFocus()
+                            },
+                        ) {
+                            Icon(Icons.Filled.Close, contentDescription = "Clear search")
+                        }
+                        IconButton(
+                            onClick = {
+                                focusManager.clearFocus()
+                                browser.search()
+                            },
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowForward,
+                                contentDescription = "Search",
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                }
+            },
+        )
+
+        val filterSources =
+            remember(browser.thingiverseToken) {
+                ModelSource.entries.filter {
+                    it != ModelSource.THINGIVERSE || browser.thingiverseToken.isNotBlank()
+                }
+            }
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilterChip(
+                selected = selectedSourceId == null,
+                onClick = { selectedSourceId = null },
+                label = { Text("All") },
             )
-            BrandIconButton(
-                icon = Icons.Filled.Search,
-                contentDescription = "Search",
-                onClick = { browser.search() },
-                size = ButtonSize.Large,
-                role = ButtonRole.Primary,
-                enabled = st.query.isNotBlank(),
-            )
+            filterSources.forEach { src ->
+                FilterChip(
+                    selected = selectedSourceId == src.id,
+                    onClick = {
+                        selectedSourceId = if (selectedSourceId == src.id) null else src.id
+                    },
+                    label = { Text(src.label) },
+                )
+            }
         }
 
         if (browser.thingiverseToken.isBlank()) {
@@ -147,8 +193,10 @@ fun ModelFindFeed(
         // on an otherwise empty page. Sources that are still in flight render nothing; the
         // placeholder below covers the empty feed, and a single line reports what is left once
         // some results are already on screen.
-        val loadingSections = st.sections.filter { it.loading }
-        val readySections = st.sections.filterNot { it.loading }
+        val filteredSections =
+            selectedSourceId?.let { id -> st.sections.filter { it.source.id == id } } ?: st.sections
+        val loadingSections = filteredSections.filter { it.loading }
+        val readySections = filteredSections.filterNot { it.loading }
         // The first frame happens before loadHome() has created its sections; without this
         // the page flashes its "search these sites" hint and then jumps to the loaders.
         val starting = !st.hasSearched && !st.isHomeFeed && st.sections.isEmpty() && st.error == null
@@ -183,6 +231,7 @@ fun ModelFindFeed(
                     SourceSectionBlock(
                         section = section,
                         popular = st.isHomeFeed,
+                        previewLimit = if (selectedSourceId != null) 8 else 4,
                         favoritedListings = favListings,
                         onOpen = { browser.openDetail(it) },
                         onSeeMore = { onSeeMore(section.source) },
@@ -308,6 +357,7 @@ private fun SourceSectionBlock(
     favoritedListings: Set<String> = emptySet(),
     section: SourceSection,
     popular: Boolean,
+    previewLimit: Int = 4,
     onOpen: (ModelListing) -> Unit,
     onSeeMore: () -> Unit,
 ) {
@@ -317,13 +367,13 @@ private fun SourceSectionBlock(
                 if (popular) "Popular on ${section.source.label}" else section.source.label,
             )
             Spacer(Modifier.weight(1f))
-            if (section.results.size > 4) {
+            if (section.results.size > previewLimit || section.hasMore) {
                 TextButton(onClick = onSeeMore) { Text("See more") }
             }
         }
         // A source still fetching is simply absent: the feed owns the one loading animation
         // (see ModelFindFeed), so a half-arrived search never shows a spinner per site.
-        section.results.take(4).chunked(2).forEach { rowItems ->
+        section.results.take(previewLimit).chunked(2).forEach { rowItems ->
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 rowItems.forEach { item ->
                     ModelCard(
@@ -497,11 +547,31 @@ internal fun ModelCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
-                Text(
-                    item.downloads?.let { "⬇ $it" } ?: " ",
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                val dl = item.downloads
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    if (dl != null) {
+                        Icon(
+                            Icons.Outlined.Download,
+                            contentDescription = "Downloads",
+                            modifier = Modifier.size(13.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            dl.toString(),
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        Text(
+                            " ",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
             }
         }
     }
@@ -575,6 +645,7 @@ private fun ModelDetailScreen(
             else -> signingInFor = ModelSource.from(listing.source)
         }
     }
+    val anyFavorited = remember(detail.files, favoritedKeys) { detail.files.any { fileKey(it) in favoritedKeys } }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -593,33 +664,57 @@ private fun ModelDetailScreen(
                 },
             )
         },
-        // The detail page's one action, floating like Home's "Local model" pill: it asks the
-        // source for a sign-in when the model needs an account, then offers the files.
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { startDownloadFlow() },
-                shape = RoundedCornerShape(18.dp),
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                icon = {
-                    if (downloading) {
-                        CircularProgressIndicator(
-                            progress = { progress / 100f },
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary,
-                        )
-                    } else {
-                        Icon(Icons.Filled.Download, null)
-                    }
-                },
-                text = {
-                    Text(
-                        if (downloading) "Downloading $progress%" else "Download & slice",
-                        fontWeight = FontWeight.SemiBold,
+        // Pinned action bar matching Print setup, so the primary CTA never covers the description.
+        bottomBar = {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 3.dp,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(horizontal = Space.lg, vertical = Space.sm),
+                    horizontalArrangement = Arrangement.spacedBy(Space.sm),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    BrandIconButton(
+                        icon = if (anyFavorited) Icons.Filled.Star else Icons.Outlined.StarBorder,
+                        contentDescription = if (anyFavorited) "Saved in Files" else "Save to Files",
+                        onClick = {
+                            if (signedIn && detail.files.size == 1 && !downloading && favoritingFile == null) {
+                                val sole = detail.files.first()
+                                val key = fileKey(sole)
+                                if (key in favoritedKeys) onUnfavorite(key) else onFavorite(sole)
+                            } else {
+                                startDownloadFlow()
+                            }
+                        },
+                        size = ButtonSize.Large,
+                        role = if (anyFavorited) ButtonRole.Tonal else ButtonRole.Secondary,
                     )
-                },
-            )
+                    BrandButton(
+                        text = if (downloading) "Downloading $progress%" else "Download & slice",
+                        onClick = { startDownloadFlow() },
+                        icon = {
+                            if (downloading) {
+                                CircularProgressIndicator(
+                                    progress = { progress / 100f },
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                )
+                            } else {
+                                Icon(Icons.Filled.Download, null)
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        height = ButtonSize.Large,
+                    )
+                }
+            }
         },
     ) { padding ->
         Column(
@@ -676,8 +771,34 @@ private fun ModelDetailScreen(
                 listing.author?.let {
                     Text("by $it", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                listing.downloads?.let { Text("⬇ $it", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                detail.likes?.let { Text("♥ $it", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                listing.downloads?.let {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Download,
+                            contentDescription = "Downloads",
+                            modifier = Modifier.size(15.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(it.toString(), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                detail.likes?.let {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.FavoriteBorder,
+                            contentDescription = "Likes",
+                            modifier = Modifier.size(15.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(it.toString(), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
             detail.published?.let {
                 Text("Published $it", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -697,8 +818,7 @@ private fun ModelDetailScreen(
                 )
             }
 
-            // Room for the floating download pill, which draws over the page's end.
-            Spacer(Modifier.height(96.dp))
+            Spacer(Modifier.height(Space.md))
         }
     }
 
@@ -1180,6 +1300,7 @@ private fun SignInDialog(
                         .fillMaxWidth()
                         .widthIn(max = AuthDialogMaxWidth),
                 contentPadding = Space.lg,
+                background = MaterialTheme.colorScheme.surface,
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(Space.md)) {
                     Row(
@@ -1537,20 +1658,27 @@ private fun AllCommentsDialog(
     onLoadMore: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val parentBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     androidx.compose.ui.window.Dialog(
         onDismissRequest = onDismiss,
-        // Full width, but inside the system bars — the header must not sit under the status bar.
+        // Full width, keeping the platform top inset and ensuring bottom clears the nav bar.
         properties =
             androidx.compose.ui.window
                 .DialogProperties(
                     usePlatformDefaultWidth = false,
                 ),
     ) {
+        val bottomInset = maxOf(WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding(), parentBottomInset)
         androidx.compose.material3.Surface(
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background,
         ) {
-            Column(Modifier.fillMaxSize()) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .padding(bottom = bottomInset),
+            ) {
                 Row(
                     Modifier
                         .fillMaxWidth()

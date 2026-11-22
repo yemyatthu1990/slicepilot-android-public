@@ -362,6 +362,9 @@ class ElegooCloudClient(
                     if (obj.length() > 0) result.put(section, obj)
                 }
                 if (result.length() == 0) return@withContext null
+                result.optJSONObject("led")?.let {
+                    android.util.Log.d("CloudClient", "report-status led=$it")
+                }
                 LanPrintMonitor.mergePrintStatus(PrintStatus(), result)
             } catch (e: Exception) {
                 android.util.Log.w("CloudClient", "getReportStatus failed: ${e.message}")

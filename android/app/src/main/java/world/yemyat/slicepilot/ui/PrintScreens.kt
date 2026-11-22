@@ -39,14 +39,17 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -112,6 +115,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -127,7 +131,10 @@ import world.yemyat.slicepilot.ui.theme.ButtonRole
 import world.yemyat.slicepilot.ui.theme.ButtonSize
 import world.yemyat.slicepilot.ui.theme.Green200
 import world.yemyat.slicepilot.ui.theme.LanternGold
+import world.yemyat.slicepilot.ui.theme.LocalIsDarkTheme
 import world.yemyat.slicepilot.ui.theme.Radius
+import world.yemyat.slicepilot.ui.theme.SuccessDark
+import world.yemyat.slicepilot.ui.theme.SuccessLight
 import kotlin.math.roundToInt
 
 @Composable
@@ -169,10 +176,11 @@ private fun PrintStartScreen(
 ) {
     val fileName = vm.suggestedGcodeName
     val errorColor = MaterialTheme.colorScheme.error
+    val successColor = if (LocalIsDarkTheme.current) SuccessDark else SuccessLight
     val accent =
         when {
             sim.failed -> errorColor
-            sim.complete -> Green200
+            sim.complete -> successColor
             else -> BrandCyan
         }
 
@@ -363,7 +371,7 @@ private fun PrintStartScreen(
                                     contentDescription = null,
                                     tint =
                                         when {
-                                            complete -> Green200
+                                            complete -> successColor
                                             active && sim.failed -> errorColor
                                             active -> BrandCyan
                                             else -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -394,7 +402,7 @@ private fun PrintStartScreen(
                                     },
                                     color =
                                         when {
-                                            complete -> Green200
+                                            complete -> successColor
                                             active -> BrandCyan
                                             else -> MaterialTheme.colorScheme.onSurfaceVariant
                                         },
@@ -446,6 +454,7 @@ fun DeviceStatusScreen(
     val demoMode by vm.demoModeState.collectAsState()
     val status = mon
     val errorColor = MaterialTheme.colorScheme.error
+    val successColor = if (LocalIsDarkTheme.current) SuccessDark else SuccessLight
     val pausedColor = LanternGold
     val state = status?.state
     val live = status?.live == true
@@ -460,7 +469,7 @@ fun DeviceStatusScreen(
             state == PrintJobState.ERROR -> errorColor
             state?.isPaused == true -> pausedColor
             printing -> BrandCyan
-            else -> Green200
+            else -> successColor
         }
     val headline =
         when {
@@ -612,7 +621,15 @@ fun DeviceStatusScreen(
                 }
             }
 
-            Spacer(Modifier.height(24.dp))
+            Column(
+                modifier =
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+            Spacer(Modifier.height(16.dp))
             Surface(
                 shape = RoundedCornerShape(20.dp),
                 color = accent.copy(alpha = 0.18f),
@@ -668,7 +685,7 @@ fun DeviceStatusScreen(
                             Box(
                                 modifier =
                                     Modifier
-                                        .size(30.dp)
+                                        .size(44.dp)
                                         .clip(CircleShape)
                                         .background(Color.Black.copy(alpha = 0.55f))
                                         .clickable { vm.openCameraFull() },
@@ -678,10 +695,7 @@ fun DeviceStatusScreen(
                                     Icons.Filled.Fullscreen,
                                     contentDescription = "Full screen camera",
                                     tint = Color.White,
-                                    modifier =
-                                        Modifier
-                                            .padding(6.dp)
-                                            .size(18.dp),
+                                    modifier = Modifier.size(22.dp),
                                 )
                             }
                         }
@@ -725,6 +739,7 @@ fun DeviceStatusScreen(
                                     color = MaterialTheme.colorScheme.onSurface,
                                     fontSize = 32.sp,
                                     fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.headlineSmall.copy(fontFeatureSettings = "tnum"),
                                 )
                                 Spacer(Modifier.width(14.dp))
                                 Column(Modifier.weight(1f)) {
@@ -960,7 +975,8 @@ fun DeviceStatusScreen(
                     }
                 }
             }
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(16.dp))
+            }
             Spacer(Modifier.height(8.dp))
             when {
                 printMode && state?.isTerminal == true -> {
@@ -1060,6 +1076,7 @@ private fun MonitorInfo(
             color = MaterialTheme.colorScheme.onSurface,
             fontSize = 16.sp,
             fontWeight = FontWeight.SemiBold,
+            style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
         )
         Spacer(Modifier.height(2.dp))
         Text(
@@ -1081,7 +1098,7 @@ private fun MonitorInfo(
 internal fun CameraShutter(
     vm: AppViewModel,
     modifier: Modifier = Modifier,
-    diameter: Dp = 30.dp,
+    diameter: Dp = 44.dp,
 ) {
     var shotState by remember { mutableStateOf<AppViewModel.CameraPhoto?>(null) }
     LaunchedEffect(shotState) {
@@ -1139,6 +1156,7 @@ fun CameraStage(
 ) {
     val frame by vm.cameraFrame.collectAsState()
     val surface by vm.cameraSurface.collectAsState()
+    val videoReady by vm.cameraVideoReady.collectAsState()
     var zoom by remember { mutableStateOf(1f) }
     var pan by remember { mutableStateOf(Offset.Zero) }
 
@@ -1184,6 +1202,21 @@ fun CameraStage(
                     view = rtcSurface,
                     modifier = scaled(Modifier.fillMaxSize()),
                 )
+                if (!videoReady) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            strokeWidth = 2.dp,
+                            color = Color.White.copy(alpha = 0.75f),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Waiting for printer video…",
+                            fontSize = 12.sp,
+                            color = Color.White.copy(alpha = 0.7f),
+                        )
+                    }
+                }
             } else {
                 CircularProgressIndicator(
                     modifier = Modifier.size(24.dp),
@@ -1221,12 +1254,16 @@ fun CameraFullscreen(
             hide(WindowInsetsCompat.Type.systemBars())
         }
         onDispose {
+            activity?.requestedOrientation =
+                previousOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             controller?.apply {
                 previousBehavior?.let { systemBarsBehavior = it }
                 show(WindowInsetsCompat.Type.systemBars())
             }
-            activity?.requestedOrientation =
-                previousOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            window?.decorView?.let { decor ->
+                ViewCompat.requestApplyInsets(decor)
+                decor.post { ViewCompat.requestApplyInsets(decor) }
+            }
         }
     }
 
@@ -1251,6 +1288,7 @@ fun CameraFullscreen(
             modifier =
                 Modifier
                     .align(Alignment.TopEnd)
+                    .safeDrawingPadding()
                     .padding(12.dp),
         ) {
             Icon(Icons.Filled.Close, "Close camera")
@@ -1261,6 +1299,7 @@ fun CameraFullscreen(
             modifier =
                 Modifier
                     .align(Alignment.BottomStart)
+                    .safeDrawingPadding()
                     .padding(start = 20.dp, bottom = 12.dp),
             diameter = 48.dp,
         )

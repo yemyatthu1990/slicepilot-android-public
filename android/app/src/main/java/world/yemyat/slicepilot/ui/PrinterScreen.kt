@@ -111,12 +111,14 @@ fun PrinterScreen(
     }
 
     val nozzleSizes = remember(printer?.model) { vm.nozzleSizesFor(printer?.model ?: "") }
+    val filaments by vm.filaments.collectAsState()
     val filament =
-        remember(printer) {
+        remember(printer, filaments) {
             printer?.let { p ->
-                vm.filamentFor(p.id)
-                    ?: p.serial?.let { vm.filamentFor(it) }
-                    ?: p.ip?.let { vm.filamentFor(it) }
+                filaments[p.id]
+                    ?: p.serial?.let { filaments[it] }
+                    ?: p.ip?.let { filaments[it] }
+                    ?: vm.filamentFor(p.id)
             }
         }
 
@@ -258,6 +260,7 @@ private fun PrinterHero(
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
                         )
                     }
                 }
@@ -386,7 +389,7 @@ private fun LiveCameraCard(
                     Box(
                         modifier =
                             Modifier
-                                .size(30.dp)
+                                .size(44.dp)
                                 .clip(CircleShape)
                                 .background(Color.Black.copy(alpha = 0.55f))
                                 .clickable { vm.openCameraFull() },
@@ -396,10 +399,7 @@ private fun LiveCameraCard(
                             Icons.Filled.Fullscreen,
                             contentDescription = "Full screen camera",
                             tint = Color.White,
-                            modifier =
-                                Modifier
-                                    .padding(6.dp)
-                                    .size(18.dp),
+                            modifier = Modifier.size(22.dp),
                         )
                     }
                 }
@@ -479,6 +479,7 @@ private fun GaugeTile(
             current?.round1()?.plus(" °C") ?: "—",
             fontSize = 17.sp,
             fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
             maxLines = 1,
         )
         // Only show the set-point row when the printer reported one, so an
@@ -494,6 +495,7 @@ private fun GaugeTile(
                 it,
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
                 maxLines = 1,
             )
         }
@@ -516,24 +518,26 @@ private fun SetupCard(
     onControls: () -> Unit,
     onNozzle: (String) -> Unit,
 ) {
-    BrandCard(
-        modifier = Modifier.fillMaxWidth(),
-        contentPadding = 14.dp,
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            SettingsRow(
-                icon = Icons.Filled.Tune,
-                title = "Controls",
-                subtitle = "Pause · light · temps · fans",
-                onClick = onControls,
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                BrandSectionLabel("Nozzle size")
-                SegmentedControl(
-                    options = nozzleSizes.map { "$it mm" },
-                    selectedIndex = nozzleSizes.indexOf(selectedNozzle),
-                    onSelect = { onNozzle(nozzleSizes[it]) },
-                )
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SettingsRow(
+            icon = Icons.Filled.Tune,
+            title = "Controls",
+            subtitle = "Pause · light · temps · fans",
+            onClick = onControls,
+        )
+        if (nozzleSizes.isNotEmpty()) {
+            BrandCard(
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = 16.dp,
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    BrandSectionLabel("Nozzle size")
+                    SegmentedControl(
+                        options = nozzleSizes.map { "$it mm" },
+                        selectedIndex = nozzleSizes.indexOf(selectedNozzle).coerceAtLeast(0),
+                        onSelect = { onNozzle(nozzleSizes[it]) },
+                    )
+                }
             }
         }
     }
@@ -620,7 +624,7 @@ private fun DiscoverySection(
                             "Connect",
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
-                            color = LanternGold,
+                            color = MaterialTheme.colorScheme.primary,
                         )
                     }
                 }

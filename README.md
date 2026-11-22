@@ -17,7 +17,27 @@ android/              Android Gradle project, app module, cloud-auth module, JNI
 src/libslic3r/        Slicing library sources used by the Android native build
 src/slic3r/           Shared slic3r headers/sources required by libslic3r
 deps_src/             Vendored native dependency sources used by the Android build
+knowledge/            Project knowledge graph: current state, history, and status digest (see below)
 ```
+
+## Project Knowledge Graph
+
+`knowledge/` keeps track of where the project actually stands, so the answer is not trapped in
+chat logs or in someone's memory of the last release:
+
+```bash
+open knowledge/STATUS.md                 # generated status: shipped, in flight, blocked, next
+python3 knowledge/kb.py query --kind feature
+python3 knowledge/kb.py show feat:multi-filament
+python3 knowledge/kb.py session add --agent pi --summary "..." --touched feat:... --evidence commit:...
+python3 knowledge/kb.py render           # regenerate STATUS.md from the graph
+```
+
+`graph.json` holds the nodes (project, releases, modules, features, branches, externals,
+devices, artifacts, secrets, rules, issues) with their status, evidence and next actions;
+`sessions.jsonl` is the append-only log of what each agent session changed. `knowledge/README.md`
+documents the schema, and agents are expected to read the graph before working and update it in
+the same commit as their change. `STATUS.md` is generated — edit the graph instead.
 
 ## Requirements
 

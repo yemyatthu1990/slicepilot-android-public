@@ -1,29 +1,44 @@
 package world.yemyat.slicepilot.ui
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ContentCut
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material3.*
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import world.yemyat.slicepilot.ui.theme.*
-import kotlin.math.roundToInt
+import world.yemyat.slicepilot.ui.theme.BrandButton
+import world.yemyat.slicepilot.ui.theme.BrandCard
+import world.yemyat.slicepilot.ui.theme.ButtonSize
+import world.yemyat.slicepilot.ui.theme.DetailRow
+import world.yemyat.slicepilot.ui.theme.SettingsRow
+import world.yemyat.slicepilot.ui.theme.Space
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+/**
+ * The slice step: what was picked, and the only place the slicer's own settings live.
+ *
+ * This screen used to draw those settings as three hand-built cards - Support, Advanced, Speed -
+ * with a "Custom slice settings" switch gating a wall of sliders, while Print setup offered the
+ * quality preset and Home offered presets. Same `SliceConfig`, three UIs, three looks. The cards
+ * and the switch are gone: the summary stays (as a [BrandCard] of [DetailRow]s), and the settings
+ * open into the one [AdvancedSettingsSheet]. The switch had nothing left to say - clearing every
+ * override, which the sheet's Reset does, *is* "follow the quality preset".
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SliceScreen(vm: AppViewModel) {
     val config by vm.config.collectAsState()
@@ -32,417 +47,84 @@ fun SliceScreen(vm: AppViewModel) {
     val plate by vm.setupPlate.collectAsState()
     val material by vm.setupMaterial.collectAsState()
     val printer by vm.selectedPrinterState.collectAsState()
-    val context = androidx.compose.ui.platform.LocalContext.current
     val nozzle by vm.selectedNozzle.collectAsState()
-    val materialLabel = remember(material) {
-        material?.let { vm.printSetupMaterials().firstOrNull { o -> o.key == it }?.label } ?: "—"
-    }
+    var showAdvanced by remember { mutableStateOf(false) }
 
-    var custom by remember { mutableStateOf(
-        config.layerHeight != null || config.wallLoops != null || config.topShellLayers != null ||
-            config.bottomShellLayers != null || config.infillDensity != null || config.infillPattern != null ||
-            config.brimWidth != null || config.supportThresholdAngle != null || config.supportZDistance != null ||
-            config.wallSpeed != null || config.infillSpeed != null || config.travelSpeed != null ||
-            config.ironing || config.supportOnPlateOnly || config.seamPosition != "aligned"
-    ) }
-    var advancedOpen by remember { mutableStateOf(custom) }
+    val materialLabel =
+        remember(material) {
+            material?.let { key ->
+                vm.printSetupMaterials().firstOrNull { it.key == key }?.label
+            } ?: "—"
+        }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Slice", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
-                    IconButton(onClick = { vm.backHome() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                    IconButton(onClick = { vm.goBack() }) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                        )
                     }
                 },
             )
-        }
+        },
     ) { padding ->
         Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            modifier =
+                Modifier
+                    .padding(padding)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = Space.lg),
+            verticalArrangement = Arrangement.spacedBy(Space.md),
         ) {
-            Spacer(Modifier.height(4.dp))
+            BrandCard {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.sm)) {
+                    DetailRow(
+                        label = "Printer",
+                        value =
+                            printer?.let {
+                                "${it.name} · ${it.model}${if (it.isLocal) " (Local)" else ""}"
+                            } ?: "—",
+                    )
+                    DetailRow(label = "Nozzle", value = "$nozzle mm")
+                    DetailRow(label = "Material", value = materialLabel)
+                    DetailRow(label = "Build plate", value = plate)
+                    DetailRow(label = "Quality", value = quality)
+                }
+            }
 
-            SummaryCard(
-                rows = listOf(
-                    "Printer" to (printer?.let { "${it.name} · ${it.model}${if (it.isLocal) " (Local)" else ""}" } ?: "—"),
-                    "Nozzle" to "$nozzle mm",
-                    "Material" to materialLabel,
-                    "Build plate" to plate,
-                    "Quality" to quality,
-                ),
+            SettingsRow(
+                icon = Icons.Filled.Tune,
+                title = "Advanced settings",
+                subtitle = advancedSummary(config),
+                onClick = { showAdvanced = true },
             )
 
-            // ---- Support ----
-            SectionLabel("Support")
-            Card(
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Enable support", fontSize = 15.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-                        Switch(checked = config.supportEnabled, onCheckedChange = { vm.setSupportEnabled(it) })
-                    }
-                    if (config.supportEnabled) {
-                        Text("Style", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilterChip(
-                                selected = config.supportStyle == "grid",
-                                onClick = { vm.setSupportStyle("grid") },
-                                label = { Text("Grid") },
-                            )
-                            FilterChip(
-                                selected = config.supportStyle == "snug",
-                                onClick = { vm.setSupportStyle("snug") },
-                                label = { Text("Snug") },
-                            )
-                            FilterChip(
-                                selected = config.supportStyle == "trees",
-                                onClick = { vm.setSupportStyle("trees") },
-                                label = { Text("Trees") },
-                            )
-                        }
-                        Text("Support material", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (!vm.supportMaterialAvailable()) {
-                            Text(
-                                "Same as model (single extruder)",
-                                fontSize = 14.sp,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                        } else {
-                            // CC2 (dual nozzle) / CC1 + Canvas: supports can print
-                            // from a separate filament; the app switches the
-                            // machine profile to the matching multi-material variant.
-                            val materials = remember(config.printer, printer) { vm.printSetupMaterials() }
-                            fun labelOf(o: MaterialOption) =
-                                if (o.trayId != null) "${o.label} · Tray ${o.trayId + 1}" else o.label
-                            val opts = listOf<MaterialOption?>(null) + materials
-                            val labels = listOf("Same as model") + materials.map(::labelOf)
-                            val selected = config.supportFilamentPreset?.let { p ->
-                                materials.indexOfFirst { it.profile == p && it.trayId == config.supportFilamentTrayId }
-                                    .takeIf { it >= 0 }?.let { labels[it + 1] }
-                            } ?: "Same as model"
-                            SliceDropdown(
-                                options = labels,
-                                selected = selected,
-                                onSelect = { label ->
-                                    vm.setSupportMaterial(opts.getOrNull(labels.indexOf(label)))
-                                },
-                            )
-                        }
-                        if (custom && config.supportEnabled) {
-                            val angle = config.supportThresholdAngle ?: 30
-                            SliderField(
-                                label = "Support threshold angle",
-                                value = angle.toFloat(),
-                                valueRange = 10f..80f,
-                                steps = 13,
-                                valueLabel = "$angle°",
-                                onValue = { vm.setSupportThresholdAngle(it.roundToInt()) },
-                            )
-                            val z = config.supportZDistance ?: 0.2f
-                            SliderField(
-                                label = "Support Z distance",
-                                value = z,
-                                valueRange = 0.05f..0.4f,
-                                steps = 6,
-                                valueLabel = String.format("%.2f mm", z),
-                                onValue = { vm.setSupportZDistance((it * 20).roundToInt() / 20f) },
-                            )
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    "Support on build plate only",
-                                    fontSize = 14.sp,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                Switch(
-                                    checked = config.supportOnPlateOnly,
-                                    onCheckedChange = { vm.setSupportOnPlateOnly(it) },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ---- Advanced ----
-            SectionLabel("Advanced")
-            Card(
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Filled.Build, null, tint = MaterialTheme.colorScheme.primary)
-                        Spacer(Modifier.width(10.dp))
-                        Text("Custom slice settings", fontSize = 15.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-                        Switch(checked = custom, onCheckedChange = { custom = it; advancedOpen = it })
-                        Icon(
-                            if (advancedOpen) Icons.Filled.ExpandMore else Icons.Filled.ChevronRight, null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.clickable { advancedOpen = !advancedOpen },
-                        )
-                    }
-                    if (advancedOpen) {
-                        if (!custom) {
-                            Text(
-                                "Turn on to override the quality preset.",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        } else {
-                            val lh = config.layerHeight ?: 0.2f
-                            SliderField(
-                                label = "Layer height",
-                                value = lh,
-                                valueRange = 0.08f..0.32f,
-                                steps = 11,
-                                valueLabel = String.format("%.2f mm", lh),
-                                onValue = { vm.setLayerHeight((it * 50).roundToInt() / 50f) },
-                            )
-                            val walls = config.wallLoops ?: 2
-                            SliderField(
-                                label = "Wall loops",
-                                value = walls.toFloat(),
-                                valueRange = 1f..6f,
-                                steps = 4,
-                                valueLabel = "$walls",
-                                onValue = { vm.setWallLoops(it.roundToInt()) },
-                            )
-                            val top = config.topShellLayers ?: 4
-                            SliderField(
-                                label = "Top shell layers",
-                                value = top.toFloat(),
-                                valueRange = 1f..8f,
-                                steps = 6,
-                                valueLabel = "$top",
-                                onValue = { vm.setTopShellLayers(it.roundToInt()) },
-                            )
-                            val bot = config.bottomShellLayers ?: 4
-                            SliderField(
-                                label = "Bottom shell layers",
-                                value = bot.toFloat(),
-                                valueRange = 1f..8f,
-                                steps = 6,
-                                valueLabel = "$bot",
-                                onValue = { vm.setBottomShellLayers(it.roundToInt()) },
-                            )
-                            val infill = config.infillDensity ?: 15
-                            SliderField(
-                                label = "Infill density",
-                                value = infill.toFloat(),
-                                valueRange = 0f..100f,
-                                steps = 19,
-                                valueLabel = "$infill%",
-                                onValue = { vm.setInfillDensity(it.roundToInt()) },
-                            )
-                            Text("Infill pattern", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            SliceDropdown(
-                                options = listOf("grid", "gyroid", "lines", "triangles", "honeycomb", "cubic", "concentric"),
-                                selected = config.infillPattern ?: "grid",
-                                onSelect = { vm.setInfillPattern(it) },
-                            )
-                            Text("Adhesion", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            FlowRow(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                listOf("auto", "none", "skirt", "brim", "raft").forEach { a ->
-                                    FilterChip(
-                                        selected = config.adhesion == a,
-                                        onClick = { vm.setAdhesion(a) },
-                                        label = { Text(a.replaceFirstChar { it.uppercase() }) },
-                                    )
-                                }
-                            }
-                            if (config.adhesion == "brim") {
-                                val bw = config.brimWidth ?: 5
-                                SliderField(
-                                    label = "Brim width",
-                                    value = bw.toFloat(),
-                                    valueRange = 2f..15f,
-                                    steps = 12,
-                                    valueLabel = "$bw mm",
-                                    onValue = { vm.setBrimWidth(it.roundToInt()) },
-                                )
-                            }
-                            Text("Seam position", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            SliceDropdown(
-                                options = seamPositionLabels.keys.toList(),
-                                selected = seamPositionLabels[config.seamPosition] ?: "Aligned",
-                                onSelect = { key ->
-                                    if (seamPositionLabels.containsKey(key)) vm.setSeamPosition(key)
-                                },
-                            )
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    "Ironing (smoother top surface)",
-                                    fontSize = 14.sp,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                Switch(checked = config.ironing, onCheckedChange = { vm.setIroning(it) })
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ---- Speed ----
-            SectionLabel("Speed")
-            Card(
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (custom) {
-                        val wall = config.wallSpeed ?: 120
-                        SliderField(
-                            label = "Wall speed",
-                            value = wall.toFloat(),
-                            valueRange = 20f..300f,
-                            steps = 13,
-                            valueLabel = "$wall mm/s",
-                            onValue = { vm.setWallSpeed(it.roundToInt()) },
-                        )
-                        val infillSpeed = config.infillSpeed ?: 150
-                        SliderField(
-                            label = "Infill speed",
-                            value = infillSpeed.toFloat(),
-                            valueRange = 20f..400f,
-                            steps = 18,
-                            valueLabel = "$infillSpeed mm/s",
-                            onValue = { vm.setInfillSpeed(it.roundToInt()) },
-                        )
-                        val travel = config.travelSpeed ?: 300
-                        SliderField(
-                            label = "Travel speed",
-                            value = travel.toFloat(),
-                            valueRange = 50f..600f,
-                            steps = 10,
-                            valueLabel = "$travel mm/s",
-                            onValue = { vm.setTravelSpeed(it.roundToInt()) },
-                        )
-                    } else {
-                        Text(
-                            "Speeds follow the quality preset. Turn on custom slice settings above to override them.",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
             BrandButton(
                 text = "Slice",
                 onClick = { vm.startSlice(bedType = vm.bedTypeForPlate(plate), autoPrint = false) },
                 enabled = vm.modelPath != null && printer != null && material != null && mesh != null,
-                icon = { Icon(Icons.Filled.ContentCut, null, tint = Color.White) },
+                icon = {
+                    Icon(
+                        Icons.Filled.ContentCut,
+                        contentDescription = null,
+                        tint = Color.White,
+                    )
+                },
                 modifier = Modifier.fillMaxWidth(),
-                height = 64.dp,
+                height = ButtonSize.Large,
             )
-            Spacer(Modifier.height(24.dp))
         }
     }
-}
 
-@Composable
-private fun SectionLabel(text: String) {
-    Text(text, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-}
-
-@Composable
-private fun SummaryCard(rows: List<Pair<String, String>>) {
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp,
-        shadowElevation = 3.dp,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            rows.forEach { (label, value) ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(value, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 16.dp))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SliderField(
-    label: String,
-    value: Float,
-    valueRange: ClosedFloatingPointRange<Float>,
-    steps: Int,
-    valueLabel: String,
-    onValue: (Float) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(valueLabel, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-        }
-        Slider(
-            value = value.coerceIn(valueRange.start, valueRange.endInclusive),
-            onValueChange = onValue,
-            valueRange = valueRange,
-            steps = steps,
+    if (showAdvanced) {
+        AdvancedSettingsSheet(
+            vm = vm,
+            onDismiss = { showAdvanced = false },
         )
-    }
-}
-
-private val seamPositionLabels = linkedMapOf(
-    "aligned" to "Aligned",
-    "aligned_back" to "Aligned back",
-    "back" to "Back",
-    "nearest" to "Nearest",
-    "random" to "Random",
-)
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SliceDropdown(
-    options: List<String>,
-    selected: String,
-    onSelect: (String) -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
-        OutlinedTextField(
-            value = selected,
-            onValueChange = {},
-            readOnly = true,
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier.menuAnchor().fillMaxWidth(),
-        )
-        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            options.forEach { opt ->
-                DropdownMenuItem(
-                    text = { Text(opt) },
-                    onClick = { onSelect(opt); expanded = false },
-                )
-            }
-        }
     }
 }

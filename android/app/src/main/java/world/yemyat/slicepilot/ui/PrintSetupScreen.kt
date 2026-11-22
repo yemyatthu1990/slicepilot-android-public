@@ -1,12 +1,21 @@
 package world.yemyat.slicepilot.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -15,30 +24,41 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.AutoAwesomeMosaic
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.OpenWith
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.PrintDisabled
 import androidx.compose.material.icons.filled.Rotate90DegreesCw
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import androidx.core.view.WindowCompat
 import kotlinx.coroutines.delay
 import world.yemyat.slicepilot.model.PartPlacement
 import world.yemyat.slicepilot.preview.ScreenDirection
@@ -63,8 +83,14 @@ fun PrintSetupScreen(vm: AppViewModel) {
     val config by vm.config.collectAsState()
     val printer by vm.selectedPrinterState.collectAsState()
     val filaments by vm.filaments.collectAsState()
-    val materials = remember(printer, filaments) { vm.printSetupMaterials() }
+    val materials = remember(printer, filaments, config.printer) { vm.printSetupMaterials() }
     val model = vm.modelPath?.let { java.io.File(it).name }
+    // Which machine to slice for and which slicer preset to use: the two rows Home's
+    // "Configure print" sheet owned before that sheet folded into this page.
+    val setupProcess by vm.setupProcess.collectAsState()
+    val printerOptions = remember(printer, config.printer) { vm.setupPrinterOptions() }
+    val processOptions = remember(config.printer) { vm.setupProcessOptions() }
+    val process = setupProcess ?: vm.printSetupProcess(quality, processOptions)
 
     LaunchedEffect(materials) {
         if (material == null || materials.none { it.key == material }) {
@@ -103,6 +129,8 @@ fun PrintSetupScreen(vm: AppViewModel) {
         }
     val fits = box[0] <= volume.first && box[1] <= volume.second && box[2] <= volume.third
     var fullscreen by remember { mutableStateOf(false) }
+    var showAdvanced by remember { mutableStateOf(false) }
+    var showPartsSheet by remember { mutableStateOf(false) }
 
     val previewController =
         remember {
@@ -176,16 +204,68 @@ fun PrintSetupScreen(vm: AppViewModel) {
     LaunchedEffect(materialColor) { if (mesh != null) previewController.setModelColor(materialColor) }
     LaunchedEffect(plateColor) { if (mesh != null) previewController.setPlateColor(plateColor) }
 
-    Scaffold(
-        topBar = {
+    // Why "Next: Slice" can't be tapped yet, in words. The button used to fade to grey without
+    // saying why - so the page read as broken whenever the printer simply hadn't been picked - and
+    // it scrolled away with the content, so answering "can I print now?" meant scrolling to the
+    // bottom. It is pinned now, and it explains itself.
+    val blockReason: String? =
+        when {
+            model == null -> "Pick a model to slice"
+            modelError != null -> "That file couldn't be opened"
+            mesh == null && modelLoading -> "Still reading the model\u2026"
+            printer == null -> "Pick the printer to send this to"
+            material == null -> "Pick the material to print with"
+            parts.size > 1 && skipped.size >= parts.size -> "Select at least one part to print"
+            !fits -> "Model is larger than the build volume"
+            else -> null
+        }
+
+    Box(Modifier.fillMaxSize()) {
+        Scaffold(
+            topBar = {
             TopAppBar(
                 title = { Text("Print setup", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
-                    IconButton(onClick = { vm.backHome() }) {
+                    // The flow's exit, not just a navigation: leaving asks about the model
+                    // (see AppViewModel.leavePrintSetup) instead of leaving it stranded on Home.
+                    IconButton(onClick = { vm.leavePrintSetup() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
                     }
                 },
             )
+        },
+        bottomBar = {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 3.dp,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier =
+                        Modifier
+                            .navigationBarsPadding()
+                            .padding(horizontal = Space.lg, vertical = Space.sm),
+                    verticalArrangement = Arrangement.spacedBy(Space.xs),
+                ) {
+                    val reason = blockReason
+                    if (reason != null) {
+                        Text(
+                            reason,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 2.dp),
+                        )
+                    }
+                    BrandButton(
+                        text = "Slice",
+                        onClick = { vm.sliceFromSetup() },
+                        enabled = reason == null,
+                        icon = { Icon(Icons.Filled.ContentCut, null, tint = Color.White) },
+                        modifier = Modifier.fillMaxWidth(),
+                        height = ButtonSize.Large,
+                    )
+                }
+            }
         },
     ) { padding ->
         Column(
@@ -194,310 +274,590 @@ fun PrintSetupScreen(vm: AppViewModel) {
                     .padding(padding)
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+                    .padding(horizontal = Space.lg, vertical = Space.md),
+            verticalArrangement = Arrangement.spacedBy(Space.lg),
         ) {
-            Spacer(Modifier.height(4.dp))
-
-            SummaryCard(
-                model = model ?: "No model",
-                printer = printer?.let { "${it.name} · ${it.model}${if (it.isLocal) " (Local)" else ""}" } ?: "No printer",
-                nozzle = "$selectedNozzle mm",
-            )
-
-            // A picked file parses in the background; without this the page looks
-            // empty (no preview yet) and reads as "did the upload work?".
-            val loadErr = modelError
-            if (model == null && loadErr != null) {
-                WarningBanner(
-                    "That file couldn't be opened",
-                    "${loadErr.code} · ${loadErr.message}",
-                )
-            } else if (mesh == null && modelLoading) {
-                val progress by vm.modelLoadProgress.collectAsState()
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        val pct = progress
-                        CircularProgressIndicator(
-                            progress = { (pct ?: 0) / 100f },
-                            modifier = Modifier.size(22.dp),
-                            strokeWidth = 2.dp,
-                        )
+            // One card for the model: what it is, which printer it goes to, and what it looks like
+            // on the plate. The old page stacked a SummaryCard of exactly that text *above* a
+            // 300.dp preview, so the first screenful answered the same question twice.
+            BrandCard {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.sm)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                model ?: "No model",
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                (
+                                    printer?.let {
+                                        "${it.name} \u00b7 ${it.model}${if (it.isLocal) " (Local)" else ""}"
+                                    } ?: "No printer selected"
+                                ) + " \u00b7 $selectedNozzle mm",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (mesh != null && !fullscreen) {
+                            BrandIconButton(
+                                icon = Icons.Filled.Fullscreen,
+                                contentDescription = "Open the preview full screen",
+                                onClick = { fullscreen = true },
+                            )
+                        }
+                    }
+                    val loadErr = modelError
+                    if (model == null) {
                         Text(
-                            pct?.let { "Reading model… $it%" } ?: "Reading model…",
-                            fontSize = 13.sp,
+                            "No file selected yet \u2014 pick one from Home or the Files tab.",
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    } else if (loadErr != null) {
+                        Text(
+                            "That file couldn't be opened \u00b7 ${loadErr.code} ${loadErr.message}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    } else if (mesh == null && modelLoading) {
+                        val progress = vm.modelLoadProgress.collectAsState().value
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(Space.sm),
+                        ) {
+                            CircularProgressIndicator(
+                                progress = { (progress ?: 0) / 100f },
+                                modifier = Modifier.size(22.dp),
+                                strokeWidth = 2.dp,
+                            )
+                            Text(
+                                progress?.let { "Reading model\u2026 $it%" } ?: "Reading model\u2026",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    } else if (mesh != null && !fullscreen) {
+                        Box(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(240.dp)
+                                    .clip(RoundedCornerShape(Radius.md))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                        ) {
+                            SharedAndroidView(
+                                view = previewController,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+                    }
+                    if (mesh != null && !fits) {
+                        WarningBanner(
+                            "Model is larger than the build volume",
+                            "Model ${box[0].toInt()}\u00d7${box[1].toInt()}\u00d7${box[2].toInt()} mm \u00b7 " +
+                                "Max ${volume.first.toInt()}\u00d7${volume.second.toInt()}\u00d7${volume.third.toInt()} mm",
+                        )
+                    }
+                    // Multi-part models stay paired with the 3D plate right above them: a compact
+                    // horizontal part selector + selected-part controls keep the plate visible as
+                    // you pick/skip parts, while "Manage" opens the full checklist sheet.
+                    val partNames = mesh?.parts?.map { it.name }.orEmpty()
+                    if (partNames.size > 1) {
+                        InlinePartsStrip(
+                            names = partNames,
+                            selectedIndex = selectedPart.coerceIn(0, partNames.lastIndex),
+                            skipped = skipped,
+                            onSelect = { vm.selectPart(it) },
+                            onTogglePrint = { idx -> vm.setPartPrinted(idx, idx in skipped) },
+                            onArrange = { vm.arrangeParts(volume.first, volume.second) },
+                            onPose = { fullscreen = true },
+                            onManage = { showPartsSheet = true },
+                        )
                     }
                 }
             }
 
-            if (mesh != null) {
-                Box(
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .height(300.dp)
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant),
-                ) {
-                    if (!fullscreen) {
-                        SharedAndroidView(
-                            view = previewController,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    }
-                    FilledIconButton(
-                        onClick = { fullscreen = true },
-                        colors =
-                            IconButtonDefaults.filledIconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-                                contentColor = MaterialTheme.colorScheme.onSurface,
-                            ),
-                        modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
-                    ) {
-                        Icon(Icons.Filled.Fullscreen, "Fullscreen")
-                    }
-                }
-                if (!fits) {
-                    WarningBanner(
-                        "Model is larger than the build volume",
-                        "Model ${box[0].toInt()}×${box[1].toInt()}×${box[2].toInt()} mm · " +
-                            "Max ${volume.first.toInt()}×${volume.second.toInt()}×${volume.third.toInt()} mm",
+            // Everything configurable in one card, in the order the choices stack up: what to
+            // print with (material, plate, quality), then the machine and the slicer preset it
+            // will be cut with. Printer and Process used to sit at the top of this card, where
+            // their values were the least interesting answer to "what is this print" and the
+            // process name was cut off; they now close the page, next to the button that uses
+            // them, and print setup's header already names the machine up top.
+            BrandCard {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.md)) {
+                    DropdownRow(
+                        label = "Material",
+                        options = materials.map { MenuOption(it.label, it, filamentColor(it.colorHex)) },
+                        selected = materials.firstOrNull { opt -> opt.key == material },
+                        onSelect = { vm.setSetupMaterial(it.key) },
                     )
-                }
-            }
 
-            // Pieces: the UI half of per-object placement. Before this a 3MF holding two models
-            // could only be moved as one blob — now each one can be rotated, moved or left off
-            // the plate, and the plate can be re-laid out to fit them all.
-            val partNames = mesh?.parts?.map { it.name }.orEmpty()
-            if (partNames.size > 1) {
-                PieceSection(
-                    vm = vm,
-                    names = partNames,
-                    plateW = volume.first,
-                    plateH = volume.second,
-                )
-            }
+                    // When the printer reports its spools, the Material dropdown already lists them
+                    // per tray; only pick a bare slot manually when it reported nothing.
+                    if (printer?.isLocal == true && vm.lanSpools().isEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
+                            BrandSectionLabel("Printer spool")
+                            Row(horizontalArrangement = Arrangement.spacedBy(Space.xs)) {
+                                (0..3).forEach { trayId ->
+                                    FilterChip(
+                                        selected = (config.filamentTrayId ?: 0) == trayId,
+                                        onClick = { vm.setPrintSlot(0, trayId) },
+                                        label = { Text("Slot ${trayId + 1}", maxLines = 1) },
+                                    )
+                                }
+                            }
+                            Text(
+                                "The printer didn't report its loaded filament \u2014 pick the slot it should load from.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            TextButton(
+                                onClick = { vm.requestAccessCodeEntry() },
+                                contentPadding = PaddingValues(0.dp),
+                            ) {
+                                Text(
+                                    "Enter the printer's access code to load its filament",
+                                    fontSize = 13.sp,
+                                )
+                            }
+                        }
+                    }
 
-            SectionLabel("Material")
-            MaterialDropdown(
-                options = materials,
-                selected = material,
-                onSelect = { vm.setSetupMaterial(it) },
-            )
+                    val plates = listOf("Textured", "Smooth")
+                    Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
+                        BrandSectionLabel("Build plate")
+                        SegmentedControl(
+                            options = plates,
+                            selectedIndex = plates.indexOf(plate).coerceAtLeast(0),
+                            onSelect = { vm.setSetupPlate(plates[it]) },
+                        )
+                    }
 
-            // When the printer reports its spools, the Material dropdown already lists them
-            // per tray; only pick a bare slot manually when it reported nothing.
-            if (printer?.isLocal == true && vm.lanSpools().isEmpty()) {
-                // Slot 1 is the default; the CC2 has four inlets.
-                val selectedTray = config.filamentTrayId ?: 0
-                SectionLabel("Printer spool")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    (0..3).forEach { trayId ->
-                        FilterChip(
-                            selected = selectedTray == trayId,
-                            onClick = { vm.setPrintSlot(0, trayId) },
-                            label = { Text("Slot ${trayId + 1}", maxLines = 1) },
+                    val qualities = listOf("Draft", "Standard", "Quality")
+                    Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
+                        BrandSectionLabel("Quality")
+                        SegmentedControl(
+                            options = qualities,
+                            selectedIndex = qualities.indexOf(quality).coerceAtLeast(0),
+                            onSelect = { vm.setSetupQuality(qualities[it]) },
+                        )
+                    }
+
+                    // The last two choices name the machine and the slicer preset the slice will
+                    // use, which is exactly what "Next: Slice" is about to do.
+                    if (printerOptions.isNotEmpty()) {
+                        DropdownRow(
+                            label = "Printer",
+                            options = printerOptions.map { MenuOption(it, it) },
+                            selected = printerOptions.firstOrNull { it == config.printer },
+                            enabled = printer != null,
+                            onSelect = { vm.setSetupPrinter(it) },
+                        )
+                    }
+                    if (processOptions.isNotEmpty()) {
+                        DropdownRow(
+                            label = "Process",
+                            options = processOptions.map { MenuOption(it, it) },
+                            selected = process,
+                            onSelect = { vm.setSetupProcess(it) },
                         )
                     }
                 }
-                Text(
-                    "The printer didn't report its loaded filament — pick the slot it should load from.",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                TextButton(
-                    onClick = { vm.requestAccessCodeEntry() },
-                    contentPadding = PaddingValues(0.dp),
-                ) {
-                    Text("Enter the printer's access code to load its filament", fontSize = 13.sp)
-                }
             }
 
-            SectionLabel("Build plate")
-            ChipRow(
-                options = listOf("Textured", "Smooth"),
-                selected = plate,
-                onSelect = { vm.setSetupPlate(it) },
+            SwitchRow(
+                icon = Icons.Filled.Build,
+                title = "Supports",
+                subtitle =
+                    if (config.supportEnabled) {
+                        "On · ${config.supportStyle.replaceFirstChar { it.uppercaseChar() }}" +
+                            if (config.supportOnPlateOnly) " · plate only" else ""
+                    } else {
+                        "Off · enable for overhangs"
+                    },
+                checked = config.supportEnabled,
+                onCheckedChange = { vm.setSupportEnabled(it) },
             )
 
-            SectionLabel("Quality")
-            ChipRow(
-                options = listOf("Draft", "Standard", "Quality"),
-                selected = quality,
-                onSelect = { vm.setSetupQuality(it) },
+            SettingsRow(
+                icon = Icons.Filled.Tune,
+                title = "Advanced settings",
+                subtitle = advancedSummary(config),
+                onClick = { showAdvanced = true },
             )
 
-            Spacer(Modifier.height(8.dp))
-
-            BrandButton(
-                text = "Next: Slice",
-                onClick = { vm.openSlice() },
-                enabled = vm.modelPath != null && printer != null && material != null && fits,
-                icon = { Icon(Icons.Filled.Print, null, tint = Color.White) },
-                modifier = Modifier.fillMaxWidth(),
-                height = 64.dp,
-            )
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(Space.xs))
         }
     }
 
-    if (fullscreen) {
-        PrintSetupFullscreen(
+    if (showAdvanced) {
+        AdvancedSettingsSheet(
             vm = vm,
-            controller = previewController,
-            volume = volume,
-            onClose = { fullscreen = false },
+            onDismiss = { showAdvanced = false },
         )
     }
-}
 
-@Composable
-private fun SectionLabel(text: String) {
-    Text(text, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-}
+    if (showPartsSheet && parts.size > 1) {
+        PartsSheet(
+            parts = parts,
+            poses = poses,
+            selectedIndex = selectedPart.coerceIn(0, parts.lastIndex),
+            skipped = skipped,
+            onTogglePrint = { idx -> vm.setPartPrinted(idx, idx in skipped) },
+            onSelectAll = { vm.setAllPartsPrinted(true) },
+            onSelectNone = { vm.setAllPartsPrinted(false) },
+            onArrange = { vm.arrangeParts(volume.first, volume.second) },
+            onPosePart = { idx ->
+                vm.selectPart(idx)
+                showPartsSheet = false
+                fullscreen = true
+            },
+            onDismiss = { showPartsSheet = false },
+        )
+    }
 
-/**
- * The pieces of the loaded model, in file order: tap a tile to pick the piece the viewer's
- * controls act on, tap the tile's print icon to leave that piece off the plate, and use
- * All / None instead of eight taps when only one of nine parts should print.
- *
- * Names come from the file (a 3MF names its objects); unnamed pieces are "Part 1", "Part 2", …
- *
- * The first version drew a FilterChip and a "prints/skipped" TextButton per piece in one
- * column: on a file of eight clips that was sixteen controls stacked twice as tall as the
- * preview, and the chips' outlines made the whole list read as selected at once. The pieces
- * are now a two-column grid of quiet tiles, and the chosen tile carries the same gold the
- * preview paints on that piece — the list and the plate agree about which one is meant.
- * The whole-model "Rotate 90°" button left with it: it duplicated the full-screen viewer's
- * Rotate, and on a file of symmetric parts it spun a piece you could not see turn.
- */
-@Composable
-private fun PieceSection(
-    vm: AppViewModel,
-    names: List<String>,
-    plateW: Float,
-    plateH: Float,
-) {
-    val selected by vm.selectedPart.collectAsState()
-    val skipped by vm.partsSkipped.collectAsState()
-    val printing = names.indices.count { it !in skipped }
-
-    Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            SectionLabel("Pieces")
-            Text(
-                text = "  $printing/${names.size}",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.outline,
+        if (fullscreen) {
+            PrintSetupFullscreen(
+                vm = vm,
+                controller = previewController,
+                volume = volume,
+                onClose = { fullscreen = false },
             )
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = { vm.setAllPartsPrinted(true) }, enabled = printing != names.size) {
-                Text("All", fontSize = 11.sp)
-            }
-            TextButton(onClick = { vm.setAllPartsPrinted(false) }, enabled = printing != 0) {
-                Text("None", fontSize = 11.sp)
-            }
-            TextButton(onClick = { vm.arrangeParts(plateW, plateH) }) {
-                Text("Re-arrange", fontSize = 11.sp)
-            }
-        }
-        names.indices.chunked(2).forEach { rowIndices ->
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(Space.xs),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                rowIndices.forEach { index ->
-                    PieceTile(
-                        name = names[index],
-                        selected = index == selected,
-                        printed = index !in skipped,
-                        onSelect = { vm.selectPart(index) },
-                        onTogglePrint = { vm.setPartPrinted(index, index in skipped) },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-                // An odd last piece keeps the grid's columns the same width.
-                if (rowIndices.size == 1) Spacer(Modifier.weight(1f))
-            }
         }
     }
 }
 
 /**
- * One piece in the grid. Selected pieces take the gold hairline (the same colour the preview
- * paints the piece with); pieces left off the plate get a struck-through name and a quiet
- * print-off icon, so "which ones are going" reads at a glance without a second column of
- * buttons.
+ * Compact multi-part controls right beneath the 3D build plate so users can tap parts and watch
+ * the gold highlight / skip state update live on the plate without scrolling past a wall of rows.
  */
 @Composable
-private fun PieceTile(
-    name: String,
-    selected: Boolean,
-    printed: Boolean,
-    onSelect: () -> Unit,
-    onTogglePrint: () -> Unit,
-    modifier: Modifier = Modifier,
+private fun InlinePartsStrip(
+    names: List<String>,
+    selectedIndex: Int,
+    skipped: Set<Int>,
+    onSelect: (Int) -> Unit,
+    onTogglePrint: (Int) -> Unit,
+    onArrange: () -> Unit,
+    onPose: () -> Unit,
+    onManage: () -> Unit,
 ) {
     val scheme = MaterialTheme.colorScheme
-    val shape = RoundedCornerShape(Radius.sm)
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier =
-            modifier
-                .clip(shape)
-                .background(
-                    when {
-                        selected -> scheme.secondaryContainer
-                        printed -> scheme.surface
-                        else -> scheme.surfaceVariant.copy(alpha = 0.45f)
-                    },
-                    shape,
-                ).border(
-                    BorderStroke(
-                        width = if (selected) 1.5.dp else 1.dp,
-                        color = if (selected) LanternGold else Color.Transparent,
-                    ),
-                    shape,
-                ).clickable(onClick = onSelect)
-                .padding(start = 10.dp, end = 4.dp, top = 7.dp, bottom = 7.dp),
-    ) {
-        Text(
-            text = name,
-            fontSize = 12.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            color = if (printed) scheme.onSurface else scheme.onSurfaceVariant,
-            textDecoration = if (printed) TextDecoration.None else TextDecoration.LineThrough,
-            modifier = Modifier.weight(1f),
-        )
-        Box(
+    val printingCount = names.indices.count { it !in skipped }
+    val selectedPrinted = selectedIndex !in skipped
+    val selectedName = names.getOrElse(selectedIndex) { "Part ${selectedIndex + 1}" }
+
+    Column(verticalArrangement = Arrangement.spacedBy(Space.sm)) {
+        HorizontalDivider(color = LanternGold.copy(alpha = 0.18f))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            BrandSectionLabel("Parts")
+            Text(
+                "· $printingCount of ${names.size}",
+                style = MaterialTheme.typography.bodySmall,
+                color = scheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(
+                onClick = onArrange,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+            ) {
+                Icon(Icons.Filled.AutoAwesomeMosaic, null, modifier = Modifier.size(15.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Arrange", fontSize = 12.sp)
+            }
+            TextButton(
+                onClick = onManage,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+            ) {
+                Text("Manage", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+
+        val partListState = rememberLazyListState()
+        LaunchedEffect(selectedIndex, names.size) {
+            if (selectedIndex in names.indices) {
+                partListState.animateScrollToItem(selectedIndex)
+            }
+        }
+        LazyRow(
+            state = partListState,
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            itemsIndexed(names) { index, name ->
+                val isSelected = index == selectedIndex
+                val isPrinted = index !in skipped
+                val shape = RoundedCornerShape(Radius.sm)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier =
+                        Modifier
+                            .clip(shape)
+                            .background(
+                                when {
+                                    isSelected -> scheme.secondaryContainer
+                                    isPrinted -> scheme.surfaceVariant.copy(alpha = 0.55f)
+                                    else -> scheme.surfaceVariant.copy(alpha = 0.28f)
+                                },
+                            ).border(
+                                BorderStroke(
+                                    width = if (isSelected) 1.5.dp else 1.dp,
+                                    color =
+                                        if (isSelected) {
+                                            LanternGold
+                                        } else {
+                                            LanternGold.copy(alpha = 0.16f)
+                                        },
+                                ),
+                                shape,
+                            ).clickable { onSelect(index) }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                ) {
+                    Box(
+                        Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(
+                                when {
+                                    !isPrinted -> scheme.outline.copy(alpha = 0.45f)
+                                    isSelected -> LanternGold
+                                    else -> MossGreen
+                                },
+                            ),
+                    )
+                    Text(
+                        text = name,
+                        fontSize = 13.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isPrinted) scheme.onSurface else scheme.onSurfaceVariant,
+                        textDecoration = if (isPrinted) TextDecoration.None else TextDecoration.LineThrough,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 140.dp),
+                    )
+                }
+            }
+        }
+
+        // Quick action bar for the currently selected part: skip/include or jump into 3D pose.
+        Row(
             modifier =
                 Modifier
-                    .size(26.dp)
-                    .clip(CircleShape)
-                    .clickable(onClick = onTogglePrint),
-            contentAlignment = Alignment.Center,
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(Radius.sm))
+                    .background(scheme.surfaceVariant.copy(alpha = 0.48f))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Icon(
-                imageVector = if (printed) Icons.Filled.Print else Icons.Filled.PrintDisabled,
-                contentDescription = if (printed) "prints" else "skipped",
-                modifier = Modifier.size(15.dp),
-                tint = if (printed) LanternGold else scheme.onSurfaceVariant,
+            Column(Modifier.weight(1f)) {
+                Text(
+                    selectedName,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    if (selectedPrinted) "Included on plate" else "Skipped",
+                    fontSize = 11.sp,
+                    color = if (selectedPrinted) scheme.onSurfaceVariant else scheme.error,
+                )
+            }
+            Surface(
+                onClick = { onTogglePrint(selectedIndex) },
+                shape = RoundedCornerShape(10.dp),
+                color = if (selectedPrinted) scheme.surface else scheme.errorContainer,
+                border = BorderStroke(1.dp, LanternGold.copy(alpha = 0.22f)),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Icon(
+                        if (selectedPrinted) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp),
+                        tint = if (selectedPrinted) scheme.onSurface else scheme.onErrorContainer,
+                    )
+                    Text(
+                        if (selectedPrinted) "Skip" else "Include",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (selectedPrinted) scheme.onSurface else scheme.onErrorContainer,
+                    )
+                }
+            }
+            Surface(
+                onClick = onPose,
+                shape = RoundedCornerShape(10.dp),
+                color = scheme.primaryContainer,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.OpenWith,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp),
+                        tint = scheme.onPrimaryContainer,
+                    )
+                    Text(
+                        "Pose",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = scheme.onPrimaryContainer,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Full checklist for multi-part models (bulk All/None, dimensions per part, Auto-arrange, and
+ * direct jump into 3D Pose for any part).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PartsSheet(
+    parts: List<world.yemyat.slicepilot.model.MeshPart>,
+    poses: List<Pose>?,
+    selectedIndex: Int,
+    skipped: Set<Int>,
+    onTogglePrint: (Int) -> Unit,
+    onSelectAll: () -> Unit,
+    onSelectNone: () -> Unit,
+    onArrange: () -> Unit,
+    onPosePart: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val printing = parts.indices.count { it !in skipped }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = scheme.surface,
+    ) {
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = Space.lg, vertical = Space.sm),
+            verticalArrangement = Arrangement.spacedBy(Space.md),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Parts", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "$printing of ${parts.size} will print",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = scheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = onSelectAll, enabled = printing != parts.size) {
+                    Text("All")
+                }
+                TextButton(onClick = onSelectNone, enabled = printing != 0) {
+                    Text("None")
+                }
+            }
+
+            BrandButton(
+                text = "Auto-arrange on plate",
+                onClick = onArrange,
+                role = ButtonRole.Tonal,
+                icon = { Icon(Icons.Filled.AutoAwesomeMosaic, null, modifier = Modifier.size(18.dp)) },
+                height = ButtonSize.Small,
+                modifier = Modifier.fillMaxWidth(),
             )
+
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                itemsIndexed(parts) { index, part ->
+                    val printed = index !in skipped
+                    val isSelected = index == selectedIndex
+                    val dims =
+                        remember(part, poses, index) {
+                            val pose = poses?.getOrNull(index) ?: Pose()
+                            part.footprint(pose)
+                        }
+                    val shape = RoundedCornerShape(Radius.sm)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(shape)
+                                .background(
+                                    if (printed) scheme.surfaceVariant.copy(alpha = 0.45f) else scheme.surfaceVariant.copy(alpha = 0.2f),
+                                ).border(
+                                    BorderStroke(
+                                        width = if (isSelected) 1.5.dp else 1.dp,
+                                        color = if (isSelected) LanternGold else LanternGold.copy(alpha = 0.14f),
+                                    ),
+                                    shape,
+                                ).toggleable(
+                                    value = printed,
+                                    role = Role.Checkbox,
+                                    onValueChange = { onTogglePrint(index) },
+                                ).padding(start = 10.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                    ) {
+                        Checkbox(checked = printed, onCheckedChange = null)
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Text(
+                                part.name,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = if (printed) scheme.onSurface else scheme.onSurfaceVariant,
+                                textDecoration = if (printed) TextDecoration.None else TextDecoration.LineThrough,
+                            )
+                            Text(
+                                "${dims[0].format1()} × ${dims[1].format1()} × ${dims[2].format1()} mm",
+                                fontSize = 11.sp,
+                                color = scheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(
+                            onClick = { onPosePart(index) },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        ) {
+                            Text("Pose", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+
+            BrandButton(
+                text = "Done",
+                onClick = onDismiss,
+                role = ButtonRole.Primary,
+                height = ButtonSize.Medium,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(Space.xs))
         }
     }
 }
@@ -524,112 +884,6 @@ private fun WarningBanner(
                 Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onErrorContainer)
                 Text(detail, fontSize = 12.sp, color = MaterialTheme.colorScheme.onErrorContainer)
             }
-        }
-    }
-}
-
-@Composable
-private fun SummaryCard(
-    model: String,
-    printer: String,
-    nozzle: String,
-) {
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp,
-        shadowElevation = 3.dp,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SummaryRow("Model", model)
-            SummaryRow("Printer", printer)
-            SummaryRow("Nozzle", nozzle)
-        }
-    }
-}
-
-@Composable
-private fun SummaryRow(
-    label: String,
-    value: String,
-) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 16.dp))
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun MaterialDropdown(
-    options: List<MaterialOption>,
-    selected: String?,
-    onSelect: (String) -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    val selectedOpt = options.firstOrNull { it.key == selected }
-    val selectedLabel = selectedOpt?.label ?: "Select material"
-    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { if (options.isNotEmpty()) expanded = it }) {
-        OutlinedTextField(
-            value = selectedLabel,
-            onValueChange = {},
-            readOnly = true,
-            enabled = options.isNotEmpty(),
-            leadingIcon = { if (selectedOpt != null) ColorDot(selectedOpt.colorHex) },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier.menuAnchor().fillMaxWidth(),
-        )
-        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            options.forEach { opt ->
-                DropdownMenuItem(
-                    leadingIcon = { ColorDot(opt.colorHex) },
-                    text = { Text(opt.label) },
-                    onClick = {
-                        onSelect(opt.key)
-                        expanded = false
-                    },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ColorDot(colorHex: String?) {
-    val c =
-        remember(colorHex) {
-            colorHex?.let {
-                try {
-                    Color(android.graphics.Color.parseColor(it))
-                } catch (_: Exception) {
-                    null
-                }
-            }
-        }
-    Box(
-        Modifier
-            .size(18.dp)
-            .clip(CircleShape)
-            .background(c ?: MaterialTheme.colorScheme.outline)
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
-    )
-}
-
-@Composable
-private fun ChipRow(
-    options: List<String>,
-    selected: String,
-    onSelect: (String) -> Unit,
-) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        options.forEach { opt ->
-            FilterChip(
-                selected = opt == selected,
-                onClick = { onSelect(opt) },
-                label = { Text(opt, maxLines = 1) },
-            )
         }
     }
 }
@@ -717,6 +971,13 @@ fun extruderCountForProfile(
 private typealias Pose = world.yemyat.slicepilot.preview.ModelTransform
 private typealias Face = world.yemyat.slicepilot.preview.ModelTransform.Face
 
+private enum class FullscreenTool(val label: String) {
+    FACE("Face"),
+    ROTATE("Rotate"),
+    MIRROR("Mirror"),
+    MOVE("Move"),
+}
+
 @Composable
 private fun PrintSetupFullscreen(
     vm: AppViewModel,
@@ -732,6 +993,8 @@ private fun PrintSetupFullscreen(
     val allPoses by vm.partPoses.collectAsState()
     val skipped by vm.partsSkipped.collectAsState()
     val selected by vm.selectedPart.collectAsState()
+    val wholeModelTransform by vm.modelTransform.collectAsState()
+    val darkTheme by vm.themeDark.collectAsState()
     val parts = mesh?.partsForRendering.orEmpty()
 
     /**
@@ -739,18 +1002,47 @@ private fun PrintSetupFullscreen(
      * piece, so these controls drive the piece the Pieces list picked: the renderer gives
      * every piece its own matrix and ignores the single whole-model transform, which meant
      * the buttons here moved the readout and left the plate alone. A single-piece file (and a
-     * multi-part one nobody has laid out yet) still poses the whole model.
+     * multi-part one nobody has laid out yet) still poses the whole model — observed via
+     * [vm.modelTransform] so Face/Mirror/Orientation chips recompose immediately on every tap.
      */
+    val wholePose =
+        Pose(
+            mirrorX = wholeModelTransform.mirrorX,
+            mirrorY = wholeModelTransform.mirrorY,
+            mirrorZ = wholeModelTransform.mirrorZ,
+            rotX = wholeModelTransform.rotX,
+            rotY = wholeModelTransform.rotY,
+            rotZ = wholeModelTransform.rotZ,
+            offsetX = wholeModelTransform.offsetX,
+            offsetY = wholeModelTransform.offsetY,
+        )
     val partPose: Pose? =
         allPoses?.takeIf { it.size == parts.size && parts.size > 1 }?.getOrNull(selected)
-    val pose: Pose = partPose ?: controller.currentTransform()
+    val pose: Pose = partPose ?: wholePose
     val partTitle: String? = if (partPose == null) null else parts.getOrNull(selected)?.name
+    var activeTool by remember { mutableStateOf(FullscreenTool.FACE) }
     var error by remember { mutableStateOf<String?>(null) }
     val step = 5f
     LaunchedEffect(error) {
         if (error != null) {
             delay(2200)
             error = null
+        }
+    }
+
+    BackHandler(enabled = true) { onClose() }
+
+    // The 3D viewport uses a light background; keep system bar icons dark while fullscreen
+    // is shown so clock/battery and gesture pill remain legible even in dark theme.
+    val view = LocalView.current
+    DisposableEffect(view, darkTheme) {
+        val window = view.context.findActivity()?.window
+        val insetsController = window?.let { WindowCompat.getInsetsController(it, view) }
+        insetsController?.isAppearanceLightStatusBars = true
+        insetsController?.isAppearanceLightNavigationBars = true
+        onDispose {
+            insetsController?.isAppearanceLightStatusBars = !darkTheme
+            insetsController?.isAppearanceLightNavigationBars = !darkTheme
         }
     }
 
@@ -809,80 +1101,61 @@ private fun PrintSetupFullscreen(
         applyToPart(current.nudged(dx, dy))
     }
 
-    Dialog(
-        onDismissRequest = onClose,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-    ) {
-        Box(Modifier.fillMaxSize().background(Color(0xFF1A1C20))) {
-            SharedAndroidView(
-                view = controller,
-                modifier = Modifier.fillMaxSize(),
-            )
-
-            FilledIconButton(
-                onClick = onClose,
-                colors =
-                    IconButtonDefaults.filledIconButtonColors(
-                        containerColor = Color.White.copy(alpha = 0.85f),
-                        contentColor = Color.Black,
-                    ),
-                modifier = Modifier.align(Alignment.TopEnd).padding(24.dp),
-            ) {
-                Icon(Icons.Filled.Close, "Close")
+    // Render directly inside the edge-to-edge Activity window rather than a Dialog so system
+    // bar insets (status bar at top, gesture/3-button navigation bar at bottom) match the real
+    // window frame on every Android version without Dialog window clipping or offset quirks.
+    // Registering a pointerInput node on the overlay cards stops sibling hit-testing from
+    // falling through gaps into the GLSurfaceView behind them while keeping child clicks and
+    // LazyRow horizontal scrolling untouched.
+    val blockBackgroundTouches =
+        Modifier.pointerInput(Unit) {
+            awaitPointerEventScope {
+                while (true) {
+                    awaitPointerEvent(PointerEventPass.Main)
+                }
             }
+        }
 
-            Column(
-                modifier = Modifier.align(Alignment.TopStart).padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+    Box(Modifier.fillMaxSize().background(Color(0xFF1A1C20))) {
+        SharedAndroidView(
+            view = controller,
+            modifier = Modifier.fillMaxSize(),
+        )
+
+        // Top bar: pose readout + close, inset-safe so it never sits under the status bar.
+        Column(
+            modifier =
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .windowInsetsPadding(
+                        WindowInsets.statusBars
+                            .union(WindowInsets.displayCutout)
+                            .only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
+                    ).padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().then(blockBackgroundTouches),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 OrientationCard(
                     pose,
                     footprint = partPose?.let { parts.getOrNull(selected)?.footprint(it) } ?: controller.footprintMm(),
                     title = partTitle,
+                    modifier = Modifier.weight(1f),
                 )
-
-                SectionLabel("Put this face on the plate")
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    FaceChip(Face.BOTTOM, pose) {
-                        applyPose({ it.forFace(Face.BOTTOM) }) { controller.setFaceDown(Face.BOTTOM) }
-                    }
-                    FaceChip(Face.TOP, pose) {
-                        applyPose({ it.forFace(Face.TOP) }) { controller.setFaceDown(Face.TOP) }
-                    }
-                    FaceChip(Face.FRONT, pose) {
-                        applyPose({ it.forFace(Face.FRONT) }) { controller.setFaceDown(Face.FRONT) }
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    FaceChip(Face.BACK, pose) {
-                        applyPose({ it.forFace(Face.BACK) }) { controller.setFaceDown(Face.BACK) }
-                    }
-                    FaceChip(Face.LEFT, pose) {
-                        applyPose({ it.forFace(Face.LEFT) }) { controller.setFaceDown(Face.LEFT) }
-                    }
-                    FaceChip(Face.RIGHT, pose) {
-                        applyPose({ it.forFace(Face.RIGHT) }) { controller.setFaceDown(Face.RIGHT) }
-                    }
-                }
-
-                SectionLabel("Rotate 90°")
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    RotateButton("X") { applyPose({ it.rotated('x') }) { controller.rotateModel('x') } }
-                    RotateButton("Y") { applyPose({ it.rotated('y') }) { controller.rotateModel('y') } }
-                    RotateButton("Z") { applyPose({ it.rotated('z') }) { controller.rotateModel('z') } }
-                }
-
-                SectionLabel("Mirror")
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    MirrorChip("X", pose.mirrorX) {
-                        applyPose({ it.mirrored('x') }) { controller.toggleMirror('x') }
-                    }
-                    MirrorChip("Y", pose.mirrorY) {
-                        applyPose({ it.mirrored('y') }) { controller.toggleMirror('y') }
-                    }
-                    MirrorChip("Z", pose.mirrorZ) {
-                        applyPose({ it.mirrored('z') }) { controller.toggleMirror('z') }
-                    }
+                FilledIconButton(
+                    onClick = onClose,
+                    colors =
+                        IconButtonDefaults.filledIconButtonColors(
+                            containerColor = Color.White.copy(alpha = 0.90f),
+                            contentColor = Color(0xFF1A1C20),
+                        ),
+                    modifier = Modifier.size(44.dp),
+                ) {
+                    Icon(Icons.Filled.Close, "Close")
                 }
             }
 
@@ -890,7 +1163,7 @@ private fun PrintSetupFullscreen(
                 Surface(
                     color = Color(0xFFB3261E),
                     shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 24.dp),
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
                 ) {
                     Text(
                         msg,
@@ -901,43 +1174,281 @@ private fun PrintSetupFullscreen(
                     )
                 }
             }
+        }
 
+        // Bottom tool dock: one active tool at a time so the 3D plate stays unobstructed,
+        // with Reset clearly readable on the dark dock surface.
+        Surface(
+            color = Color(0xE81C2026),
+            shape = RoundedCornerShape(Radius.lg),
+            border = BorderStroke(1.dp, LanternGold.copy(alpha = 0.25f)),
+            modifier =
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .windowInsetsPadding(
+                        WindowInsets.navigationBars
+                            .union(WindowInsets.displayCutout)
+                            .only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal),
+                    ).padding(horizontal = 16.dp, vertical = 12.dp)
+                    .then(blockBackgroundTouches),
+        ) {
             Column(
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                MoveButton(Icons.Filled.ArrowUpward) { move(ScreenDirection.UP) }
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(60.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    MoveButton(Icons.AutoMirrored.Filled.ArrowBack) { move(ScreenDirection.LEFT) }
-                    MoveButton(Icons.AutoMirrored.Filled.ArrowForward) { move(ScreenDirection.RIGHT) }
-                }
-                MoveButton(Icons.Filled.ArrowDownward) { move(ScreenDirection.DOWN) }
-                SectionLabel("Move on plate")
-            }
-
-            TextButton(
-                onClick = {
-                    error = null
-                    val current = partPose
-                    if (current != null) {
-                        // Back to where the file authored this piece, not to the plate centre.
-                        applyToPart(parts.getOrNull(selected)?.poseAt(volume.first, volume.second))
-                    } else {
-                        controller.resetModelTransform()
-                        vm.resetModelTransform()
+                // For multi-part models, let users switch parts, skip/include, and auto-arrange
+                // right inside fullscreen without closing the 3D editor.
+                if (parts.size > 1) {
+                    val activeIdx = selected.coerceIn(0, parts.lastIndex)
+                    val activePrinted = activeIdx !in skipped
+                    val partListState = rememberLazyListState()
+                    LaunchedEffect(activeIdx, parts.size) {
+                        partListState.animateScrollToItem(activeIdx)
                     }
-                },
-                modifier = Modifier.align(Alignment.BottomEnd).padding(24.dp),
-            ) {
-                Text("Reset", color = Color(0xFF1A1C20))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        LazyRow(
+                            state = partListState,
+                            modifier = Modifier.weight(1f),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            itemsIndexed(parts) { index, part ->
+                                val isSel = index == activeIdx
+                                val isPrinted = index !in skipped
+                                val pillShape = RoundedCornerShape(10.dp)
+                                Box(
+                                    modifier =
+                                        Modifier
+                                            .heightIn(min = 36.dp)
+                                            .clip(pillShape)
+                                            .background(
+                                                when {
+                                                    isSel -> LanternGold
+                                                    isPrinted -> Color.White.copy(alpha = 0.14f)
+                                                    else -> Color.White.copy(alpha = 0.06f)
+                                                },
+                                            ).clickable { vm.selectPart(index) }
+                                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        part.name,
+                                        color =
+                                            when {
+                                                isSel -> Color(0xFF1A1C20)
+                                                isPrinted -> Color.White
+                                                else -> Color.White.copy(alpha = 0.45f)
+                                            },
+                                        fontSize = 12.sp,
+                                        fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                                        textDecoration = if (isPrinted) TextDecoration.None else TextDecoration.LineThrough,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.widthIn(max = 120.dp),
+                                    )
+                                }
+                            }
+                        }
+                        IconButton(
+                            onClick = { vm.setPartPrinted(activeIdx, !activePrinted) },
+                            modifier = Modifier.size(36.dp),
+                        ) {
+                            Icon(
+                                if (activePrinted) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                                contentDescription = if (activePrinted) "Skip part" else "Include part",
+                                tint = if (activePrinted) Color.White else Color(0xFFFFB49E),
+                                modifier = Modifier.size(19.dp),
+                            )
+                        }
+                        IconButton(
+                            onClick = { vm.arrangeParts(volume.first, volume.second) },
+                            modifier = Modifier.size(36.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.AutoAwesomeMosaic,
+                                contentDescription = "Auto-arrange parts",
+                                tint = Color.White,
+                                modifier = Modifier.size(19.dp),
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Row(
+                        modifier =
+                            Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(Radius.sm))
+                                .background(Color.White.copy(alpha = 0.08f))
+                                .padding(3.dp),
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        FullscreenTool.values().forEach { tool ->
+                            val active = tool == activeTool
+                            Box(
+                                modifier =
+                                    Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 38.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(if (active) Color.White else Color.Transparent)
+                                        .clickable { activeTool = tool }
+                                        .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    tool.label,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (active) Color(0xFF1A1C20) else Color.White.copy(alpha = 0.80f),
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                    }
+                    TextButton(
+                        onClick = {
+                            error = null
+                            val current = partPose
+                            if (current != null) {
+                                // Back to where the file authored this piece, not to the plate centre.
+                                applyToPart(parts.getOrNull(selected)?.poseAt(volume.first, volume.second))
+                            } else {
+                                controller.resetModelTransform()
+                                vm.resetModelTransform()
+                            }
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    ) {
+                        Text(
+                            "Reset",
+                            color = Color(0xFFFFB49E),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+
+                when (activeTool) {
+                    FullscreenTool.FACE -> {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                FaceChip(Face.BOTTOM, pose, Modifier.weight(1f)) {
+                                    applyPose({ it.forFace(Face.BOTTOM) }) { controller.setFaceDown(Face.BOTTOM) }
+                                }
+                                FaceChip(Face.TOP, pose, Modifier.weight(1f)) {
+                                    applyPose({ it.forFace(Face.TOP) }) { controller.setFaceDown(Face.TOP) }
+                                }
+                                FaceChip(Face.FRONT, pose, Modifier.weight(1f)) {
+                                    applyPose({ it.forFace(Face.FRONT) }) { controller.setFaceDown(Face.FRONT) }
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                FaceChip(Face.BACK, pose, Modifier.weight(1f)) {
+                                    applyPose({ it.forFace(Face.BACK) }) { controller.setFaceDown(Face.BACK) }
+                                }
+                                FaceChip(Face.LEFT, pose, Modifier.weight(1f)) {
+                                    applyPose({ it.forFace(Face.LEFT) }) { controller.setFaceDown(Face.LEFT) }
+                                }
+                                FaceChip(Face.RIGHT, pose, Modifier.weight(1f)) {
+                                    applyPose({ it.forFace(Face.RIGHT) }) { controller.setFaceDown(Face.RIGHT) }
+                                }
+                            }
+                        }
+                    }
+
+                    FullscreenTool.ROTATE -> {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            listOf("X" to 'x', "Y" to 'y', "Z" to 'z').forEach { (label, axis) ->
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    RotateButton(label) {
+                                        applyPose({ it.rotated(axis) }) { controller.rotateModel(axis) }
+                                    }
+                                    Text(
+                                        "$label +90°",
+                                        color = Color.White.copy(alpha = 0.85f),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    FullscreenTool.MIRROR -> {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            MirrorChip("Mirror X", pose.mirrorX, Modifier.weight(1f)) {
+                                applyPose({ it.mirrored('x') }) { controller.toggleMirror('x') }
+                            }
+                            MirrorChip("Mirror Y", pose.mirrorY, Modifier.weight(1f)) {
+                                applyPose({ it.mirrored('y') }) { controller.toggleMirror('y') }
+                            }
+                            MirrorChip("Mirror Z", pose.mirrorZ, Modifier.weight(1f)) {
+                                applyPose({ it.mirrored('z') }) { controller.toggleMirror('z') }
+                            }
+                        }
+                    }
+
+                    FullscreenTool.MOVE -> {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            MoveButton(Icons.Filled.ArrowUpward, "Move up") { move(ScreenDirection.UP) }
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(20.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                MoveButton(Icons.AutoMirrored.Filled.ArrowBack, "Move left") { move(ScreenDirection.LEFT) }
+                                Text(
+                                    "${step.toInt()} mm",
+                                    color = Color.White.copy(alpha = 0.72f),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                                MoveButton(Icons.AutoMirrored.Filled.ArrowForward, "Move right") { move(ScreenDirection.RIGHT) }
+                            }
+                            MoveButton(Icons.Filled.ArrowDownward, "Move down") { move(ScreenDirection.DOWN) }
+                        }
+                    }
+                }
             }
         }
     }
 }
+
+private tailrec fun Context.findActivity(): Activity? =
+    when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
+    }
 
 /**
  * Says out loud what the model is doing: the angles behind the pose and the footprint the
@@ -949,8 +1460,14 @@ private fun OrientationCard(
     pose: Pose,
     footprint: FloatArray,
     title: String? = null,
+    modifier: Modifier = Modifier,
 ) {
-    Surface(color = Color.White.copy(alpha = 0.92f), shape = RoundedCornerShape(14.dp)) {
+    Surface(
+        color = Color(0xE81C2026),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, LanternGold.copy(alpha = 0.25f)),
+        modifier = modifier,
+    ) {
         Column(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -958,17 +1475,21 @@ private fun OrientationCard(
             Text(
                 text =
                     (if (title != null) "$title · " else "") +
-                        "Rotating ${pose.rotX.toInt()}° X · ${pose.rotY.toInt()}° Y · ${pose.rotZ.toInt()}° Z",
-                color = Color(0xFF1A1C20),
+                        "${pose.rotX.toInt()}° X · ${pose.rotY.toInt()}° Y · ${pose.rotZ.toInt()}° Z",
+                color = Color.White,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             Text(
                 text =
                     "${footprint[0].format1()} × ${footprint[1].format1()} mm on plate · " +
                         "${footprint[2].format1()} mm tall",
-                color = Color(0xFF5A5E66),
+                color = Color.White.copy(alpha = 0.75f),
                 fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -981,23 +1502,27 @@ private fun Float.format1(): String = String.format(java.util.Locale.US, "%.1f",
 private fun FaceChip(
     face: Face,
     current: Pose,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    val selected = current == current.forFace(face)
-    TextButton(
-        onClick = onClick,
+    val selected = current.downFace() == face
+    val shape = RoundedCornerShape(10.dp)
+    Box(
         modifier =
-            Modifier.background(
-                if (selected) Color(0xFF1A1C20) else Color.White.copy(alpha = 0.55f),
-                RoundedCornerShape(10.dp),
-            ),
+            modifier
+                .heightIn(min = 40.dp)
+                .clip(shape)
+                .background(if (selected) LanternGold else Color.White.copy(alpha = 0.12f))
+                .clickable(onClick = onClick)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
     ) {
         Text(
             text = face.name.lowercase().replaceFirstChar { it.uppercase() },
-            color = if (selected) Color.White else Color(0xFF1A1C20),
+            color = if (selected) Color(0xFF1A1C20) else Color.White,
             fontSize = 12.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            maxLines = 1,
         )
     }
 }
@@ -1006,29 +1531,46 @@ private fun FaceChip(
 private fun MirrorChip(
     label: String,
     selected: Boolean,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    FilterChip(
-        selected = selected,
-        onClick = onClick,
-        label = { Text(label, fontWeight = FontWeight.Bold) },
-    )
+    val shape = RoundedCornerShape(10.dp)
+    Box(
+        modifier =
+            modifier
+                .heightIn(min = 44.dp)
+                .clip(shape)
+                .background(if (selected) LanternGold else Color.White.copy(alpha = 0.12f))
+                .clickable(onClick = onClick)
+                .padding(horizontal = 10.dp, vertical = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            color = if (selected) Color(0xFF1A1C20) else Color.White,
+            fontSize = 13.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            maxLines = 1,
+        )
+    }
 }
 
 @Composable
 private fun MoveButton(
     icon: ImageVector,
+    contentDescription: String,
     onClick: () -> Unit,
 ) {
     FilledIconButton(
         onClick = onClick,
         colors =
             IconButtonDefaults.filledIconButtonColors(
-                containerColor = Color.White.copy(alpha = 0.85f),
-                contentColor = Color.Black,
+                containerColor = Color.White.copy(alpha = 0.90f),
+                contentColor = Color(0xFF1A1C20),
             ),
+        modifier = Modifier.size(44.dp),
     ) {
-        Icon(icon, null)
+        Icon(icon, contentDescription)
     }
 }
 

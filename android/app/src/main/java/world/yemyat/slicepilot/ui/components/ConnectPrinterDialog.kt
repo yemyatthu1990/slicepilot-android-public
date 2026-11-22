@@ -50,7 +50,11 @@ fun ConnectPrinterDialog(
     onLater: () -> Unit,
 ) {
     Dialog(onDismissRequest = onLater) {
-        BrandCard(modifier = Modifier.fillMaxWidth(), contentPadding = Space.lg) {
+        BrandCard(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = Space.lg,
+            background = MaterialTheme.colorScheme.surface,
+        ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     // The loaded model, answered by the printer it needs — the same pairing as
