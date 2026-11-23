@@ -81,8 +81,14 @@ fun AdvancedSettingsSheet(
 
     val supportSummary =
         if (config.supportEnabled) {
-            "On · ${labelOf(config.supportStyle)}" +
-                if (config.supportOnPlateOnly) " · plate only" else ""
+            buildList {
+                add("On")
+                add(labelOf(config.supportStyle))
+                if (config.supportFilamentPreset != null && vm.supportMaterialAvailable()) {
+                    add(if (config.supportInterfaceOnly) "interface spool" else "full spool")
+                }
+                if (config.supportOnPlateOnly) add("plate only")
+            }.joinToString(" · ")
         } else {
             "Off"
         }
@@ -169,9 +175,9 @@ fun AdvancedSettingsSheet(
                         current = labelOf(config.supportStyle),
                         onSelect = { vm.setSupportStyle(it.lowercase()) },
                     )
-                    // CC2 prints supports from the second nozzle's spool, which also swaps the
-                    // machine profile to the multi-material variant. The list only exists when the
-                    // printer reported one, so the field appears and disappears with it.
+                    // Canvas-equipped single-nozzle printers (CC2, CC1 + Canvas) swap spools via
+                    // M6211; defaulting to "Interface only" swaps only on the few overhang contact
+                    // layers instead of every support layer.
                     if (vm.supportMaterialAvailable()) {
                         val materials = remember(config.printer) { vm.printSetupMaterials() }
                         val options = listOf<MaterialOption?>(null) + materials
@@ -185,6 +191,14 @@ fun AdvancedSettingsSheet(
                                 },
                             onSelect = { vm.setSupportMaterial(it) },
                         )
+                        if (config.supportFilamentPreset != null) {
+                            OptionRow(
+                                label = "Support material on",
+                                options = listOf("Interface only", "Full support"),
+                                current = if (config.supportInterfaceOnly) "Interface only" else "Full support",
+                                onSelect = { vm.setSupportInterfaceOnly(it == "Interface only") },
+                            )
+                        }
                     }
                     StepperRow(
                         label = "Threshold angle",
@@ -408,7 +422,7 @@ private val InfillSpeeds = listOf(20, 40, 60, 80, 100, 120, 150, 180, 200, 250, 
 private val TravelSpeeds = listOf(50, 80, 100, 120, 150, 200, 250, 300, 350, 400, 500, 600)
 private val BrimWidths = listOf(2, 3, 4, 5, 6, 8, 10, 12, 15)
 private val SupportAngles = listOf(10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80)
-private val SupportZDistances = listOf(0.05f, 0.10f, 0.15f, 0.20f, 0.25f, 0.30f, 0.35f, 0.40f)
+private val SupportZDistances = listOf(0.00f, 0.05f, 0.10f, 0.15f, 0.20f, 0.25f, 0.30f, 0.35f, 0.40f)
 
 private val InfillPatterns =
     listOf(

@@ -14,9 +14,113 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.flow.MutableSharedFlow
 import world.yemyat.slicepilot.cloud.PrintJobState
 import world.yemyat.slicepilot.cloud.PrintStatus
+
+/**
+ * Stateful policy mapping a monitored print session's [PrintStatus] stream to notification actions.
+ *
+ * Prevents three real-world bugs on Centauri Carbon 2 / Android 14+:
+ * 1. Printer jumping straight to [PrintJobState.IDLE] on finish (or returning to standby between
+ *    polls) previously kept the foreground service alive showing "Starting print…".
+ * 2. Temperature-only status ticks while idle or printing previously called `notify()` every
+ *    second, immediately resurrecting a swiped-away notification.
+ * 3. A restored persisted session waking up after the print already finished previously revived a
+ *    stale "Starting print…" notification instead of clearing the session.
+ */
+internal class PrintNotificationTracker(
+    private val graceMs: Long = 45_000L,
+) {
+    sealed interface Action {
+        data object Ignore : Action
+        data object Update : Action
+        data class Finish(val text: String) : Action
+        data object Clear : Action
+    }
+
+    private var active = false
+    private var justStarted = false
+    private var startedAtMs = 0L
+    private var sawActiveState = false
+    private var lastActiveState: PrintJobState? = null
+    private var lastRenderedKey: String? = null
+
+    fun begin(justStarted: Boolean, nowMs: Long) {
+        active = true
+        this.justStarted = justStarted
+        startedAtMs = nowMs
+        sawActiveState = false
+        lastActiveState = null
+        lastRenderedKey = null
+    }
+
+    fun reset() {
+        active = false
+        justStarted = false
+        startedAtMs = 0L
+        sawActiveState = false
+        lastActiveState = null
+        lastRenderedKey = null
+    }
+
+    fun onStatus(printer: String, status: PrintStatus, nowMs: Long): Action {
+        if (!active) return Action.Ignore
+        val state = status.state
+
+        if (state.isTerminal) {
+            val text = when (state) {
+                PrintJobState.COMPLETED -> "Print completed"
+                PrintJobState.STOPPED -> "Print stopped"
+                else -> "Printer reported an error"
+            }
+            reset()
+            return Action.Finish(text)
+        }
+
+        if (state == PrintJobState.IDLE) {
+            if (!status.live) return Action.Ignore
+            return when {
+                sawActiveState -> {
+                    val text = if (lastActiveState == PrintJobState.STOPPING) {
+                        "Print stopped"
+                    } else {
+                        "Print completed"
+                    }
+                    reset()
+                    Action.Finish(text)
+                }
+                !justStarted || (nowMs - startedAtMs) >= graceMs -> {
+                    reset()
+                    Action.Clear
+                }
+                else -> Action.Ignore
+            }
+        }
+
+        if (state == PrintJobState.CONNECTING) {
+            // Never regress an already-active print notification back to "Connecting…",
+            // and never post a notification for a restored session until the printer confirms
+            // a job is actually running.
+            if (sawActiveState || !justStarted) return Action.Ignore
+            val key = "$printer|CONNECTING"
+            if (key == lastRenderedKey) return Action.Ignore
+            lastRenderedKey = key
+            return Action.Update
+        }
+
+        // Active print states: PRINTING, PAUSED, PAUSING, RESUMING, STOPPING.
+        sawActiveState = true
+        justStarted = false
+        lastActiveState = state
+        val remainingBucket = (status.remainingSec ?: -1).let { if (it <= 0) -1 else it / 60 }
+        val key = "$printer|${state.name}|${status.progress}|${status.currentLayer}|${status.totalLayer}|$remainingBucket"
+        if (key == lastRenderedKey) return Action.Ignore
+        lastRenderedKey = key
+        return Action.Update
+    }
+}
 
 /**
  * Keeps the app process alive while a print is running (the monitor's MQTT/RTM clients live in
@@ -63,20 +167,38 @@ class PrintForegroundService : Service() {
         @Volatile
         private var fgsTimedOut = false
 
+        private val sessionGen = AtomicLong(0L)
+
+        /** Non-zero while a print monitoring session is active; zeroed synchronously on finish/clear. */
+        @Volatile
+        private var activeSession = 0L
+
+        /** Ensure a session token exists for a restored session once an active print is confirmed. */
+        fun ensureSession() {
+            if (activeSession == 0L) {
+                activeSession = sessionGen.incrementAndGet()
+            }
+        }
+
         /** Begin monitoring print [printer] with a live progress notification. */
         fun start(context: Context, printer: String) {
             fgsTimedOut = false
+            val session = sessionGen.incrementAndGet()
+            activeSession = session
             ensureChannel(context)
             startService(
                 context,
                 Intent(context, PrintForegroundService::class.java)
                     .setAction(ACTION_START)
+                    .putExtra(EX_SESSION, session)
                     .putExtra(EX_PRINTER, printer),
             )
         }
 
         /** Mirror a live status update into the progress notification. */
         fun notifyStatus(context: Context, printer: String, st: PrintStatus) {
+            val session = activeSession
+            if (session == 0L) return
             ensureChannel(context)
             if (fgsTimedOut) {
                 postDirectStatusNotification(context, printer, st)
@@ -86,6 +208,7 @@ class PrintForegroundService : Service() {
                 context,
                 Intent(context, PrintForegroundService::class.java)
                     .setAction(ACTION_UPDATE)
+                    .putExtra(EX_SESSION, session)
                     .putExtra(EX_PRINTER, printer)
                     .putExtra(EX_STATE, st.state.name)
                     .putExtra(EX_PERCENT, st.progress)
@@ -97,35 +220,23 @@ class PrintForegroundService : Service() {
 
         /** Show a terminal result notification and stop the foreground service. */
         fun finish(context: Context, printer: String, text: String) {
-            val timedOut = fgsTimedOut
+            activeSession = 0L
             fgsTimedOut = false
             ensureChannel(context)
-            if (timedOut) {
-                runCatching { NotificationManagerCompat.from(context).cancel(PROGRESS_NOTIFICATION_ID) }
-                postDirectResultNotification(context, "Printing on $printer", text)
-                return
-            }
-            startService(
-                context,
-                Intent(context, PrintForegroundService::class.java)
-                    .setAction(ACTION_FINISH)
-                    .putExtra(EX_PRINTER, printer)
-                    .putExtra(EX_TEXT, text),
-            )
+            // Stop directly instead of startForegroundService(ACTION_FINISH): works from any
+            // lifecycle state, never flashes a dummy progress notification, and any already-queued
+            // ACTION_UPDATE carries the invalidated session token and self-terminates.
+            runCatching { context.stopService(Intent(context, PrintForegroundService::class.java)) }
+            runCatching { NotificationManagerCompat.from(context).cancel(PROGRESS_NOTIFICATION_ID) }
+            postDirectResultNotification(context, "Printing on $printer", text)
         }
 
         /** Stop monitoring quietly (user left the monitor; the print itself continues). */
         fun clear(context: Context) {
+            activeSession = 0L
             fgsTimedOut = false
-            // Plain startService: when the service is not running there is nothing to clear,
-            // and startForegroundService() on a service that only stopSelf()s crashes the
-            // app (startForeground() contract).
-            try {
-                context.startService(
-                    Intent(context, PrintForegroundService::class.java).setAction(ACTION_CLEAR),
-                )
-            } catch (_: Exception) {
-            }
+            runCatching { context.stopService(Intent(context, PrintForegroundService::class.java)) }
+            runCatching { NotificationManagerCompat.from(context).cancel(PROGRESS_NOTIFICATION_ID) }
         }
 
         private fun postDirectStatusNotification(context: Context, printer: String, st: PrintStatus) {
@@ -175,8 +286,15 @@ class PrintForegroundService : Service() {
             runCatching { nm.notify(RESULT_NOTIFICATION_ID, n) }
         }
 
-        private fun formatBody(state: String, percent: Int, layer: Int, layers: Int, remainingSeconds: Int): String =
+        internal fun formatBody(
+            state: String?,
+            percent: Int,
+            layer: Int,
+            layers: Int,
+            remainingSeconds: Int,
+        ): String =
             when (state) {
+                null -> "Starting print…"
                 PrintJobState.PAUSED.name -> "Paused · $percent% · ${fmtRemaining(remainingSeconds)} left"
                 PrintJobState.PRINTING.name -> "Printing $percent% · Layer $layer/$layers · ${fmtRemaining(remainingSeconds)} left"
                 PrintJobState.COMPLETED.name -> "Print completed"
@@ -185,7 +303,9 @@ class PrintForegroundService : Service() {
                 PrintJobState.PAUSING.name -> "Pausing…"
                 PrintJobState.RESUMING.name -> "Resuming…"
                 PrintJobState.STOPPING.name -> "Stopping…"
-                else -> "Starting print…"
+                PrintJobState.CONNECTING.name -> "Connecting to printer…"
+                PrintJobState.IDLE.name -> "Printer idle"
+                else -> "Monitoring print…"
             }
 
         private fun fmtRemaining(seconds: Int): String {
@@ -242,6 +362,7 @@ class PrintForegroundService : Service() {
             return importance != NotificationManager.IMPORTANCE_NONE
         }
 
+        private const val EX_SESSION = "session"
         private const val EX_PRINTER = "printer"
         private const val EX_STATE = "state"
         private const val EX_PERCENT = "percent"
@@ -267,11 +388,20 @@ class PrintForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
+                if (isStaleSession(intent)) {
+                    stopStaleForeground()
+                    return START_NOT_STICKY
+                }
                 printerName = intent.getStringExtra(EX_PRINTER) ?: printerName
+                last = null
                 beginForeground()
             }
 
             ACTION_UPDATE -> {
+                if (isStaleSession(intent)) {
+                    stopStaleForeground()
+                    return START_NOT_STICKY
+                }
                 printerName = intent.getStringExtra(EX_PRINTER) ?: printerName
                 last = PrintNotificationState(
                     state = intent.getStringExtra(EX_STATE) ?: "PRINTING",
@@ -297,7 +427,6 @@ class PrintForegroundService : Service() {
             }
 
             ACTION_CLEAR -> {
-                beginForeground()
                 endForeground()
                 manager.cancel(PROGRESS_NOTIFICATION_ID)
                 stopSelf()
@@ -323,6 +452,31 @@ class PrintForegroundService : Service() {
             }
         }
         return START_NOT_STICKY
+    }
+
+    private fun isStaleSession(intent: Intent): Boolean {
+        val current = activeSession
+        val incoming = intent.getLongExtra(EX_SESSION, 0L)
+        return current == 0L || incoming != current
+    }
+
+    /**
+     * Satisfy the startForegroundService() contract briefly if this stale intent launched the
+     * service fresh, then tear down foreground mode and remove the progress notification at once.
+     */
+    private fun stopStaleForeground() {
+        if (!startedForeground && notificationsUsable(this)) {
+            ServiceCompat.startForeground(
+                this,
+                PROGRESS_NOTIFICATION_ID,
+                build(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+            startedForeground = true
+        }
+        endForeground()
+        manager.cancel(PROGRESS_NOTIFICATION_ID)
+        stopSelf()
     }
 
     private fun beginForeground() {
@@ -408,19 +562,10 @@ class PrintForegroundService : Service() {
             this, 4301, content, PendingIntent.FLAG_IMMUTABLE,
         )
         val st = last
-        val body = when {
-            st == null -> "Monitoring print…"
-            st.state == PrintJobState.PAUSED.name ->
-                "Paused · ${st.percent}% · ${fmtRemaining(st.remainingSeconds)} left"
-            st.state == PrintJobState.PRINTING.name ->
-                "Printing ${st.percent}% · Layer ${st.layer}/${st.layers} · ${fmtRemaining(st.remainingSeconds)} left"
-            st.state == PrintJobState.COMPLETED.name -> "Print completed"
-            st.state == PrintJobState.STOPPED.name -> "Print stopped"
-            st.state == PrintJobState.ERROR.name -> "Printer reported an error"
-            st.state == PrintJobState.PAUSING.name -> "Pausing…"
-            st.state == PrintJobState.RESUMING.name -> "Resuming…"
-            st.state == PrintJobState.STOPPING.name -> "Stopping…"
-            else -> "Starting print…"
+        val body = if (st == null) {
+            formatBody(null, -1, 0, 0, -1)
+        } else {
+            formatBody(st.state, st.percent, st.layer, st.layers, st.remainingSeconds)
         }
         val builder = NotificationCompat.Builder(this, PROGRESS_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
@@ -433,7 +578,7 @@ class PrintForegroundService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setContentIntent(contentIntent)
-        if (st == null || !st.state.isTerminalName()) {
+        if (st == null || st.state.showsControls()) {
             when (st?.state) {
                 PrintJobState.PAUSED.name -> builder.addAction(0, "Resume", actionIntent(ACTION_RESUME))
                 else -> builder.addAction(0, "Pause", actionIntent(ACTION_PAUSE))
@@ -482,7 +627,8 @@ class PrintForegroundService : Service() {
         return if (h > 0) "${h}h ${m}m" else "${m}m"
     }
 
-    private fun String.isTerminalName(): Boolean =
-        this == PrintJobState.COMPLETED.name || this == PrintJobState.STOPPED.name ||
-            this == PrintJobState.ERROR.name
+    private fun String.showsControls(): Boolean =
+        this == PrintJobState.PRINTING.name || this == PrintJobState.PAUSED.name ||
+            this == PrintJobState.PAUSING.name || this == PrintJobState.RESUMING.name ||
+            this == PrintJobState.STOPPING.name || this == PrintJobState.CONNECTING.name
 }

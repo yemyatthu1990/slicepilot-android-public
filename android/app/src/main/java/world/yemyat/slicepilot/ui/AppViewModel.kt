@@ -61,11 +61,13 @@ data class SliceConfig(
     val supportEnabled: Boolean = false,
     val supportStyle: String = "grid",
     val supportFilament: String? = null,
-    /** Dual extruder (CC2): support material on nozzle 2 — filament preset + Canvas spool. */
+    /** Multi-material (Canvas / dual-nozzle): support material filament preset + Canvas spool. */
     val supportFilamentPreset: String? = null,
     val supportFilamentColor: String? = null,
     val supportFilamentTrayId: Int? = null,
     val supportFilamentCanvasId: Int? = null,
+    /** When true (default), use the support spool only on support interfaces to cut swaps & waste. */
+    val supportInterfaceOnly: Boolean = true,
     val layerHeight: Float? = null,
     val wallLoops: Int? = null,
     val topShellLayers: Int? = null,
@@ -83,6 +85,37 @@ data class SliceConfig(
     val infillSpeed: Int? = null,
     val travelSpeed: Int? = null,
 )
+
+internal fun resolveSupportMachineProfile(
+    profile: String,
+    model: String,
+    availablePresets: Collection<String>,
+): String {
+    val isCC2 =
+        model.contains("Carbon 2", true) || model.contains("CC2", true) ||
+            profile.contains("Carbon 2", true)
+    if (isCC2) {
+        val single = profile.replace(Regex("(\\d\\.\\d)(\\+\\d\\.\\d|C) nozzle"), "$1 nozzle")
+        return if (single in availablePresets) single else profile
+    }
+    val m = Regex("(\\d\\.\\d) nozzle").find(profile) ?: return profile
+    val target = profile.replace(m.value, "${m.groupValues[1]}C nozzle")
+    return if (target in availablePresets) target else profile
+}
+
+internal fun buildSupportFilamentOverrides(interfaceOnly: Boolean): String =
+    buildString {
+        if (interfaceOnly) {
+            appendLine("support_filament=0")
+            appendLine("support_interface_filament=2")
+        } else {
+            appendLine("support_filament=2")
+            appendLine("support_interface_filament=2")
+        }
+        // Purge/prime tower keeps the support material out of the model walls.
+        appendLine("wipe_tower=1")
+        appendLine("purge_in_prime_tower=1")
+    }
 
 data class MaterialOption(
     val label: String,
@@ -443,7 +476,10 @@ class AppViewModel(
     private val _config =
         MutableStateFlow(
             SliceConfig(
-                printer = prefs.getString("cfg_printer", null),
+                printer =
+                    prefs.getString("cfg_printer", null)?.let { p ->
+                        if (p.contains("Carbon 2", true) && p.contains("+")) undualizeProfile(p) else p
+                    },
                 process = prefs.getString("cfg_process", null),
                 filament = prefs.getString("cfg_filament", null),
                 filamentColor = prefs.getString("cfg_filament_color", null),
@@ -456,6 +492,7 @@ class AppViewModel(
                 supportFilamentColor = prefs.getString("cfg_support_color", null),
                 supportFilamentTrayId = if (prefs.contains("cfg_support_tray")) prefs.getInt("cfg_support_tray", 0) else null,
                 supportFilamentCanvasId = if (prefs.contains("cfg_support_canvas")) prefs.getInt("cfg_support_canvas", 0) else null,
+                supportInterfaceOnly = prefs.getBoolean("cfg_support_interface_only", true),
                 layerHeight = if (prefs.contains("cfg_layer_height")) prefs.getFloat("cfg_layer_height", 0.2f) else null,
                 wallLoops = if (prefs.contains("cfg_wall_loops")) prefs.getInt("cfg_wall_loops", 2) else null,
                 topShellLayers = if (prefs.contains("cfg_top_shells")) prefs.getInt("cfg_top_shells", 4) else null,
@@ -537,6 +574,7 @@ class AppViewModel(
 
     /** True while a print monitor feeds the foreground-service notification. */
     private var printMonitorActive = false
+    private val printNotificationTracker = world.yemyat.slicepilot.PrintNotificationTracker()
 
     private fun startPrintMonitoring(
         sp: ConnectedPrinter,
@@ -809,6 +847,7 @@ class AppViewModel(
     /** Stop watching the print (the job itself keeps running on the printer). */
     private fun stopPrintMonitoring() {
         printMonitorActive = false
+        printNotificationTracker.reset()
         PrintForegroundService.clear(context)
         prefs.edit().putBoolean("print_session_active", false).apply()
         printMonitorJob?.cancel()
@@ -878,6 +917,7 @@ class AppViewModel(
             _printSim.update { it.copy(progress = 1f, complete = true, message = "Print started on ${sp.name}") }
             if (switchScreen) _screen.value = Screen.Printing
             printMonitorActive = true
+            printNotificationTracker.begin(justStarted = false, nowMs = android.os.SystemClock.elapsedRealtime())
             startCloudPrintMonitoring(sp)
         } else {
             val lp =
@@ -895,6 +935,7 @@ class AppViewModel(
             _printSim.update { it.copy(progress = 1f, complete = true, message = "Print started on ${sp.name}") }
             if (switchScreen) _screen.value = Screen.Printing
             printMonitorActive = true
+            printNotificationTracker.begin(justStarted = false, nowMs = android.os.SystemClock.elapsedRealtime())
             startPrintMonitoring(sp, storedAccessCode(lp))
         }
         return true
@@ -1800,17 +1841,23 @@ class AppViewModel(
             _printStatus.collect { st ->
                 if (!printMonitorActive || st == null) return@collect
                 val name = selectedPrinter?.name ?: "Printer"
-                PrintForegroundService.notifyStatus(context, name, st)
-                if (st.state.isTerminal) {
-                    printMonitorActive = false
-                    val text =
-                        when (st.state) {
-                            world.yemyat.slicepilot.cloud.PrintJobState.COMPLETED -> "Print completed"
-                            world.yemyat.slicepilot.cloud.PrintJobState.STOPPED -> "Print stopped"
-                            else -> "Printer reported an error"
-                        }
-                    PrintForegroundService.finish(context, name, text)
-                    prefs.edit().putBoolean("print_session_active", false).apply()
+                val now = android.os.SystemClock.elapsedRealtime()
+                when (val action = printNotificationTracker.onStatus(name, st, now)) {
+                    world.yemyat.slicepilot.PrintNotificationTracker.Action.Ignore -> Unit
+                    world.yemyat.slicepilot.PrintNotificationTracker.Action.Update -> {
+                        PrintForegroundService.ensureSession()
+                        PrintForegroundService.notifyStatus(context, name, st)
+                    }
+                    is world.yemyat.slicepilot.PrintNotificationTracker.Action.Finish -> {
+                        printMonitorActive = false
+                        prefs.edit().putBoolean("print_session_active", false).apply()
+                        PrintForegroundService.finish(context, name, action.text)
+                    }
+                    world.yemyat.slicepilot.PrintNotificationTracker.Action.Clear -> {
+                        printMonitorActive = false
+                        prefs.edit().putBoolean("print_session_active", false).apply()
+                        PrintForegroundService.clear(context)
+                    }
                 }
             }
         }
@@ -1914,8 +1961,8 @@ class AppViewModel(
                 world.yemyat.slicepilot.cloud
                     .PrintSlot(t = 0, canvasId = canvas, trayId = tray),
             )
-        // Dual-extruder support material: tool 1 draws from the support spool's tray.
-        if (cfg.supportFilamentPreset != null) {
+        // Multi-material support spool: tool 1 draws from the support spool's Canvas tray.
+        if (cfg.supportEnabled && cfg.supportFilamentPreset != null && supportMaterialAvailable()) {
             return slots +
                 world.yemyat.slicepilot.cloud.PrintSlot(
                     t = 1,
@@ -2068,6 +2115,7 @@ class AppViewModel(
                             startCloudPrintMonitoring(sp, justStarted = true)
                         }
                         printMonitorActive = true
+                        printNotificationTracker.begin(justStarted = true, nowMs = android.os.SystemClock.elapsedRealtime())
                         PrintForegroundService.start(context, sp.name)
                         persistPrintSession(sp)
                         autoCameraPending = true
@@ -2153,6 +2201,7 @@ class AppViewModel(
         )
         startDemoMonitor()
         printMonitorActive = true
+        printNotificationTracker.begin(justStarted = true, nowMs = android.os.SystemClock.elapsedRealtime())
         PrintForegroundService.start(context, sp.name)
         persistPrintSession(sp)
     }
@@ -2971,12 +3020,15 @@ class AppViewModel(
         updateConfig(_config.value.copy(supportFilament = v))
     }
 
+    fun setSupportInterfaceOnly(v: Boolean) {
+        updateConfig(_config.value.copy(supportInterfaceOnly = v))
+    }
+
     /**
-     * Dual-extruder support material (CC2): print supports from nozzle 2 with [opt]'s
-     * filament (fed from its Canvas tray); null prints supports "same as model".
-     * support_filament is the Bambu 1-based filament id — 2 = the second preset.
-     * Selecting a support material switches the machine profile to the multi-material
-     * variant automatically (CC2 dual-nozzle / CC1 Canvas); no manual nozzle choice.
+     * Multi-material support spool (CC2 / CC1 Canvas): print support interfaces (or full supports)
+     * from [opt]'s filament tray; null prints supports "same as model".
+     * CC2 stays on its single-nozzle profile (single_extruder_multi_material=1 + M6211 Canvas
+     * swaps, zero Y offset, real single-nozzle flushing); CC1 switches to the "0.4C" Canvas variant.
      */
     fun setSupportMaterial(opt: MaterialOption?) {
         val cfg = _config.value
@@ -3009,15 +3061,15 @@ class AppViewModel(
     }
 
     /** True when the current printer can print supports from a separate filament:
-     *  CC2 (dual extruder, always) or a Centauri Carbon reporting Canvas trays. */
+     *  CC2 (single nozzle + Canvas), genuine multi-extruder profiles, or CC1 reporting Canvas trays. */
     fun supportMaterialAvailable(): Boolean {
         val model = selectedPrinter?.model ?: ""
         val printer = _config.value.printer ?: ""
-        val dual =
+        val multiCapable =
             extruderCountForProfile(context, printer) > 1 ||
                 model.contains("Carbon 2", true) || model.contains("CC2", true) ||
                 printer.contains("Carbon 2", true)
-        if (dual) return true
+        if (multiCapable) return true
         // CC1 + Canvas: the Canvas report lists trays; without one a swap is impossible.
         val isCarbon1 =
             (model.contains("Centauri Carbon", true) && !model.contains("2", true)) ||
@@ -3025,25 +3077,21 @@ class AppViewModel(
         return isCarbon1 && printSetupMaterials().any { it.trayId != null }
     }
 
-    /** Map a machine profile to its multi-material variant (CC2 "0.4+0.4", CC1 "0.4C"). */
+    /**
+     * Resolve the multi-material machine profile for Canvas support printing:
+     * - CC2 is a single-nozzle + Canvas machine whose plain "0.4 nozzle" profile already carries
+     *   `single_extruder_multi_material = 1` and `M6211` swaps (using the synthetic "0.4+0.4"
+     *   profile introduced a +1.5 mm Y extruder_offset and disabled single-nozzle flushing).
+     *   Always keep CC2 on its single-nozzle profile.
+     * - CC1 + Canvas maps "0.4 nozzle" -> "0.4C nozzle" (1 nozzle + single_extruder_multi_material).
+     */
     private fun dualizeProfile(
         profile: String?,
         model: String,
     ): String? {
         profile ?: return null
-        val m = Regex("(\\d\\.\\d) nozzle").find(profile) ?: return profile
-        val isCC2 =
-            model.contains("Carbon 2", true) || model.contains("CC2", true) ||
-                profile.contains("Carbon 2", true)
-        val variant =
-            if (isCC2) {
-                "${m.groupValues[1]}+${m.groupValues[1]} nozzle"
-            } else {
-                "${m.groupValues[1]}C nozzle"
-            }
-        val target = profile.replace(m.value, variant)
         val presets = parseJsonStringArray(NativeLib.nativeGetPrinters())
-        return if (target in presets) target else profile
+        return resolveSupportMachineProfile(profile, model, presets)
     }
 
     /** Reverse of [dualizeProfile]: back to the plain single-material profile. */
@@ -3482,6 +3530,7 @@ class AppViewModel(
         e.putString("cfg_seam_position", newConfig.seamPosition)
         e.putBoolean("cfg_ironing", newConfig.ironing)
         e.putBoolean("cfg_support_plate_only", newConfig.supportOnPlateOnly)
+        e.putBoolean("cfg_support_interface_only", newConfig.supportInterfaceOnly)
         newConfig.supportThresholdAngle?.let { e.putInt("cfg_support_angle", it) } ?: e.remove("cfg_support_angle")
         newConfig.supportZDistance?.let { e.putFloat("cfg_support_z_distance", it) } ?: e.remove("cfg_support_z_distance")
         newConfig.wallSpeed?.let { e.putInt("cfg_wall_speed", it) } ?: e.remove("cfg_wall_speed")
@@ -3510,7 +3559,16 @@ class AppViewModel(
     ) {
         val mp = modelPath ?: return
         val cfg = _config.value
-        val printer = cfg.printer ?: return
+        val dualSupport = cfg.supportEnabled && cfg.supportFilamentPreset != null && supportMaterialAvailable()
+        val basePrinter = cfg.printer ?: return
+        val printer =
+            if (dualSupport) {
+                dualizeProfile(basePrinter, selectedPrinter?.model ?: "") ?: basePrinter
+            } else {
+                val single = undualizeProfile(basePrinter) ?: basePrinter
+                val presets = parseJsonStringArray(NativeLib.nativeGetPrinters())
+                if (single in presets) single else basePrinter
+            }
         val process = cfg.process ?: return
         val filament = cfg.filament ?: return
         val out = File(cacheDir, suggestedGcodeName).absolutePath
@@ -3554,14 +3612,11 @@ class AppViewModel(
                         appendLine("support_type=normal(auto)")
                         if (cfg.supportStyle == "snug") appendLine("support_style=snug")
                     }
-                    if (cfg.supportFilament != null) {
-                        appendLine("support_filament=${cfg.supportFilament}")
-                        if (cfg.supportFilamentPreset != null) {
-                            // Purge/prime tower between the nozzles keeps the support
-                            // colour out of the model surfaces.
-                            appendLine("wipe_tower=1")
-                            appendLine("purge_in_prime_tower=1")
-                        }
+                    if (dualSupport) {
+                        append(buildSupportFilamentOverrides(interfaceOnly = cfg.supportInterfaceOnly))
+                    } else {
+                        appendLine("support_filament=0")
+                        appendLine("support_interface_filament=0")
                     }
                     cfg.supportThresholdAngle?.let { appendLine("support_threshold_angle=$it") }
                     cfg.supportZDistance?.let {
@@ -3573,16 +3628,19 @@ class AppViewModel(
                     appendLine("enable_support=0")
                 }
                 // Single-material: paint the print with the picked spool's colour.
-                // A dual-extruder support spool adds a second colour entry (nozzle 2),
-                // C-style escaped per ini.
+                // A dual-extruder support spool adds a second colour entry (nozzle 2).
+                // ConfigOptionStrings uses semicolon-separated elements in INI; quoting with
+                // "\n" deserializes as a single 1-element vector and crashes ToolOrdering/WipeTower.
                 run {
                     fun hex(c: String) = if (c.startsWith("#")) c else "#$c"
                     val modelC = cfg.filamentColor?.let(::hex)
-                    val supportC = cfg.supportFilamentPreset?.let { cfg.supportFilamentColor?.let(::hex) }
+                    val supportC = if (dualSupport) cfg.supportFilamentColor?.let(::hex) else null
                     when {
-                        modelC != null && supportC != null -> {
-                            appendLine("filament_colour=\"$modelC\\n$supportC\"")
-                            appendLine("filament_multi_colour=\"$modelC\\n$supportC\"")
+                        dualSupport && (modelC != null || supportC != null) -> {
+                            val m = modelC ?: "#26A69A"
+                            val s = supportC ?: "#B0BEC5"
+                            appendLine("filament_colour=$m;$s")
+                            appendLine("filament_multi_colour=$m;$s")
                         }
 
                         modelC != null -> {
@@ -3643,7 +3701,7 @@ class AppViewModel(
                 filament = filament,
                 process = process,
                 overrides = overrides,
-                supportFilament = cfg.supportFilamentPreset ?: "",
+                supportFilament = if (dualSupport) cfg.supportFilamentPreset.orEmpty() else "",
                 outPath = out,
                 autoPrint = autoPrint,
                 transform =

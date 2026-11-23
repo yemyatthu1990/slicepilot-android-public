@@ -351,4 +351,46 @@ class LanPrintMonitorTest {
         assertEquals(230f, merged.nozzleTarget, 0.01f)
         assertEquals(true, merged.lightOn)
     }
+
+    @Test
+    fun mergePrintStatusKeepsCompleteWhenMachineStatusIsAlreadyIdle() {
+        val printing = LanPrintMonitor.mergePrintStatus(PrintStatus(), fullStatus)
+        val finishedPacket = JSONObject(
+            """
+            {
+                "machine_status": { "status": 1, "sub_status": 2600 },
+                "print_status": { "state": "complete", "progress": 100 }
+            }
+            """.trimIndent(),
+        )
+        val completed = LanPrintMonitor.mergePrintStatus(printing, finishedPacket)
+        assertEquals(PrintJobState.COMPLETED, completed.state)
+
+        // Once print_status moves to standby, the printer unlatches to IDLE.
+        val standbyPacket = JSONObject(
+            """
+            {
+                "machine_status": { "status": 1, "sub_status": 2600 },
+                "print_status": { "state": "standby" }
+            }
+            """.trimIndent(),
+        )
+        val idle = LanPrintMonitor.mergePrintStatus(completed, standbyPacket)
+        assertEquals(PrintJobState.IDLE, idle.state)
+    }
+
+    @Test
+    fun mergePrintStatusFallsBackToMachineStatusOnUnknownStateString() {
+        val printing = LanPrintMonitor.mergePrintStatus(PrintStatus(), fullStatus)
+        val packet = JSONObject(
+            """
+            {
+                "machine_status": { "status": 2, "sub_status": 2502 },
+                "print_status": { "state": "mystery_state" }
+            }
+            """.trimIndent(),
+        )
+        val paused = LanPrintMonitor.mergePrintStatus(printing, packet)
+        assertEquals(PrintJobState.PAUSED, paused.state)
+    }
 }

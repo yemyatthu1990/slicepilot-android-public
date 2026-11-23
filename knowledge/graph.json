@@ -1,0 +1,3881 @@
+{
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "art:app-debug-apk",
+      "kind": "artifact",
+      "title": "app-debug.apk (built 2026-11-22)",
+      "status": "current",
+      "updated": "2026-11-22",
+      "summary": "Debug build from current main (289 MB), installed on the Pixel via apkpush; debug and release differ, so this proves nothing about R8.",
+      "refs": [
+        "file:android/app/build/outputs/apk/debug/app-debug.apk"
+      ],
+      "next": [
+        "Rebuild after the next source change; APKs are not committed"
+      ],
+      "edges": [
+        [
+          "produced_by",
+          "mod:android-app"
+        ],
+        [
+          "verified_on",
+          "dev:pixel-4a"
+        ]
+      ]
+    },
+    {
+      "id": "art:arm64-prefix",
+      "kind": "artifact",
+      "title": "android/native-build/prefix/arm64-v8a",
+      "status": "current",
+      "updated": "2026-11-22",
+      "summary": "Locally built native dependency prefix (Boost, CGAL, FreeType, …) — gitignored, cached in CI, and the thing that makes a fresh clone slow to build.",
+      "refs": [
+        "file:android/native-build/prefix/arm64-v8a/"
+      ],
+      "edges": [
+        [
+          "produced_by",
+          "mod:native-build"
+        ],
+        [
+          "used_by",
+          "mod:android-core-jni"
+        ]
+      ]
+    },
+    {
+      "id": "art:release-aab",
+      "kind": "artifact",
+      "title": "app-release.aab (v1.9.6)",
+      "status": "current",
+      "updated": "2026-11-22",
+      "summary": "The AAB currently on Play. The local build outputs are gone, so a fresh bundleRelease is needed for the v1.9.7 checklist step.",
+      "refs": [
+        "file:android/app/build/outputs/bundle/release/"
+      ],
+      "next": [
+        "Rebuild for v1.9.7 with native symbol tables so Crashlytics stays symbolicated"
+      ],
+      "edges": [
+        [
+          "produced_by",
+          "mod:android-app"
+        ],
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "produced_by",
+          "ext:github-actions"
+        ],
+        [
+          "requires",
+          "rule:release-checklist"
+        ]
+      ]
+    },
+    {
+      "id": "art:screenshots-v1.9.0",
+      "kind": "artifact",
+      "title": "Store screenshots (phone_v1.9.0 set)",
+      "status": "current",
+      "updated": "2026-11-22",
+      "summary": "8 screenshots shot on the Pixel 4a from the v1.9.0 debug build — the shipped store set, covering both themes and all three tabs; the printer frame uses the demo printer.",
+      "refs": [
+        "file:store_listing/screenshots/phone_v1.9.0/"
+      ],
+      "next": [
+        "Re-shoot for v1.9.7 once the consolidated UI is on a device"
+      ],
+      "edges": [
+        [
+          "produced_by",
+          "mod:store-listing"
+        ],
+        [
+          "verified_on",
+          "dev:pixel-4a"
+        ],
+        [
+          "used_by",
+          "rule:screenshot-evidence"
+        ],
+        [
+          "used_by",
+          "mod:landing"
+        ]
+      ]
+    },
+    {
+      "id": "art:status-md",
+      "kind": "artifact",
+      "title": "knowledge/STATUS.md",
+      "status": "current",
+      "updated": "2026-11-22",
+      "summary": "Generated project status digest rendered from this graph.",
+      "refs": [
+        "file:knowledge/STATUS.md"
+      ],
+      "edges": [
+        [
+          "produced_by",
+          "mod:knowledge"
+        ]
+      ]
+    },
+    {
+      "id": "br:feature/google-sign-in",
+      "kind": "branch",
+      "title": "feature/google-sign-in",
+      "status": "merged",
+      "owner": "dev",
+      "updated": "2026-11-14",
+      "summary": "Merged into main: Google sign-in through Elegoo's federated auth centre plus the terms-consent dialog, shipped as v1.9.6 (39).",
+      "attrs": {
+        "head_date": "2026-11-14",
+        "head": "816507e",
+        "ahead": 0
+      },
+      "refs": [
+        "commit:816507e",
+        "commit:36526c0"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ]
+      ]
+    },
+    {
+      "id": "br:feature/multi-colour",
+      "kind": "branch",
+      "title": "feature/multi-colour",
+      "status": "stale",
+      "owner": "dev",
+      "updated": "2026-10-21",
+      "summary": "6 unmerged commits, last touched 2026-10-21: per-part spool mapping, project-3mf config safety and an AMS multi-colour preview in Print setup. A separate, earlier line from the abandoned multi-filament branch, and it predates the whole v1.9 line — needs the same keep-or-drop decision.",
+      "attrs": {
+        "head_date": "2026-10-21",
+        "head": "87d7f96",
+        "ahead": 6
+      },
+      "refs": [
+        "commit:87d7f96",
+        "commit:80d00a0",
+        "commit:992ce86"
+      ],
+      "next": [
+        "Decide: rebase onto current main, fold the useful parts into the app, or delete"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ]
+      ]
+    },
+    {
+      "id": "br:feature/multi-filament",
+      "kind": "branch",
+      "title": "feature/multi-filament",
+      "status": "deleted",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "Deleted 2026-11-22 (local and origin) as not working: 4 commits — multi-filament phases 1-4, JNI flush volumes, the flush-matrix fix and a staged v1.9.7 store copy — were never built, device-verified or merged. History preserved as the tag abandoned/feature-multi-filament → 5163dfe.",
+      "attrs": {
+        "head_date": "2026-11-15",
+        "head": "5163dfe",
+        "ahead": 4,
+        "tag": "abandoned/feature-multi-filament"
+      },
+      "refs": [
+        "tag:abandoned/feature-multi-filament",
+        "commit:5163dfe",
+        "commit:66b6104",
+        "commit:05ff585",
+        "commit:a9a55ce"
+      ],
+      "next": [
+        "Recover from the tag only if the multi-filament capability is revived"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ],
+        [
+          "carries",
+          "feat:multi-filament"
+        ],
+        [
+          "blocks",
+          "rel:v1.9.7"
+        ]
+      ]
+    },
+    {
+      "id": "br:feature/ui-feedback-v1.9.0",
+      "kind": "branch",
+      "title": "feature/ui-feedback-v1.9.0",
+      "status": "merged",
+      "updated": "2026-11-14",
+      "summary": "The v1.9.0-1.9.6 UI-feedback line; fully merged into main.",
+      "attrs": {
+        "head_date": "2026-11-14",
+        "head": "83f7309",
+        "ahead": 0
+      },
+      "refs": [
+        "commit:83f7309"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ]
+      ]
+    },
+    {
+      "id": "br:main",
+      "kind": "branch",
+      "title": "main",
+      "status": "active",
+      "updated": "2026-11-22",
+      "summary": "Trunk. HEAD e38ba14; the three knowledge-graph commits sit on top of ab64461 (the UI consolidation that is unreleased) and are unpushed pending review.",
+      "attrs": {
+        "head_date": "2026-11-22",
+        "head": "knowledge-graph tip; last app commit ab64461",
+        "ahead": "3 vs origin/main, unpushed"
+      },
+      "refs": [
+        "commit:ab64461"
+      ],
+      "next": [
+        "Push main to origin once the graph work is approved",
+        "then decide the v1.9.7 release cut"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ]
+      ]
+    },
+    {
+      "id": "br:main-backup",
+      "kind": "branch",
+      "title": "main-backup",
+      "status": "stale",
+      "updated": "2026-10-21",
+      "summary": "12 commits that never joined main, last commit 2026-10-21 — a snapshot from the v1.8.x era. Decide whether anything there is still wanted, then delete.",
+      "attrs": {
+        "head_date": "2026-10-21",
+        "head": "0c52998",
+        "ahead": 12
+      },
+      "refs": [
+        "commit:0c52998"
+      ],
+      "next": [
+        "Review the 12 commits, cherry-pick or delete"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ],
+        [
+          "affects",
+          "iss:branch-debt"
+        ]
+      ]
+    },
+    {
+      "id": "br:parametric/makerworld-customizer",
+      "kind": "branch",
+      "title": "parametric/makerworld-customizer",
+      "status": "parked",
+      "owner": "dev",
+      "updated": "2026-10-22",
+      "summary": "5 unmerged commits on parametric designs, last touched 2026-10-22; base predates the whole v1.9 line, so it needs a rebase before it can be judged.",
+      "attrs": {
+        "head_date": "2026-10-22",
+        "head": "0b74b11",
+        "ahead": 5
+      },
+      "refs": [
+        "commit:0b74b11",
+        "commit:7bb89df"
+      ],
+      "next": [
+        "Rebase or delete"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ],
+        [
+          "carries",
+          "feat:parametric-customizer"
+        ],
+        [
+          "affects",
+          "iss:branch-debt"
+        ]
+      ]
+    },
+    {
+      "id": "br:public-sync",
+      "kind": "branch",
+      "title": "public-sync",
+      "status": "active",
+      "updated": "2026-11-14",
+      "summary": "Snapshot branch used to push main into yemyatthu1990/slicepilot-android-public; last snapshot is v1.9.6 (39).",
+      "attrs": {
+        "head_date": "2026-11-14",
+        "head": "public snapshot v1.9.6",
+        "ahead": "n/a (orphan history)"
+      },
+      "refs": [
+        "remote:public"
+      ],
+      "next": [
+        "Next snapshot commit must be named 'SlicePilot vX.Y.Z — public snapshot (app, native build, CI, landing page)'"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ],
+        [
+          "produced_by",
+          "rule:public-snapshot-flow"
+        ]
+      ]
+    },
+    {
+      "id": "br:release/1.7.9",
+      "kind": "branch",
+      "title": "release/1.7.9",
+      "status": "merged",
+      "updated": "2026-10-21",
+      "summary": "Historic release branch, merged into main.",
+      "attrs": {
+        "head_date": "2026-10-21",
+        "head": "e27967a",
+        "ahead": 0
+      },
+      "refs": [
+        "commit:e27967a"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ]
+      ]
+    },
+    {
+      "id": "br:release/1.8.0",
+      "kind": "branch",
+      "title": "release/1.8.0",
+      "status": "merged",
+      "updated": "2026-10-21",
+      "summary": "Historic release branch (v1.8.0/1.8.1), merged into main.",
+      "attrs": {
+        "head_date": "2026-10-21",
+        "head": "v1.8.1 commit",
+        "ahead": 0
+      },
+      "refs": [
+        "commit:release/1.8.0"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ]
+      ]
+    },
+    {
+      "id": "dev:centauri-carbon-2",
+      "kind": "device",
+      "title": "Elegoo Centauri Carbon 2 printer",
+      "status": "unknown",
+      "updated": "2026-11-22",
+      "summary": "The target printer. Its network/firmware behaviour is documented in the community CC2 protocol doc plus SFB-003/SFB-007 firmware-quirk notes; the app's own demo printer exists because the real one is not always reachable.",
+      "refs": [
+        "url:https://raw.githubusercontent.com/danielcherubini/elegoo-homeassistant/main/docs/CC2_PROTOCOL.md",
+        "file:docs/notes/printer-firmware-quirks.md",
+        "email:contact@yemyat.world"
+      ],
+      "next": [
+        "Do a real cloud print + LAN print run to close the verification gap behind the store screenshots"
+      ],
+      "edges": [
+        [
+          "used_by",
+          "feat:cloud-print"
+        ],
+        [
+          "used_by",
+          "feat:lan-print"
+        ],
+        [
+          "related",
+          "ext:elegoo-cloud"
+        ]
+      ]
+    },
+    {
+      "id": "dev:pixel-4a",
+      "kind": "device",
+      "title": "Pixel 4a (USB, 1080×2340)",
+      "status": "available",
+      "updated": "2026-11-22",
+      "summary": "Default adb target over USB and the source of the v1.9.0 store screenshots. Any bare adb command without -s lands here.",
+      "refs": [
+        "serial:09121JEC206726"
+      ],
+      "edges": [
+        [
+          "verified_on",
+          "feat:ui-design-system"
+        ],
+        [
+          "verified_on",
+          "art:screenshots-v1.9.0"
+        ],
+        [
+          "used_by",
+          "rule:adb-install-flow"
+        ],
+        [
+          "used_by",
+          "rule:screenshot-evidence"
+        ]
+      ]
+    },
+    {
+      "id": "dev:yes-s25-edge",
+      "kind": "device",
+      "title": "Samsung S25 Edge (Tailscale, 1440×3120)",
+      "status": "available",
+      "updated": "2026-11-22",
+      "summary": "Second test phone over wireless debugging on Tailscale; the port changes whenever wireless debugging is toggled, so always pass -s and confirm the serial.",
+      "refs": [
+        "address:100.112.155.94:<port>"
+      ],
+      "next": [
+        "Use it for the multi-filament verification run — the Pixel's screenshots do not prove the 1440×3120 layouts"
+      ],
+      "edges": [
+        [
+          "verified_on",
+          "feat:multi-filament"
+        ],
+        [
+          "used_by",
+          "rule:adb-install-flow"
+        ]
+      ]
+    },
+    {
+      "id": "doc:agents-md",
+      "kind": "doc",
+      "title": "AGENTS.md",
+      "status": "current",
+      "owner": "agent",
+      "updated": "2026-11-22",
+      "summary": "The agent-facing playbook: the Matrix-app rule, the JNI↔R8 rule, store-copy wording rules, the public repo flow, the release checklist, on-device debugging, and the adb install notes. It is gitignored, so its content is now mirrored into this graph.",
+      "refs": [
+        "file:AGENTS.md"
+      ],
+      "next": [
+        "Keep it pointed at knowledge/ so agents read the graph before working"
+      ],
+      "edges": [
+        [
+          "documents",
+          "proj:slicepilot-android"
+        ],
+        [
+          "documents",
+          "rule:jni-r8-keep"
+        ],
+        [
+          "documents",
+          "rule:release-checklist"
+        ],
+        [
+          "documents",
+          "rule:adb-install-flow"
+        ],
+        [
+          "documents",
+          "rule:public-snapshot-flow"
+        ],
+        [
+          "documents",
+          "rule:screenshot-evidence"
+        ]
+      ]
+    },
+    {
+      "id": "doc:firmware-quirks",
+      "kind": "doc",
+      "title": "CC2 firmware quirk notes (SFB-003, SFB-007)",
+      "status": "reference",
+      "updated": "2026-11-22",
+      "summary": "Observed firmware quirks behind cloud/LAN behaviour, used to validate whether a behaviour is a bug in the app or in the printer.",
+      "refs": [
+        "file:docs/notes/printer-firmware-quirks.md",
+        "file:docs/notes/elegoo-cloud-notes.md"
+      ],
+      "edges": [
+        [
+          "documents",
+          "dev:centauri-carbon-2"
+        ],
+        [
+          "affects",
+          "feat:cloud-print"
+        ],
+        [
+          "affects",
+          "feat:lan-print"
+        ]
+      ]
+    },
+    {
+      "id": "doc:knowledge-readme",
+      "kind": "doc",
+      "title": "knowledge/README.md (schema and protocol)",
+      "status": "current",
+      "owner": "agent",
+      "updated": "2026-11-22",
+      "summary": "The graph's own contract: node kinds and their statuses, edge types, and the read-before-work / write-after-work protocol agents follow.",
+      "refs": [
+        "file:knowledge/README.md"
+      ],
+      "edges": [
+        [
+          "documents",
+          "mod:knowledge"
+        ],
+        [
+          "documents",
+          "proj:slicepilot-android"
+        ]
+      ]
+    },
+    {
+      "id": "doc:matrix-app-fan-gating",
+      "kind": "doc",
+      "title": "Matrix fan-gating answer (FdmFanDialogController.isFanEnable)",
+      "status": "reference",
+      "updated": "2026-11-22",
+      "summary": "The recorded answer to a printer-behaviour question Matrix settled: the fan is enabled only when machine status is 26 (idle/manual-ready), with explicit 'not configured' checks per fan — the pattern the app mirrors instead of guessing.",
+      "refs": [
+        "path:/tmp/opencode/blutter_out/asm/elegoo/page/device/fdm_fan_bottom/"
+      ],
+      "edges": [
+        [
+          "derived_from",
+          "doc:matrix-decompilation"
+        ],
+        [
+          "affects",
+          "feat:printer-controls"
+        ]
+      ]
+    },
+    {
+      "id": "doc:matrix-decompilation",
+      "kind": "doc",
+      "title": "Elegoo Matrix v1.2.7 blutter decompilation",
+      "status": "reference",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "The Dart assembly tree AGENTS.md tells agents to consult instead of guessing printer behaviour — currently at /tmp/opencode/blutter_out/asm/, which means it will not survive a reboot.",
+      "refs": [
+        "path:/tmp/opencode/blutter_out/asm/"
+      ],
+      "next": [
+        "Move or archive it somewhere durable (or record which questions it already answered) before it disappears"
+      ],
+      "edges": [
+        [
+          "documents",
+          "ext:elegoo-cloud"
+        ],
+        [
+          "affects",
+          "doc:agents-md"
+        ]
+      ]
+    },
+    {
+      "id": "doc:readme-md",
+      "kind": "doc",
+      "title": "README.md",
+      "status": "current",
+      "updated": "2026-11-22",
+      "summary": "Human-facing repo overview: layout, requirements (NDK 27.0.12077973, CMake 3.18+, JDK 17), the cloud-auth library, native dependency build, secrets layout, and CI.",
+      "refs": [
+        "file:README.md"
+      ],
+      "next": [
+        "Mention knowledge/ in the repository layout section once the graph is accepted"
+      ],
+      "edges": [
+        [
+          "documents",
+          "proj:slicepilot-android"
+        ],
+        [
+          "documents",
+          "mod:android-app"
+        ],
+        [
+          "documents",
+          "mod:native-build"
+        ]
+      ]
+    },
+    {
+      "id": "doc:store-listing",
+      "kind": "doc",
+      "title": "store_listing/metadata.md",
+      "status": "current",
+      "owner": "agent",
+      "updated": "2026-11-22",
+      "summary": "Play listing source of truth with the per-version release notes, the Play edit ids, and the screenshot set index.",
+      "refs": [
+        "file:store_listing/metadata.md"
+      ],
+      "edges": [
+        [
+          "documents",
+          "rel:v1.9.6"
+        ],
+        [
+          "documents",
+          "mod:store-listing"
+        ],
+        [
+          "guarded_by",
+          "rule:notes-500-char"
+        ],
+        [
+          "guarded_by",
+          "rule:no-ye3d-copy"
+        ]
+      ]
+    },
+    {
+      "id": "ext:agora-rtm",
+      "kind": "external",
+      "title": "Agora (printer camera stream)",
+      "status": "live",
+      "updated": "2026-11-22",
+      "summary": "Provides the live printer video the app shows; the Agora App ID is a build secret, not a constant.",
+      "refs": [
+        "file:secrets/build.properties"
+      ],
+      "edges": [
+        [
+          "used_by",
+          "feat:printer-camera"
+        ],
+        [
+          "requires",
+          "sec:build-properties"
+        ]
+      ]
+    },
+    {
+      "id": "ext:cloudflare",
+      "kind": "external",
+      "title": "Cloudflare Pages + DNS (slicepilot.eu)",
+      "status": "live",
+      "updated": "2026-11-22",
+      "summary": "Hosts the landing site and holds the DNS token used by the landing deploy pipeline.",
+      "refs": [
+        "file:secrets/cf-dns.env",
+        "file:landing/wrangler.jsonc"
+      ],
+      "edges": [
+        [
+          "hosts",
+          "mod:landing"
+        ],
+        [
+          "requires",
+          "sec:cf-dns"
+        ]
+      ]
+    },
+    {
+      "id": "ext:elegoo-cloud",
+      "kind": "external",
+      "title": "Elegoo cloud API (global / china gateways)",
+      "status": "live",
+      "updated": "2026-11-22",
+      "summary": "Accounts, printer list, pairing, job upload and control for the Centauri Carbon 2; endpoints, client ids and the RSA public key come from build secrets, and Google/Facebook login runs through its federated auth centre.",
+      "refs": [
+        "file:secrets/build.properties",
+        "url:https://raw.githubusercontent.com/danielcherubini/elegoo-homeassistant/main/docs/CC2_PROTOCOL.md"
+      ],
+      "next": [
+        "Keep AGENTS.md's 'check the Matrix app first' rule wired to the blutter decompilation — it is currently in /tmp and will vanish"
+      ],
+      "edges": [
+        [
+          "used_by",
+          "feat:cloud-print"
+        ],
+        [
+          "used_by",
+          "feat:cloud-auth"
+        ],
+        [
+          "used_by",
+          "feat:printer-pairing"
+        ],
+        [
+          "related",
+          "dev:centauri-carbon-2"
+        ]
+      ]
+    },
+    {
+      "id": "ext:firebase",
+      "kind": "external",
+      "title": "Firebase project slicepilot-bbfb5",
+      "status": "live",
+      "updated": "2026-11-22",
+      "summary": "Analytics + Crashlytics for the app; google-services.json lives in secrets/ and is copied into android/app at build time. The Firebase CLI and gcloud ADC are configured on this machine; the Crashlytics MCP needs an active project set before queries work.",
+      "refs": [
+        "file:secrets/google-services.json",
+        "file:android/app/google-services.json"
+      ],
+      "next": [
+        "Set the active project in the Firebase MCP so crash triage becomes a one-call lookup"
+      ],
+      "edges": [
+        [
+          "used_by",
+          "feat:analytics-tracking"
+        ],
+        [
+          "affects",
+          "iss:crashlytics-unreviewed"
+        ]
+      ]
+    },
+    {
+      "id": "ext:github-actions",
+      "kind": "external",
+      "title": "GitHub Actions (public repo CI)",
+      "status": "live",
+      "updated": "2026-11-22",
+      "summary": "Builds native deps (cached) + assembleRelease/bundleRelease on v* tags and publishes the GitHub release with APK and AAB; secrets come from BUILD_PROPERTIES and friends, so a new secret key must be set in both repos.",
+      "refs": [
+        "file:.github/workflows/android.yml",
+        "secret:BUILD_PROPERTIES",
+        "secret:GOOGLE_SERVICES_JSON",
+        "secret:KEYSTORE_PROPERTIES",
+        "secret:UPLOAD_KEYSTORE_BASE64",
+        "secret:PLAY_SERVICE_ACCOUNT_JSON"
+      ],
+      "next": [
+        "Before v1.9.7: verify every secret(...) key in android/app/build.gradle.kts exists in both repos' BUILD_PROPERTIES"
+      ],
+      "edges": [
+        [
+          "used_by",
+          "ext:github-public-mirror"
+        ],
+        [
+          "produces",
+          "art:release-aab"
+        ],
+        [
+          "requires",
+          "sec:build-properties"
+        ]
+      ]
+    },
+    {
+      "id": "ext:github-public-mirror",
+      "kind": "external",
+      "title": "yemyatthu1990/slicepilot-android-public",
+      "status": "live",
+      "updated": "2026-11-22",
+      "summary": "Sanitized public mirror (remote 'public'): one squashed commit per release, holds the GitHub Actions workflows and all build secrets, and is where releases/tags are published.",
+      "refs": [
+        "url:https://github.com/yemyatthu1990/slicepilot-android-public",
+        "branch:public-sync"
+      ],
+      "next": [
+        "The next snapshot must include knowledge/ so other agents inherit the graph"
+      ],
+      "edges": [
+        [
+          "used_by",
+          "rule:public-snapshot-flow"
+        ],
+        [
+          "hosts",
+          "ext:github-actions"
+        ],
+        [
+          "hosts",
+          "rel:v1.9.0"
+        ]
+      ]
+    },
+    {
+      "id": "ext:google-play",
+      "kind": "external",
+      "title": "Google Play (world.yemyat.slicepilot)",
+      "status": "live",
+      "owner": "agent",
+      "updated": "2026-11-22",
+      "summary": "Production v1.9.6 (39) at 100%, internal v1.9.6, beta empty, alpha stuck on a 1.5.6 (9) draft. Checked via the Play Developer API on 2026-11-22; edits expire ~1 hour after creation.",
+      "attrs": {
+        "production": "v1.9.6 100%",
+        "internal": "v1.9.6",
+        "alpha": "1.5.6 (9) draft (stale)",
+        "beta": "empty"
+      },
+      "refs": [
+        "url:https://play.google.com/store/apps/details?id=world.yemyat.slicepilot",
+        "file:secrets/play-service-account.json"
+      ],
+      "next": [
+        "Decide whether the stale alpha track should be cleaned up or repointed"
+      ],
+      "edges": [
+        [
+          "used_by",
+          "mod:scripts"
+        ],
+        [
+          "hosts",
+          "rel:v1.9.6"
+        ],
+        [
+          "affects",
+          "iss:stale-alpha-track"
+        ]
+      ]
+    },
+    {
+      "id": "ext:makerworld-api",
+      "kind": "external",
+      "title": "MakerWorld + Bambu APIs",
+      "status": "live",
+      "updated": "2026-11-22",
+      "summary": "Model search/detail through MakerWorld, the design-service for the actual 3mf, the Bambu comment-service for comments, and the Customizer generation payload for parametric designs.",
+      "refs": [
+        "commit:737b579",
+        "commit:a6a225a",
+        "commit:5cdcb9b"
+      ],
+      "next": [
+        "Re-test the design-service download path after the customizer branch lands"
+      ],
+      "edges": [
+        [
+          "used_by",
+          "feat:model-browser"
+        ],
+        [
+          "used_by",
+          "feat:parametric-customizer"
+        ]
+      ]
+    },
+    {
+      "id": "ext:nexprint-api",
+      "kind": "external",
+      "title": "Nexprint API",
+      "status": "live",
+      "updated": "2026-11-22",
+      "summary": "Model library and commentTree endpoints, including the spelling/zero-count fixes the app had to work around.",
+      "refs": [
+        "commit:41891ce",
+        "commit:42903f0",
+        "commit:3de2e3c"
+      ],
+      "edges": [
+        [
+          "used_by",
+          "feat:model-browser"
+        ]
+      ]
+    },
+    {
+      "id": "ext:printables-api",
+      "kind": "external",
+      "title": "Printables API",
+      "status": "live",
+      "updated": "2026-11-22",
+      "summary": "Model search, detail and paged comments with photos, consumed by the model browser.",
+      "edges": [
+        [
+          "used_by",
+          "feat:model-browser"
+        ]
+      ]
+    },
+    {
+      "id": "ext:slic3r-upstream",
+      "kind": "external",
+      "title": "Upstream slic3r / libslic3r sources",
+      "status": "live",
+      "updated": "2026-11-22",
+      "summary": "The desktop slicing engine the Android native core derives from; source of the vendored src/ trees.",
+      "edges": []
+    },
+    {
+      "id": "ext:thingiverse-api",
+      "kind": "external",
+      "title": "Thingiverse API",
+      "status": "live",
+      "updated": "2026-11-22",
+      "summary": "Model search/detail and comments; the app token now comes from build secrets rather than a literal.",
+      "refs": [
+        "secret:THINGIVERSE_APP_TOKEN",
+        "file:secrets/build.properties",
+        "commit:45cf2c4"
+      ],
+      "edges": [
+        [
+          "used_by",
+          "feat:model-browser"
+        ],
+        [
+          "requires",
+          "sec:build-properties"
+        ]
+      ]
+    },
+    {
+      "id": "feat:3mf-support",
+      "kind": "feature",
+      "title": "3MF project parsing (embedded settings)",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "Parses 3MF projects including embedded printer, filament and process settings into ProjectSettings, plus mesh decimation for previews; STL opens through the same path.",
+      "refs": [
+        "android/app/src/main/java/world/yemyat/slicepilot/model/ThreeMFParser.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/model/ProjectSettings.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/model/MeshData.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/model/MeshDecimator.kt",
+        "android/app/src/test/java/world/yemyat/slicepilot/model/ThreeMFParserTest.kt",
+        "android/core/jni/preview_parse.cpp"
+      ],
+      "verification": {
+        "level": "release_apk",
+        "ref": "release:rel:v1.9.6",
+        "at": "2026-11-14"
+      },
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.6"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "implemented_by",
+          "mod:android-core-jni"
+        ],
+        [
+          "verified_by",
+          "test:app-unit-tests"
+        ],
+        [
+          "depends_on",
+          "mod:src-libslic3r"
+        ]
+      ]
+    },
+    {
+      "id": "feat:analytics-tracking",
+      "kind": "feature",
+      "title": "Analytics and crash reporting",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "EventTracker abstraction with Firebase Analytics + Crashlytics, Logcat and no-op implementations behind EventTrackingRepository, so release builds report and debug builds can run offline.",
+      "refs": [
+        "android/app/src/main/java/world/yemyat/slicepilot/tracking/"
+      ],
+      "verification": {
+        "level": "release_apk",
+        "ref": "file:android/app/src/main/java/world/yemyat/slicepilot/tracking/FirebaseEventTracker.kt",
+        "at": "2026-11-14"
+      },
+      "next": [
+        "Record the v1.9.6 crash review once Crashlytics access is set up"
+      ],
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.6"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "integrates",
+          "ext:firebase"
+        ],
+        [
+          "related",
+          "iss:crashlytics-unreviewed"
+        ]
+      ]
+    },
+    {
+      "id": "feat:app-navigation",
+      "kind": "feature",
+      "title": "Tab navigation and single-activity shell",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "Single MainActivity with AppTabBar (Home / Printer / Files) plus route-level screens for Browse, Print setup, Slice and Print; the v1.9.0 tab split is live. On main (unreleased) print setup has one exit (AppViewModel.leavePrintSetup, used by both its arrow and the system back) and that exit ends the model's flow instead of leaving an unusable model on Home; Home's model row now opens the flow the model belongs to, replaces it, or discards it. PrintJobState.isInProgress is now the single answer to 'is something printing?' (live status alone is not - an idle printer answers probes too).",
+      "refs": [
+        "android/app/src/main/java/world/yemyat/slicepilot/MainActivity.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/AppTabBar.kt"
+      ],
+      "verification": {
+        "level": "release_apk",
+        "ref": "release:rel:v1.9.0",
+        "at": "2026-11-12"
+      },
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.0"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "affects",
+          "feat:ui-design-system"
+        ]
+      ],
+      "next": [
+        "Device-verify the exit on main (Home row -> print setup -> back -> discard/keep), then cut v1.9.7"
+      ]
+    },
+    {
+      "id": "feat:cloud-auth",
+      "kind": "feature",
+      "title": "Elegoo cloud sign-in (password, Google, Facebook)",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "Elegoo account sign-in: email+password (RSA-encrypted via the account's public key) and federated Google/Facebook through Elegoo's auth centre with a WebView redirect back to world.yemyat.slicepilot://social/google. Google is hidden for the China region. Live since v1.9.6.",
+      "refs": [
+        "android/cloud-auth/src/main/java/",
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/ConnectSheet.kt"
+      ],
+      "verification": {
+        "level": "store",
+        "ref": "url:https://play.google.com/store/apps/details?id=world.yemyat.slicepilot",
+        "at": "2026-11-14"
+      },
+      "next": [
+        "Confirm Google sign-in on a real account in both regions after the next release"
+      ],
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.6"
+        ],
+        [
+          "implemented_by",
+          "mod:cloud-auth"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "integrates",
+          "ext:elegoo-cloud"
+        ],
+        [
+          "requires",
+          "sec:build-properties"
+        ]
+      ]
+    },
+    {
+      "id": "feat:cloud-print",
+      "kind": "feature",
+      "title": "Cloud print to the Centauri Carbon 2",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-23",
+      "summary": "Sign in, pick the account's printer, upload the sliced G-code and start the job through Elegoo's cloud API; printer list, control permissions and job state come from the cloud rather than the LAN.",
+      "refs": [
+        "android/app/src/main/java/world/yemyat/slicepilot/cloud/ElegooCloudClient.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/cloud/CloudPrintManager.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/cloud/MqttManager.kt"
+      ],
+      "verification": {
+        "level": "store",
+        "ref": "url:https://play.google.com/store/apps/details?id=world.yemyat.slicepilot",
+        "at": "2026-11-14"
+      },
+      "next": [
+        "Re-verify against CC2 firmware quirks doc (SFB-003/SFB-007) before the next cloud change"
+      ],
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.6"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "integrates",
+          "ext:elegoo-cloud"
+        ],
+        [
+          "depends_on",
+          "feat:cloud-auth"
+        ],
+        [
+          "affects",
+          "feat:printer-pairing"
+        ]
+      ]
+    },
+    {
+      "id": "feat:gcode-history",
+      "kind": "feature",
+      "title": "G-code history (Files → G-code shelf)",
+      "status": "code_complete",
+      "summary": "Slices are filed in filesDir/gcodes with a JSON manifest and listed on the Files tab's G-code shelf, each row showing the slice's own picture - the preview a slicer embedded, or the toolpaths drawn flat - so a g-code outlives the model it was cut from and stays recognisable, openable and printable; before this the app kept one slot (last_gcode_path) and drew a printer glyph.",
+      "updated": "2026-11-22",
+      "owner": "agent",
+      "verification": {
+        "level": "debug_apk",
+        "ref": "file:android/app/src/main/java/world/yemyat/slicepilot/repo/GcodeHistoryStore.kt",
+        "at": "2026-11-22"
+      },
+      "next": [
+        "Run a real slice on device to exercise record()'s cache→archive move (the shelf itself was device-checked with seeded files)",
+        "Ship it in v1.9.7 and add the shelf to the store screenshots"
+      ],
+      "refs": [
+        "android/app/src/main/java/world/yemyat/slicepilot/repo/GcodeHistoryStore.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/LibraryScreen.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/AppViewModel.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/preview/GcodePreviewImage.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/model/GcodeThumbnail.kt"
+      ],
+      "edges": [
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "part_of",
+          "feat:local-files"
+        ]
+      ]
+    },
+    {
+      "id": "feat:gcode-preview",
+      "kind": "feature",
+      "title": "G-code preview (layers, time, material)",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "Parses sliced G-code into per-layer toolpath geometry with print-time and material estimates, rendered through the shared preview renderer; empty-G-code and pose-mismatch crashes are fixed.",
+      "refs": [
+        "android/app/src/main/java/world/yemyat/slicepilot/model/GcodePreview.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/model/GcodeThumbnail.kt"
+      ],
+      "verification": {
+        "level": "store",
+        "ref": "commit:ab64461",
+        "at": "2026-11-14"
+      },
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.6"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "depends_on",
+          "feat:model-preview-3d"
+        ],
+        [
+          "depends_on",
+          "feat:slicing"
+        ]
+      ]
+    },
+    {
+      "id": "feat:google-sign-in",
+      "kind": "feature",
+      "title": "Sign in with Google (Elegoo federated)",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "The v1.9.6 headline: Google login for an Elegoo account with no password and no extra OAuth client — the app opens Elegoo's provider redirect and exchanges the returned token. Also added the terms-consent dialog that replaces the greyed-out button.",
+      "refs": [
+        "android/cloud-auth/src/main/java/world/yemyat/slicepilot/cloud/auth/CloudSocialLogin.kt",
+        "commit:36526c0",
+        "commit:816507e"
+      ],
+      "verification": {
+        "level": "store",
+        "ref": "url:https://play.google.com/store/apps/details?id=world.yemyat.slicepilot",
+        "at": "2026-11-14"
+      },
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.6"
+        ],
+        [
+          "implemented_by",
+          "mod:cloud-auth"
+        ],
+        [
+          "depends_on",
+          "feat:cloud-auth"
+        ],
+        [
+          "integrates",
+          "ext:elegoo-cloud"
+        ],
+        [
+          "worked_on",
+          "br:feature/google-sign-in"
+        ]
+      ]
+    },
+    {
+      "id": "feat:lan-print",
+      "kind": "feature",
+      "title": "LAN print and local print monitoring",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-23",
+      "summary": "Local-network path to the printer plus per-generation monitors: LanPrintManager (upload/print) with LanPrintMonitor (CC2) and LanPrintMonitorCC1, covering the printer-status screens without the cloud.",
+      "refs": [
+        "android/app/src/main/java/world/yemyat/slicepilot/cloud/LanPrintManager.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/cloud/LanPrintMonitor.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/cloud/LanPrintMonitorCC1.kt",
+        "android/app/src/test/java/world/yemyat/slicepilot/cloud/LanPrintManagerTest.kt"
+      ],
+      "verification": {
+        "level": "release_apk",
+        "ref": "release:rel:v1.9.6",
+        "at": "2026-11-14"
+      },
+      "next": [
+        "Cover the CC1/CC2 split with device runs; the two monitor paths are only unit-verified"
+      ],
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.6"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "verified_by",
+          "test:app-unit-tests"
+        ],
+        [
+          "runs_on",
+          "dev:centauri-carbon-2"
+        ]
+      ]
+    },
+    {
+      "id": "feat:local-files",
+      "kind": "feature",
+      "title": "Local model files and SAF entry",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "Files tab with three shelves — Models, G-code, Photos — plus the Home → Local model SAF picker, the only reliable way to get a model into the app; one FileRow/FileTile pair renders every shelf, and a shared cached image loader backs the remote thumbnails.",
+      "refs": [
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/LibraryScreen.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/RemoteImage.kt"
+      ],
+      "verification": {
+        "level": "release_apk",
+        "ref": "release:rel:v1.9.0",
+        "at": "2026-11-12"
+      },
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.0"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "verified_by",
+          "art:screenshots-v1.9.0"
+        ]
+      ],
+      "next": [
+        "Device-check that discarding a stashed model leaves the Files entry openable (Files-owned paths are adopted, not deleted)"
+      ]
+    },
+    {
+      "id": "feat:model-browser",
+      "kind": "feature",
+      "title": "Model browser: MakerWorld, Printables, Thingiverse, Nexprint",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "Search/browse four model communities, model detail with photos, votes and paged comments, profile picking and download into the slicer; includes the MakerWorld design-service 3mf fix and Bambu comment-service and Nexprint commentTree sources.",
+      "refs": [
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/BrowseScreen.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/repo/ModelBrowser.kt",
+        "commit:737b579",
+        "commit:a6a225a",
+        "commit:41891ce"
+      ],
+      "verification": {
+        "level": "store",
+        "ref": "file:store_listing/screenshots/phone_v1.9.0/03_model_detail_light.png",
+        "at": "2026-11-12"
+      },
+      "next": [
+        "Spot-check each source's API after the next release; four providers historically drift"
+      ],
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.6"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "integrates",
+          "ext:makerworld-api"
+        ],
+        [
+          "integrates",
+          "ext:printables-api"
+        ],
+        [
+          "integrates",
+          "ext:thingiverse-api"
+        ],
+        [
+          "integrates",
+          "ext:nexprint-api"
+        ]
+      ]
+    },
+    {
+      "id": "feat:model-preview-3d",
+      "kind": "feature",
+      "title": "3D model preview and shared GL surface",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "OpenGL preview stack (orbit camera, shaders, scene, thumbnail renderer) behind a shared AndroidView so the same SurfaceView can move between print setup and the full-screen viewer without crashing.",
+      "refs": [
+        "android/app/src/main/java/world/yemyat/slicepilot/preview/",
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/components/SharedAndroidView.kt",
+        "commit:f182ada"
+      ],
+      "verification": {
+        "level": "store",
+        "ref": "commit:f182ada",
+        "at": "2026-11-13"
+      },
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.1"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ]
+      ]
+    },
+    {
+      "id": "feat:multi-colour",
+      "kind": "feature",
+      "title": "Multi-colour (AMS) spool mapping and preview",
+      "status": "code_complete",
+      "owner": "dev",
+      "updated": "2026-10-21",
+      "summary": "Per-part spool mapping, project-3mf config safety and a multi-colour Print-setup preview exist on feature/multi-colour; never merged, never built, so nothing of it is in the shipped app.",
+      "refs": [
+        "commit:87d7f96",
+        "commit:80d00a0",
+        "commit:992ce86"
+      ],
+      "verification": {
+        "level": "code_review",
+        "ref": "commit:87d7f96",
+        "at": "2026-10-21"
+      },
+      "next": [
+        "Decide together with the multi-filament line whether any of it is revived"
+      ],
+      "edges": [
+        [
+          "worked_on",
+          "br:feature/multi-colour"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ]
+      ]
+    },
+    {
+      "id": "feat:multi-filament",
+      "kind": "feature",
+      "title": "Multi-filament / N-colour printing",
+      "status": "idea",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "Nothing multi-filament is in the shipped app. The first attempt (feature/multi-filament: model-derived filament slots, N-colour ini, per-tool preview colours, JNI flush volumes) was deleted unverified on 2026-11-22 and is preserved as tag abandoned/feature-multi-filament → 5163dfe; the older feature/multi-colour line is still unmerged. Reviving it means starting from those commits, not from main.",
+      "refs": [
+        "tag:abandoned/feature-multi-filament",
+        "commit:5163dfe",
+        "commit:05ff585",
+        "commit:a9a55ce"
+      ],
+      "verification": {
+        "level": "code_review",
+        "ref": "commit:5163dfe",
+        "at": "2026-11-15"
+      },
+      "next": [
+        "Decide whether the capability is on the roadmap at all",
+        "If yes: rebuild from tag abandoned/feature-multi-filament, build the release variant for the JNI keeps, device-verify, then merge"
+      ],
+      "edges": [
+        [
+          "worked_on",
+          "br:feature/multi-filament"
+        ],
+        [
+          "implemented_by",
+          "mod:android-core-jni"
+        ],
+        [
+          "depends_on",
+          "feat:multi-part-poses"
+        ],
+        [
+          "blocks",
+          "rel:v1.9.7"
+        ],
+        [
+          "requires",
+          "rule:jni-r8-keep"
+        ]
+      ]
+    },
+    {
+      "id": "feat:multi-part-poses",
+      "kind": "feature",
+      "title": "Multi-part 3MF poses (select, move, rotate)",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "Pick which pieces of a multi-part 3MF print, rotate/mirror/move one piece, arrange them on a tile grid, and the preview, the pose and the G-code now agree — the v1.9.2-1.9.6 arc, closed by 'slice the pieces the app posed, not the file it authored'.",
+      "refs": [
+        "android/app/src/main/java/world/yemyat/slicepilot/model/MeshPart.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/PrintSetupScreen.kt",
+        "commit:73fde67",
+        "commit:aaeebf9",
+        "commit:525e672",
+        "commit:c5ef799",
+        "android/app/src/test/java/world/yemyat/slicepilot/model/MeshPartTest.kt"
+      ],
+      "verification": {
+        "level": "store",
+        "ref": "commit:73fde67",
+        "at": "2026-11-14"
+      },
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.5"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "verified_by",
+          "test:app-unit-tests"
+        ],
+        [
+          "depends_on",
+          "feat:3mf-support"
+        ],
+        [
+          "depends_on",
+          "feat:gcode-preview"
+        ]
+      ]
+    },
+    {
+      "id": "feat:parametric-customizer",
+      "kind": "feature",
+      "title": "MakerWorld Customizer parametric designs",
+      "status": "in_progress",
+      "owner": "dev",
+      "updated": "2026-10-22",
+      "summary": "Five commits on parametric/makerworld-customizer reuse MakerWorld's own generation payload for protected designs, pick the source file for multi-file designs, and save the customization with PUT. Work stopped 2026-10-22 and the branch base is now ~3 weeks behind main.",
+      "refs": [
+        "commit:5cdcb9b",
+        "commit:b9bdbbb",
+        "commit:1cacd70",
+        "commit:7bb89df",
+        "commit:0b74b11"
+      ],
+      "verification": {
+        "level": "code_review",
+        "ref": "commit:0b74b11",
+        "at": "2026-10-22"
+      },
+      "next": [
+        "Decide: rebase onto current main and finish, or abandon the line",
+        "If kept, re-test the WebView script-loading report before trusting the customizer UI"
+      ],
+      "edges": [
+        [
+          "worked_on",
+          "br:parametric/makerworld-customizer"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "integrates",
+          "ext:makerworld-api"
+        ],
+        [
+          "affects",
+          "iss:branch-debt"
+        ]
+      ]
+    },
+    {
+      "id": "feat:printer-camera",
+      "kind": "feature",
+      "title": "Printer camera stream (Agora RTM/RTC)",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "Live camera from the printer with full-screen pinch-zoom, shutter and photo gallery, streamed through Agora; the v1.9.1 fix stopped the app closing when the shared SurfaceView moved between surfaces.",
+      "refs": [
+        "android/app/src/main/java/world/yemyat/slicepilot/cloud/CameraStream.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/cloud/CloudRtcCamera.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/components/QrScannerDialog.kt",
+        "commit:46b4716",
+        "commit:f182ada"
+      ],
+      "verification": {
+        "level": "device",
+        "ref": "file:store_listing/screenshots/phone_v1.9.0/05_printer_demo_light.png",
+        "at": "2026-11-12"
+      },
+      "next": [
+        "Re-shoot the Printer frame with the real printer online (last set used the demo printer)"
+      ],
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.6"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "integrates",
+          "ext:agora-rtm"
+        ],
+        [
+          "requires",
+          "sec:build-properties"
+        ],
+        [
+          "verified_by",
+          "art:screenshots-v1.9.0"
+        ]
+      ]
+    },
+    {
+      "id": "feat:printer-controls",
+      "kind": "feature",
+      "title": "Printer tab and controls sheet",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "Printer status, temps, filament and controls in one sheet behind the Printer tab; nozzle size became a segmented control and Connect/Add-printer dialogs were folded into the shared component set.",
+      "refs": [
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/PrinterScreen.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/PrinterControlsSheet.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/components/AddPrinterDialog.kt",
+        "android/app/src/test/java/world/yemyat/slicepilot/ui/ConnectedPrinterTest.kt"
+      ],
+      "verification": {
+        "level": "release_apk",
+        "ref": "release:rel:v1.9.6",
+        "at": "2026-11-14"
+      },
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.6"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "depends_on",
+          "feat:cloud-print"
+        ],
+        [
+          "affects",
+          "feat:ui-design-system"
+        ]
+      ]
+    },
+    {
+      "id": "feat:printer-pairing",
+      "kind": "feature",
+      "title": "Pair a printer by serial + PIN or QR",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "Ask for the PIN the way the Elegoo app does, resolve the printer from the cloud in both spellings it uses (pcode is not the serial), and offer QR scanning — shipped in v1.9.0 after the pairing-value fixes.",
+      "refs": [
+        "android/app/src/main/java/world/yemyat/slicepilot/cloud/PairingCode.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/components/ConnectPrinterDialog.kt",
+        "commit:09f44b8",
+        "commit:b1f2808",
+        "commit:a2a5095",
+        "commit:3b86ef4"
+      ],
+      "verification": {
+        "level": "release_apk",
+        "ref": "release:rel:v1.9.0",
+        "at": "2026-11-12"
+      },
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.0"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "verified_by",
+          "test:app-unit-tests"
+        ],
+        [
+          "depends_on",
+          "feat:cloud-auth"
+        ],
+        [
+          "integrates",
+          "ext:elegoo-cloud"
+        ]
+      ]
+    },
+    {
+      "id": "feat:slicing",
+      "kind": "feature",
+      "title": "Native slicing (libslic3r via JNI)",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-23",
+      "summary": "Full desktop slicing engine running on device through slice_jni.cpp and NativeLib, with a foreground service, progress notification, cancellation, and error text that names the cause instead of Slic3r's literal 'Errors'.",
+      "refs": [
+        "android/core/jni/slice_jni.cpp",
+        "android/app/src/main/java/world/yemyat/slicepilot/NativeLib.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/SliceForegroundService.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/PrintForegroundService.kt",
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/AdvancedSettings.kt",
+        "commit:5b68dd6"
+      ],
+      "verification": {
+        "level": "store",
+        "ref": "v1.9.13",
+        "at": "2026-11-23"
+      },
+      "next": [
+        "Any new JNI callback needs a matching -keep rule before the next release build"
+      ],
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.6"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "implemented_by",
+          "mod:android-core-jni"
+        ],
+        [
+          "depends_on",
+          "mod:src-libslic3r"
+        ],
+        [
+          "requires",
+          "rule:jni-r8-keep"
+        ],
+        [
+          "depends_on",
+          "feat:3mf-support"
+        ],
+        [
+          "affects",
+          "feat:multi-filament"
+        ]
+      ]
+    },
+    {
+      "id": "feat:ui-design-system",
+      "kind": "feature",
+      "title": "Design system: one component per shape",
+      "status": "shipped",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "Role-based component set (one component per shape after ab64461), theme-driven colours and type across light/dark, replacing the five button shapes and the old dark gradient; Configure print is folded into Print setup.",
+      "refs": [
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/components/",
+        "android/app/src/main/java/world/yemyat/slicepilot/ui/theme/",
+        "commit:ab64461",
+        "commit:8a0b176"
+      ],
+      "verification": {
+        "level": "release_apk",
+        "ref": "release:rel:v1.9.6",
+        "at": "2026-11-14"
+      },
+      "next": [
+        "Ship it as v1.9.7 and re-shoot the store screenshots from the new layouts",
+        "the print-setup header still prints the user's private device name (\"YE3D\"), which store/UI copy rules say should read Centauri Carbon 2"
+      ],
+      "edges": [
+        [
+          "shipped_in",
+          "rel:v1.9.6"
+        ],
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "verified_by",
+          "art:screenshots-v1.9.0"
+        ],
+        [
+          "affects",
+          "feat:app-navigation"
+        ],
+        [
+          "affects",
+          "feat:printer-controls"
+        ]
+      ]
+    },
+    {
+      "id": "iss:branch-debt",
+      "kind": "issue",
+      "title": "Branch debt: parked and stale branches",
+      "status": "open",
+      "owner": "agent",
+      "updated": "2026-11-22",
+      "summary": "Three branches drifted away from main: feature/multi-colour (6 commits, 2026-10-21, undecided), parametric/makerworld-customizer (5 commits, parked since 2026-10-22, base predates v1.9) and main-backup (12 commits, never merged). feature/multi-filament was the third until it was deleted 2026-11-22.",
+      "attrs": {
+        "severity": "medium"
+      },
+      "refs": [
+        "branch:parametric/makerworld-customizer",
+        "branch:main-backup"
+      ],
+      "next": [
+        "feature/multi-colour: rebase, cherry-pick, or delete",
+        "parametric/makerworld-customizer: rebase or delete",
+        "main-backup: review the 12 commits, then delete"
+      ],
+      "edges": [
+        [
+          "affects",
+          "feat:parametric-customizer"
+        ],
+        [
+          "affects",
+          "br:parametric/makerworld-customizer"
+        ],
+        [
+          "affects",
+          "br:main-backup"
+        ],
+        [
+          "affects",
+          "br:feature/multi-colour"
+        ]
+      ]
+    },
+    {
+      "id": "iss:crashlytics-unreviewed",
+      "kind": "issue",
+      "title": "v1.9.6 crashes not triaged",
+      "status": "resolved",
+      "owner": "agent",
+      "updated": "2026-11-22",
+      "summary": "Reviewed all 1.9.0+ Crashlytics issues (931 sessions, 0 ANRs, 25 FATAL events across 11 issues): fixed top #1 PrintForegroundService 6h dataSync timeout (onTimeout), 256MB RecordingCanvas bitmap & ImageEngine OOM, and GcodePreviewParser/PreviewRenderer OOMs in v1.9.10 (43). Top non-fatal remains print_failed (171 events, e.g. CC2 error 1009).",
+      "attrs": {
+        "severity": "medium"
+      },
+      "refs": [
+        "file:secrets/google-services.json"
+      ],
+      "next": [
+        "Monitor Crashlytics on v1.9.10+ for remaining print_failed causes"
+      ],
+      "edges": [
+        [
+          "affects",
+          "feat:analytics-tracking"
+        ],
+        [
+          "related",
+          "ext:firebase"
+        ]
+      ]
+    },
+    {
+      "id": "iss:multi-filament-unverified",
+      "kind": "issue",
+      "title": "Multi-filament work is unverified and unmerged",
+      "status": "open",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "4 commits of multi-filament behaviour exist only on a branch, verified by code review only; its JNI flush-volume change is exactly the class of thing that breaks in release builds, and it also carries a store copy for a version main does not have yet.",
+      "attrs": {
+        "severity": "high"
+      },
+      "refs": [
+        "commit:5163dfe",
+        "commit:05ff585"
+      ],
+      "next": [
+        "Build release variant → dex-check the JNI keeps → install on a device → then merge"
+      ],
+      "edges": [
+        [
+          "blocks",
+          "rel:v1.9.7"
+        ],
+        [
+          "affects",
+          "feat:multi-filament"
+        ],
+        [
+          "related",
+          "rule:jni-r8-keep"
+        ]
+      ]
+    },
+    {
+      "id": "iss:no-instrumented-tests",
+      "kind": "issue",
+      "title": "No instrumented UI tests",
+      "status": "open",
+      "owner": "agent",
+      "updated": "2026-11-22",
+      "summary": "Verification is 8 unit-test files plus manual device checks. That cannot catch release-build-only failures (R8/JNI), which is the documented historical failure class here.",
+      "attrs": {
+        "severity": "medium"
+      },
+      "refs": [
+        "file:android/app/src/test/java/",
+        "file:android/cloud-auth/src/test/java/"
+      ],
+      "next": [
+        "Add an androidTest smoke for app start + a release-variant install smoke"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "related",
+          "rule:jni-r8-keep"
+        ]
+      ]
+    },
+    {
+      "id": "iss:r8-jni-class",
+      "kind": "issue",
+      "title": "R8/JNI regression class (from the v1.6.2 crash)",
+      "status": "mitigated",
+      "updated": "2026-11-22",
+      "summary": "The historical failure where a JNI callback survived in debug and vanished in release. Mitigated by policy, not by tooling: every JNI change needs its -keep rule and a bundleRelease check.",
+      "attrs": {
+        "severity": "high"
+      },
+      "refs": [
+        "file:AGENTS.md",
+        "file:android/app/proguard-rules.pro"
+      ],
+      "next": [
+        "Consider a CI check that diffs JNI FindClass targets against proguard-rules.pro"
+      ],
+      "edges": [
+        [
+          "related",
+          "rule:jni-r8-keep"
+        ],
+        [
+          "related",
+          "iss:no-instrumented-tests"
+        ]
+      ]
+    },
+    {
+      "id": "iss:stale-alpha-track",
+      "kind": "issue",
+      "title": "Stale alpha track on the Play console",
+      "status": "open",
+      "owner": "agent",
+      "updated": "2026-11-22",
+      "summary": "The alpha track still holds a draft 1.5.6 (9) from the pre-v1.6 era while production is at 1.9.6 — harmless but confusing when reading track state.",
+      "attrs": {
+        "severity": "low"
+      },
+      "refs": [
+        "url:https://play.google.com/console"
+      ],
+      "next": [
+        "Prune or archive the alpha draft"
+      ],
+      "edges": [
+        [
+          "related",
+          "ext:google-play"
+        ]
+      ]
+    },
+    {
+      "id": "iss:v1.9.6-content-gap",
+      "kind": "issue",
+      "title": "What v1.9.6 shipped vs what main contains",
+      "status": "open",
+      "owner": "agent",
+      "updated": "2026-11-22",
+      "summary": "main (ab64461) is one unreleased commit past v1.9.6, and the branch world holds a different staged v1.9.7 store copy — so release notes written from main and notes written from the branch would describe different apps. Needs one decision about what v1.9.7 contains.",
+      "attrs": {
+        "severity": "low"
+      },
+      "refs": [
+        "commit:ab64461",
+        "commit:66b6104",
+        "file:store_listing/metadata.md"
+      ],
+      "next": [
+        "Write the v1.9.7 notes from the commit set that actually ships"
+      ],
+      "edges": [
+        [
+          "affects",
+          "rel:v1.9.7"
+        ],
+        [
+          "related",
+          "mod:store-listing"
+        ],
+        [
+          "related",
+          "br:main"
+        ]
+      ]
+    },
+    {
+      "id": "mod:android-app",
+      "kind": "module",
+      "title": "android/app",
+      "status": "active",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "65 Kotlin files: Compose UI (ui/, ui/components/, ui/theme/), cloud clients (cloud/), model parsing (model/), GL preview (preview/), repos (repo/), tracking (tracking/), NativeLib.kt and the two foreground services.",
+      "refs": [
+        "android/app/src/main/java/world/yemyat/slicepilot/",
+        "android/app/build.gradle.kts"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ],
+        [
+          "depends_on",
+          "mod:cloud-auth"
+        ],
+        [
+          "depends_on",
+          "mod:android-core-jni"
+        ],
+        [
+          "verified_by",
+          "test:app-unit-tests"
+        ],
+        [
+          "depends_on",
+          "sec:build-properties"
+        ],
+        [
+          "depends_on",
+          "sec:google-services"
+        ],
+        [
+          "guarded_by",
+          "rule:jni-r8-keep"
+        ]
+      ]
+    },
+    {
+      "id": "mod:android-core-jni",
+      "kind": "module",
+      "title": "android/core (JNI + stubs)",
+      "status": "active",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "C++ bridge to the native libslic3r core: jni/slice_jni.cpp, jni/preview_parse.{h,cpp}, stubs/android_stubs.cpp and stubs/nanosvg_impl.cpp. Every callback here must survive R8.",
+      "refs": [
+        "android/core/jni/slice_jni.cpp",
+        "android/core/jni/preview_parse.cpp",
+        "android/core/stubs/android_stubs.cpp"
+      ],
+      "next": [
+        "Audit that every FindClass/GetMethodID target has a -keep rule (the v1.6.2 crash class)"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ],
+        [
+          "depends_on",
+          "mod:src-libslic3r"
+        ],
+        [
+          "depends_on",
+          "mod:native-build"
+        ],
+        [
+          "guards",
+          "rule:jni-r8-keep"
+        ],
+        [
+          "affects",
+          "feat:slicing"
+        ],
+        [
+          "affects",
+          "feat:multi-filament"
+        ]
+      ]
+    },
+    {
+      "id": "mod:ci",
+      "kind": "module",
+      "title": ".github/workflows (private repo)",
+      "status": "frozen",
+      "updated": "2026-11-22",
+      "summary": "The private repo's workflow file is a leftover: CI actually runs in the public mirror, which holds the workflows and the build secrets. Releases snapshot main into the public repo before building.",
+      "refs": [
+        ".github/workflows/android.yml"
+      ],
+      "next": [
+        "Confirm whether the private workflow file is still referenced, or delete it"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ],
+        [
+          "related",
+          "ext:github-public-mirror"
+        ],
+        [
+          "requires",
+          "sec:build-properties"
+        ]
+      ]
+    },
+    {
+      "id": "mod:cloud-auth",
+      "kind": "module",
+      "title": "android/cloud-auth",
+      "status": "active",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "Library owning Elegoo cloud session state: CloudAuthClient, CloudAuthResult, CloudAuthUser, CloudLoginData, CloudSocialLogin, CloudLoginWebView, with unit tests for password and social login payloads.",
+      "refs": [
+        "android/cloud-auth/src/main/java/",
+        "android/cloud-auth/src/test/java/"
+      ],
+      "next": [
+        "Add tests around token-expiry and region-mismatch error paths, which is where the v1.9.6 fixes landed"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ],
+        [
+          "verified_by",
+          "test:cloud-auth-tests"
+        ],
+        [
+          "depends_on",
+          "sec:build-properties"
+        ],
+        [
+          "integrates",
+          "ext:elegoo-cloud"
+        ],
+        [
+          "affects",
+          "feat:cloud-auth"
+        ]
+      ]
+    },
+    {
+      "id": "mod:deps-src",
+      "kind": "module",
+      "title": "deps_src",
+      "status": "vendored",
+      "updated": "2026-11-22",
+      "summary": "30 vendored native dependency trees (nlohmann, miniz, libigl, clipper2, qhull, imgui, mdns, hidapi, …) with a CMake interface doc.",
+      "refs": [
+        "deps_src/",
+        "file:deps_src/README_CMAKE_INTERFACES.md"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ],
+        [
+          "affects",
+          "mod:native-build"
+        ]
+      ]
+    },
+    {
+      "id": "mod:knowledge",
+      "kind": "module",
+      "title": "knowledge/",
+      "status": "active",
+      "owner": "agent",
+      "updated": "2026-11-22",
+      "summary": "This knowledge graph: the schema and protocol, the graph itself, the kb.py tool, and the generated status digest.",
+      "refs": [
+        "knowledge/graph.json",
+        "knowledge/kb.py",
+        "knowledge/sessions.jsonl",
+        "knowledge/STATUS.md"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ],
+        [
+          "documented_by",
+          "doc:knowledge-readme"
+        ],
+        [
+          "produces",
+          "art:status-md"
+        ],
+        [
+          "related",
+          "doc:agents-md"
+        ]
+      ]
+    },
+    {
+      "id": "mod:landing",
+      "kind": "module",
+      "title": "landing/",
+      "status": "active",
+      "updated": "2026-11-22",
+      "summary": "Vite + React marketing site for slicepilot.eu, deployed to Cloudflare Pages (wrangler project slicepilot-landing) with a screenshot capture script.",
+      "refs": [
+        "landing/",
+        "landing/wrangler.jsonc",
+        "landing/scripts/shot.cjs"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ],
+        [
+          "hosted_on",
+          "ext:cloudflare"
+        ],
+        [
+          "requires",
+          "sec:cf-dns"
+        ],
+        [
+          "verified_by",
+          "art:screenshots-v1.9.0"
+        ]
+      ]
+    },
+    {
+      "id": "mod:native-build",
+      "kind": "module",
+      "title": "android/native-build",
+      "status": "active",
+      "updated": "2026-11-22",
+      "summary": "NDK build scripts (build.sh, boost-user-config.jam) and the arm64-v8a prefix cache; builds all native libraries at 16 KB page alignment.",
+      "refs": [
+        "android/native-build/build.sh",
+        "android/native-build/boost-user-config.jam",
+        "commit:649b2e0"
+      ],
+      "next": [
+        "Confirm the v1.9.7 release build still links CameraX 1.4.2's 16 KB requirement"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ],
+        [
+          "produces",
+          "art:arm64-prefix"
+        ],
+        [
+          "guards",
+          "rule:16kb-page-alignment"
+        ]
+      ]
+    },
+    {
+      "id": "mod:scripts",
+      "kind": "module",
+      "title": "scripts/",
+      "status": "active",
+      "updated": "2026-11-22",
+      "summary": "upload_play_internal.py (Play upload with --mapping/--native-symbols) and ci_prepare_native_src.sh (native source staging for CI).",
+      "refs": [
+        "scripts/upload_play_internal.py",
+        "scripts/ci_prepare_native_src.sh"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ],
+        [
+          "used_by",
+          "rule:release-checklist"
+        ],
+        [
+          "integrates",
+          "ext:google-play"
+        ],
+        [
+          "requires",
+          "sec:play-service-account"
+        ]
+      ]
+    },
+    {
+      "id": "mod:src-libslic3r",
+      "kind": "module",
+      "title": "src/libslic3r + src/slic3r",
+      "status": "vendored",
+      "updated": "2026-11-22",
+      "summary": "Vendored slicing library (GCode, Arachne, Fill, Shape, Format, Feature/…) and the slic3r headers/config the Android build needs, including the Elegoo-specific folders.",
+      "refs": [
+        "src/libslic3r/",
+        "src/slic3r/",
+        "src/slic3r/Utils/Elegoo/",
+        "src/slic3r/GUI/Elegoo/"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ],
+        [
+          "derived_from",
+          "ext:slic3r-upstream"
+        ],
+        [
+          "affects",
+          "feat:slicing"
+        ]
+      ]
+    },
+    {
+      "id": "mod:store-listing",
+      "kind": "module",
+      "title": "store_listing/",
+      "status": "active",
+      "owner": "agent",
+      "updated": "2026-11-22",
+      "summary": "Play copy (name, descriptions, per-version What's new, data-safety draft) plus the v1.9.0 phone screenshot set; every release records its Play edit id here.",
+      "refs": [
+        "store_listing/metadata.md",
+        "store_listing/screenshots/",
+        "store_listing/feature_graphic.png"
+      ],
+      "next": [
+        "Stage the v1.9.7 copy from whichever commits actually ship"
+      ],
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "guarded_by",
+          "rule:no-ye3d-copy"
+        ],
+        [
+          "guarded_by",
+          "rule:play-edit-window"
+        ],
+        [
+          "guarded_by",
+          "rule:notes-500-char"
+        ]
+      ]
+    },
+    {
+      "id": "proj:slicepilot-android",
+      "kind": "project",
+      "title": "SlicePilot Android",
+      "status": "active",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "Android port of a desktop slicer plus the Elegoo cloud client: native libslic3r behind a Compose UI, shipped on Google Play as world.yemyat.slicepilot. v1.9.6 (39) is live at 100%; main holds the unreleased UI consolidation that becomes v1.9.7, and the multi-filament attempt was deleted rather than merged.",
+      "attrs": {
+        "package": "world.yemyat.slicepilot",
+        "version": "1.9.6-android",
+        "version_code": 39,
+        "head_main": "ab64461 (2026-11-22, refactor(ui): one component per shape)",
+        "play_production": "v1.9.6 at 100% (checked 2026-11-22 via Play API)",
+        "play_other_tracks": "internal v1.9.6 (completed) · alpha 1.5.6 (9) draft, stale · beta empty",
+        "website": "https://slicepilot.eu (landing/ → Cloudflare)",
+        "public_repo": "github.com/yemyatthu1990/slicepilot-android-public (origin = private repo)",
+        "ndk": "27.0.12077973 arm64-v8a, 16 KB page aligned",
+        "pages": "Home · Printer · Files · Browse · Print setup · Slice · Print screens (single-activity Compose)"
+      },
+      "next": [
+        "Ship the UI consolidation on main (ab64461) as v1.9.7 (40): bundleRelease + native symbols, then Play internal",
+        "Close the parametric/MakerWorld-Customizer line: rebase the 5-commit branch onto current main or mark it parked",
+        "Review Crashlytics for v1.9.6 and record real crashes as issue nodes (Firebase MCP needs an active project)",
+        "Update the store listing copy + screenshots for whatever v1.9.7 actually contains (Play edit must be built and committed in one sitting)",
+        "Add instrumented UI tests for the release-only failure class (R8/JNI), which unit tests cannot catch"
+      ],
+      "edges": []
+    },
+    {
+      "id": "rel:v1.5.9",
+      "kind": "release",
+      "title": "v1.5.9 (12)",
+      "status": "superseded",
+      "updated": "2026-10-11",
+      "summary": "Tagged v1.5.9-android on 2026-10-11 (versionCode 12); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-11",
+        "version_code": 12
+      },
+      "refs": [
+        "tag:v1.5.9-android"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.6.0",
+      "kind": "release",
+      "title": "v1.6.0 (13)",
+      "status": "superseded",
+      "updated": "2026-10-11",
+      "summary": "Tagged v1.6.0-android on 2026-10-11 (versionCode 13); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-11",
+        "version_code": 13
+      },
+      "refs": [
+        "tag:v1.6.0-android"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.5.9"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.6.1",
+      "kind": "release",
+      "title": "v1.6.1 (14)",
+      "status": "superseded",
+      "updated": "2026-10-18",
+      "summary": "Tagged v1.6.1 on 2026-10-18 (versionCode 14); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-18",
+        "version_code": 14
+      },
+      "refs": [
+        "tag:v1.6.1"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.6.0"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.6.2",
+      "kind": "release",
+      "title": "v1.6.2 (15)",
+      "status": "superseded",
+      "updated": "2026-10-18",
+      "summary": "Tagged v1.6.2 on 2026-10-18 (versionCode 15); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-18",
+        "version_code": 15
+      },
+      "refs": [
+        "tag:v1.6.2"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.6.1"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.6.3",
+      "kind": "release",
+      "title": "v1.6.3 (16)",
+      "status": "superseded",
+      "updated": "2026-10-18",
+      "summary": "Tagged v1.6.3 on 2026-10-18 (versionCode 16); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-18",
+        "version_code": 16
+      },
+      "refs": [
+        "tag:v1.6.3"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.6.2"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.6.4",
+      "kind": "release",
+      "title": "v1.6.4 (17)",
+      "status": "superseded",
+      "updated": "2026-10-19",
+      "summary": "Tagged v1.6.4-android on 2026-10-19 (versionCode 17); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-19",
+        "version_code": 17
+      },
+      "refs": [
+        "tag:v1.6.4-android"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.6.3"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.6.5",
+      "kind": "release",
+      "title": "v1.6.5 (18)",
+      "status": "superseded",
+      "updated": "2026-10-19",
+      "summary": "Tagged v1.6.5-android on 2026-10-19 (versionCode 18); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-19",
+        "version_code": 18
+      },
+      "refs": [
+        "tag:v1.6.5-android"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.6.4"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.7.0",
+      "kind": "release",
+      "title": "v1.7.0 (19)",
+      "status": "superseded",
+      "updated": "2026-10-20",
+      "summary": "Tagged v1.7.0 on 2026-10-20 (versionCode 19); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-20",
+        "version_code": 19
+      },
+      "refs": [
+        "tag:v1.7.0"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.6.5"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.7.1",
+      "kind": "release",
+      "title": "v1.7.1 (20)",
+      "status": "superseded",
+      "updated": "2026-10-20",
+      "summary": "Tagged v1.7.1 on 2026-10-20 (versionCode 20); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-20",
+        "version_code": 20
+      },
+      "refs": [
+        "tag:v1.7.1"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.7.0"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.7.2",
+      "kind": "release",
+      "title": "v1.7.2 (21)",
+      "status": "superseded",
+      "updated": "2026-10-20",
+      "summary": "Tagged v1.7.2 on 2026-10-20 (versionCode 21); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-20",
+        "version_code": 21
+      },
+      "refs": [
+        "tag:v1.7.2"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.7.1"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.7.3",
+      "kind": "release",
+      "title": "v1.7.3 (22)",
+      "status": "superseded",
+      "updated": "2026-10-20",
+      "summary": "Tagged v1.7.3 (commit 2d943cf-era) on 2026-10-20 (versionCode 22); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-20",
+        "version_code": 22
+      },
+      "refs": [
+        "tag:v1.7.3 (commit 2d943cf-era)"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.7.2"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.7.4",
+      "kind": "release",
+      "title": "v1.7.4 (23)",
+      "status": "superseded",
+      "updated": "2026-10-20",
+      "summary": "Tagged v1.7.4 on 2026-10-20 (versionCode 23); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-20",
+        "version_code": 23
+      },
+      "refs": [
+        "tag:v1.7.4"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.7.3"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.7.5",
+      "kind": "release",
+      "title": "v1.7.5 (24)",
+      "status": "superseded",
+      "updated": "2026-10-20",
+      "summary": "Tagged v1.7.5 on 2026-10-20 (versionCode 24); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-20",
+        "version_code": 24
+      },
+      "refs": [
+        "tag:v1.7.5"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.7.4"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.7.6",
+      "kind": "release",
+      "title": "v1.7.6 (25)",
+      "status": "superseded",
+      "updated": "2026-10-20",
+      "summary": "Tagged v1.7.6 on 2026-10-20 (versionCode 25); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-20",
+        "version_code": 25
+      },
+      "refs": [
+        "tag:v1.7.6"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.7.5"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.7.7",
+      "kind": "release",
+      "title": "v1.7.7 (26)",
+      "status": "superseded",
+      "updated": "2026-10-20",
+      "summary": "Tagged v1.7.7 on 2026-10-20 (versionCode 26); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-20",
+        "version_code": 26
+      },
+      "refs": [
+        "tag:v1.7.7"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.7.6"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.7.8",
+      "kind": "release",
+      "title": "v1.7.8 (27)",
+      "status": "superseded",
+      "updated": "2026-10-20",
+      "summary": "Tagged v1.7.8 on 2026-10-20 (versionCode 27); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-20",
+        "version_code": 27
+      },
+      "refs": [
+        "tag:v1.7.8"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.7.7"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.7.9",
+      "kind": "release",
+      "title": "v1.7.9 (28)",
+      "status": "superseded",
+      "updated": "2026-10-21",
+      "summary": "Tagged v1.7.9 on 2026-10-21 (versionCode 28); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-21",
+        "version_code": 28
+      },
+      "refs": [
+        "tag:v1.7.9"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.7.8"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.8.0",
+      "kind": "release",
+      "title": "v1.8.0 (29)",
+      "status": "superseded",
+      "updated": "2026-10-21",
+      "summary": "Tagged v1.8.0 on 2026-10-21 (versionCode 29); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-21",
+        "version_code": 29
+      },
+      "refs": [
+        "tag:v1.8.0"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.7.9"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.8.1",
+      "kind": "release",
+      "title": "v1.8.1 (30)",
+      "status": "superseded",
+      "updated": "2026-10-21",
+      "summary": "Tagged v1.8.1 on 2026-10-21 (versionCode 30); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-21",
+        "version_code": 30
+      },
+      "refs": [
+        "tag:v1.8.1"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.8.0"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.8.2",
+      "kind": "release",
+      "title": "v1.8.2 (31)",
+      "status": "superseded",
+      "updated": "2026-10-21",
+      "summary": "Tagged v1.8.2 on 2026-10-21 (versionCode 31); no per-version notes were kept in the repo for this one.",
+      "attrs": {
+        "date": "2026-10-21",
+        "version_code": 31
+      },
+      "refs": [
+        "tag:v1.8.2"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.8.1"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.8.3",
+      "kind": "release",
+      "title": "v1.8.3 (32)",
+      "status": "superseded",
+      "updated": "2026-10-22",
+      "summary": "Last release before the v1.9 line; production from 2026-10-21 until v1.9.5/1.9.6 replaced it on 2026-11-14.",
+      "attrs": {
+        "date": "2026-10-22",
+        "version_code": 32
+      },
+      "refs": [
+        "commit:v1.8.3"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.8.2"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.9.0",
+      "kind": "release",
+      "title": "v1.9.0 (33)",
+      "status": "superseded",
+      "updated": "2026-11-13",
+      "summary": "The tab rework release: Home/Printer/Files tabs, one button style, full-screen camera, comments from all four model sites, in-app sign-in, PIN/QR pairing, 16 KB native libraries.",
+      "attrs": {
+        "date": "2026-11-12",
+        "version_code": 33
+      },
+      "refs": [
+        "commit:2d943cf",
+        "file:store_listing/metadata.md"
+      ],
+      "edges": [
+        [
+          "hosted_on",
+          "ext:github-public-mirror"
+        ],
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "supersedes",
+          "rel:v1.8.3"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.9.1",
+      "kind": "release",
+      "title": "v1.9.1 (34)",
+      "status": "superseded",
+      "updated": "2026-11-13",
+      "summary": "Camera/preview SurfaceView crash fixes.",
+      "attrs": {
+        "date": "2026-11-13",
+        "version_code": 34
+      },
+      "refs": [
+        "commit:5099fcd",
+        "commit:f182ada",
+        "commit:1593d4f"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.9.0"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.9.10",
+      "kind": "release",
+      "title": "v1.9.10 (43)",
+      "status": "superseded",
+      "summary": "Reveals PrintSetup immediately after model downloads (gates browse overlays on Screen.Home, clears SourceListOverlay, atomic ModelBrowser _state.update + detailGeneration); fixes all 3 active 1.9.x Crashlytics FATAL crash classes: Android 15+ 6h dataSync FGS timeout (onTimeout in Print/SliceForegroundService), 256MB bitmap & ImageEngine OOM (hard 1600px decode cap, direct decodeFile, 8MB/32MB caps), and slicing/preview OOMs (largeHeap, hard GcodePreviewParser vertex ceiling, Throwable OOM catch, 1MB PreviewRenderer staging). Uploaded to Play internal track as completed (edit 14373001468196358516, sha1 e61deeb95622a515dd91c2356246aae57830cc27).",
+      "updated": "2026-11-23",
+      "refs": [
+        "file:store_listing/metadata.md",
+        "file:android/app/build.gradle.kts"
+      ],
+      "next": [
+        "Monitor Play vitals / Crashlytics on v1.9.10 production rollout"
+      ],
+      "attrs": {
+        "date": "2026-11-22",
+        "version_code": 43,
+        "play_edits": "production 17732108991673397774 · internal 14373001468196358516",
+        "sha1": "e61deeb95622a515dd91c2356246aae57830cc27",
+        "notes": "4 bullets, 421 chars (production)"
+      },
+      "edges": [
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.9.9"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.9.11",
+      "kind": "release",
+      "title": "v1.9.11 (44)",
+      "status": "superseded",
+      "summary": "Fixes native slicing crash when selecting a different support material (dual-extruder / multi-spool supports): formats filament_colour & filament_multi_colour with semicolons instead of quoted newlines (which ConfigOptionStrings::deserialize parsed as a single element, triggering ToolOrdering/Print OOB crashes when nozzle_diameter has 2 heads), fixes AppViewModel dual/undual printer resolution when supports are toggled off, allows same-preset second-spool supports in slice_jni.cpp, pads PresetBundle filament_presets to head count before full_config(), and normalizes filament_colour, filament_multi_colour, filament_map, flush_multiplier, and flush_volumes_matrix in run_slice(). Uploaded to Play internal track as completed (edit 03715875132519618644, sha1 0a1fadf3859e6e273292389758f2b8767cb483c3) with ProGuard mapping and native symbols.",
+      "updated": "2026-11-23",
+      "refs": [
+        "file:store_listing/metadata.md",
+        "file:android/app/build.gradle.kts",
+        "file:android/app/src/main/java/world/yemyat/slicepilot/ui/AppViewModel.kt",
+        "file:android/core/jni/slice_jni.cpp"
+      ],
+      "next": [
+        "Verify dual-material support slicing on device from Play internal track, then promote v1.9.11 to production and sync public mirror if desired"
+      ],
+      "attrs": {
+        "date": "2026-11-23",
+        "version_code": 44,
+        "play_edits": "internal 03715875132519618644",
+        "sha1": "0a1fadf3859e6e273292389758f2b8767cb483c3",
+        "notes": "2 bullets, 299 chars"
+      },
+      "edges": [
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.9.10"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.9.12",
+      "kind": "release",
+      "title": "v1.9.12 (45)",
+      "status": "superseded",
+      "summary": "Fixes print-finished notifications flipping to 'Starting print…' and reappearing after dismissal (LanPrintMonitor single-pass mapJobState, PrintNotificationTracker active->IDLE completion, stale restore clearing, temp-tick deduplication, PrintForegroundService session token + direct stopService) plus all v1.9.11 dual-material support slicing crash fixes. Uploaded to Play internal track as completed (edit 12094404409159502249, sha1 ea084abd74074b2018a69e465a4350fc4f95020b) with ProGuard mapping and native symbols.",
+      "updated": "2026-11-23",
+      "refs": [
+        "file:store_listing/metadata.md",
+        "file:android/app/build.gradle.kts",
+        "file:android/app/src/main/java/world/yemyat/slicepilot/PrintForegroundService.kt",
+        "file:android/app/src/main/java/world/yemyat/slicepilot/cloud/LanPrintMonitor.kt"
+      ],
+      "next": [
+        "Verify dual-material support slicing and print-finished notification on device from Play internal track, then promote v1.9.12 to production and sync public mirror if desired"
+      ],
+      "attrs": {
+        "date": "2026-11-23",
+        "version_code": 45,
+        "play_edits": "internal 12094404409159502249",
+        "sha1": "ea084abd74074b2018a69e465a4350fc4f95020b",
+        "notes": "2 bullets, 247 chars"
+      },
+      "edges": [
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.9.11"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.9.13",
+      "kind": "release",
+      "title": "v1.9.13 (46)",
+      "status": "live",
+      "summary": "Keeps Centauri Carbon 2 on its single-nozzle Canvas profile (eliminating the synthetic 0.4+0.4 +1.5mm Y extruder_offset and zero-flush bug), adds a Support material scope toggle (Interface only default vs Full support) and 0.00mm Z distance option, guards multi-material support slicing on supportMaterialAvailable(), and enforces 500mm3 single-nozzle purge volumes for dissimilar materials (200mm3 for same-type swaps); includes the v1.9.12 print-finished notification fix and v1.9.11 dual-material support crash fix. Uploaded to Play internal track as completed (edit 09303183755892173428, sha1 a6c4e1a3869813c4d1ab1739a587de68dd13656e) with ProGuard mapping and native symbols.",
+      "updated": "2026-11-23",
+      "refs": [
+        "file:store_listing/metadata.md",
+        "file:android/app/build.gradle.kts",
+        "file:android/app/src/main/java/world/yemyat/slicepilot/ui/AppViewModel.kt",
+        "file:android/app/src/main/java/world/yemyat/slicepilot/ui/AdvancedSettings.kt",
+        "file:android/core/jni/slice_jni.cpp"
+      ],
+      "next": [
+        "Monitor Play vitals / Crashlytics on v1.9.13 production rollout"
+      ],
+      "attrs": {
+        "date": "2026-11-23",
+        "version_code": 46,
+        "play_edits": "production 13275814218166966505 · internal 09303183755892173428",
+        "sha1": "a6c4e1a3869813c4d1ab1739a587de68dd13656e",
+        "notes": "3 bullets, 471 chars (production)"
+      },
+      "edges": [
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.9.12"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.9.2",
+      "kind": "release",
+      "title": "v1.9.2 (35)",
+      "status": "superseded",
+      "updated": "2026-11-13",
+      "summary": "Print the chosen pieces of a multi-part model, each with its own pose.",
+      "attrs": {
+        "date": "2026-11-13",
+        "version_code": 35
+      },
+      "refs": [
+        "commit:5fed17d",
+        "commit:baecfb9"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.9.1"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.9.3",
+      "kind": "release",
+      "title": "v1.9.3 (36)",
+      "status": "superseded",
+      "updated": "2026-11-13",
+      "summary": "Build-volume check respects piece layout; viewer transform controls act on the selected piece; tile grid for pieces.",
+      "attrs": {
+        "date": "2026-11-13",
+        "version_code": 36
+      },
+      "refs": [
+        "commit:2cf27d5",
+        "commit:c5ef799",
+        "commit:525e672",
+        "commit:aaeebf9"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.9.2"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.9.4",
+      "kind": "release",
+      "title": "v1.9.4 (37)",
+      "status": "superseded",
+      "updated": "2026-11-14",
+      "summary": "Slicing preview rendered the poses Print setup set, including per-piece colours and skipped pieces.",
+      "attrs": {
+        "date": "2026-11-14",
+        "version_code": 37
+      },
+      "refs": [
+        "commit:0c651ef",
+        "commit:41245a7"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.9.3"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.9.5",
+      "kind": "release",
+      "title": "v1.9.5 (38)",
+      "status": "superseded",
+      "updated": "2026-11-14",
+      "summary": "Multi-part pose fix ('Slice the pieces the app posed, not the file it authored'); briefly production before v1.9.6 the same day.",
+      "attrs": {
+        "date": "2026-11-14",
+        "version_code": 38
+      },
+      "refs": [
+        "commit:520d1bf",
+        "commit:73fde67"
+      ],
+      "edges": [
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.9.4"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.9.6",
+      "kind": "release",
+      "title": "v1.9.6 (39)",
+      "status": "superseded",
+      "owner": "dev",
+      "updated": "2026-11-22",
+      "summary": "Google sign-in through Elegoo's federated auth, the terms-consent dialog, and clearer cloud sign-in failure messages. Production at 100% since 2026-11-14 (Play API confirms status completed, rollout 100%).",
+      "attrs": {
+        "date": "2026-11-14",
+        "version_code": 39,
+        "play_edits": "production 10678779014496414016 · upload 10814106495084609895",
+        "notes": "3 bullets, under the 500-char cap"
+      },
+      "refs": [
+        "commit:f835b5a",
+        "commit:5eadfda",
+        "file:store_listing/metadata.md"
+      ],
+      "next": [
+        "Supersede it with v1.9.7 once the UI consolidation ships"
+      ],
+      "edges": [
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.9.5"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.9.7",
+      "kind": "release",
+      "title": "v1.9.7 (40)",
+      "status": "superseded",
+      "owner": "agent",
+      "updated": "2026-11-22",
+      "summary": "Streamlined multi-part Print setup, collapsible Advanced settings, archived G-code shelf, source filter chips, stabilized cloud/LAN printer connections (single MQTT client, reconnect re-subscribe, LAN/RTM auto-reconnect, reliable case light), full-screen camera rotation inset fix, dark-mode contrast fix, and clean paper background. Uploaded to Play internal track (edit 00964468449163369777, sha1 6786fcf2c1df5bb84cb0dbbd99b8890e384f4e2b) with ProGuard mapping and native symbols; verified 16 KB ELF alignment across all 13 arm64 .so libs and R8 survival of NativeLib JNI callbacks.",
+      "attrs": {
+        "date": "",
+        "version_code": 40
+      },
+      "refs": [
+        "commit:ab64461"
+      ],
+      "next": [
+        "Decide whether v1.9.7 is the UI consolidation, the multi-filament merge, or both",
+        "Then follow the release checklist in AGENTS.md"
+      ],
+      "edges": [
+        [
+          "requires",
+          "rule:release-checklist"
+        ],
+        [
+          "affects",
+          "mod:android-app"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.9.8",
+      "kind": "release",
+      "title": "v1.9.8 (41)",
+      "status": "superseded",
+      "summary": "Fixes full-screen 3D preview tool dock and comments dialog bottom navigation bar overlap on Android 15/16 (keeping top platform inset unchanged) plus all 1.9.7 UI, printer stability, case light, and dark-mode contrast fixes. Uploaded to Play internal track (edit 12439253403719215867, sha1 b0a0c17f1e61baa2a6c7afecd51a0ad5c59decb7) with ProGuard mapping and native debug symbols.",
+      "updated": "2026-11-22",
+      "refs": [
+        "file:store_listing/metadata.md",
+        "file:android/app/build.gradle.kts"
+      ],
+      "next": [
+        "Verify internal-track build on device, then promote to production and snapshot v1.9.8 to public mirror"
+      ],
+      "attrs": {
+        "date": "2026-11-22",
+        "version_code": 41,
+        "play_edits": "internal 12439253403719215867",
+        "sha1": "b0a0c17f1e61baa2a6c7afecd51a0ad5c59decb7",
+        "notes": "2 bullets, 334 chars"
+      },
+      "edges": [
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.9.7"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.9.9",
+      "kind": "release",
+      "title": "v1.9.9 (42)",
+      "status": "superseded",
+      "summary": "Replaces PrintSetupFullscreen Dialog with an in-window full-screen overlay so top/bottom insets match the edge-to-edge Activity window cleanly on Android 13-16; fixes single-part modelTransform observation, rotation-matrix FaceChip downFace() selection, dock touch bleed-through into GLSurfaceView, and auto-scrolling part pills. Uploaded to Play internal track (edit 01648696905188893446, sha1 20fe9b5c98f9b1cb214eb569afeffdc80fa18e77) with ProGuard mapping and native debug symbols.",
+      "updated": "2026-11-22",
+      "refs": [
+        "file:store_listing/metadata.md",
+        "file:android/app/build.gradle.kts"
+      ],
+      "next": [
+        "Monitor Play vitals / Crashlytics on v1.9.9 production rollout"
+      ],
+      "attrs": {
+        "date": "2026-11-22",
+        "version_code": 42,
+        "play_edits": "production 04999452179185381205 · internal 13562093267041175623 · upload 01648696905188893446",
+        "sha1": "20fe9b5c98f9b1cb214eb569afeffdc80fa18e77",
+        "notes": "4 bullets, 457 chars (production)"
+      },
+      "edges": [
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.9.8"
+        ]
+      ]
+    },
+    {
+      "id": "rule:16kb-page-alignment",
+      "kind": "rule",
+      "title": "16 KB page-aligned native libraries",
+      "status": "enforced",
+      "updated": "2026-11-22",
+      "summary": "All native libraries are built 16 KB page aligned (Android 16 requirement, done with CameraX 1.4.2 in v1.9.0); any new native dependency has to keep that property.",
+      "refs": [
+        "commit:649b2e0",
+        "file:android/native-build/build.sh"
+      ],
+      "edges": [
+        [
+          "guards",
+          "mod:native-build"
+        ],
+        [
+          "affects",
+          "mod:android-core-jni"
+        ]
+      ]
+    },
+    {
+      "id": "rule:adb-install-flow",
+      "kind": "rule",
+      "title": "apkpush / two-device adb discipline",
+      "status": "enforced",
+      "updated": "2026-11-22",
+      "summary": "apkpush installs with -r -g -t over the pinned debug key (no uninstall, no data wipe), reconnects to the last wireless-debugging address, and lists devices; two phones are often attached at once, so always pass -s for anything read back.",
+      "refs": [
+        "file:AGENTS.md",
+        "cli:apkpush"
+      ],
+      "edges": [
+        [
+          "guards",
+          "dev:pixel-4a"
+        ],
+        [
+          "guards",
+          "dev:yes-s25-edge"
+        ],
+        [
+          "requires",
+          "sec:keystores"
+        ]
+      ]
+    },
+    {
+      "id": "rule:jni-r8-keep",
+      "kind": "rule",
+      "title": "JNI ↔ R8 keep rules",
+      "status": "enforced",
+      "updated": "2026-11-22",
+      "summary": "Every Java type/method resolved by name from native code needs a -keep rule in android/app/proguard-rules.pro, in the same commit as the JNI change; -keep class X does not cover nested X$Y. v1.6.2 crashed in release because NativeLib$PreviewCallback had no rule while NativeLib$SliceCallback did. Verify with bundleRelease + a dex check, not only installDebug.",
+      "refs": [
+        "file:android/app/proguard-rules.pro",
+        "file:AGENTS.md"
+      ],
+      "edges": [
+        [
+          "guards",
+          "mod:android-core-jni"
+        ],
+        [
+          "guards",
+          "mod:android-app"
+        ],
+        [
+          "affects",
+          "feat:slicing"
+        ],
+        [
+          "affects",
+          "feat:multi-filament"
+        ],
+        [
+          "affects",
+          "iss:r8-jni-class"
+        ]
+      ]
+    },
+    {
+      "id": "rule:no-ye3d-copy",
+      "kind": "rule",
+      "title": "Never say 'YE3D' in user-facing text",
+      "status": "enforced",
+      "updated": "2026-11-22",
+      "summary": "'YE3D' is the developer's private name for their printer and means nothing to users: say 'Centauri Carbon 2' or 'cloud printing' in release notes, store copy, and UI text.",
+      "refs": [
+        "file:AGENTS.md",
+        "file:store_listing/metadata.md"
+      ],
+      "edges": [
+        [
+          "guards",
+          "mod:store-listing"
+        ],
+        [
+          "guards",
+          "mod:android-app"
+        ]
+      ]
+    },
+    {
+      "id": "rule:notes-500-char",
+      "kind": "rule",
+      "title": "Release notes cap is 500 characters",
+      "status": "enforced",
+      "updated": "2026-11-22",
+      "summary": "Play rejects the whole commit above 500 characters (v1.9.0 failed at 970 and needed a 402-char rewrite). The short shipped text lives in store_listing/metadata.md per version; the long changelog goes on the GitHub release.",
+      "refs": [
+        "file:store_listing/metadata.md",
+        "file:AGENTS.md"
+      ],
+      "edges": [
+        [
+          "guards",
+          "mod:store-listing"
+        ],
+        [
+          "affects",
+          "rel:v1.9.7"
+        ]
+      ]
+    },
+    {
+      "id": "rule:play-edit-window",
+      "kind": "rule",
+      "title": "Play edits expire in about an hour",
+      "status": "enforced",
+      "updated": "2026-11-22",
+      "summary": "A Play listing edit lives roughly an hour, so it must be built and edits().commit()ed in one sitting — v1.9.0 lost a day to an expired staged edit. The AAB path is safe because upload_play_internal.py commits the edit it opens.",
+      "refs": [
+        "file:AGENTS.md",
+        "file:store_listing/metadata.md"
+      ],
+      "edges": [
+        [
+          "guards",
+          "mod:store-listing"
+        ],
+        [
+          "affects",
+          "rel:v1.9.6"
+        ],
+        [
+          "affects",
+          "rel:v1.9.7"
+        ]
+      ]
+    },
+    {
+      "id": "rule:public-snapshot-flow",
+      "kind": "rule",
+      "title": "Public mirror snapshot flow",
+      "status": "enforced",
+      "updated": "2026-11-22",
+      "summary": "Publish by snapshotting main into the public repo as one squashed, named commit per release (never pushing private history), then tag there — the private repo has no GitHub Actions, so a tag on origin alone builds nothing.",
+      "refs": [
+        "file:AGENTS.md",
+        "branch:public-sync",
+        "url:https://github.com/yemyatthu1990/slicepilot-android-public"
+      ],
+      "edges": [
+        [
+          "guards",
+          "ext:github-public-mirror"
+        ],
+        [
+          "affects",
+          "ext:github-actions"
+        ],
+        [
+          "affects",
+          "rel:v1.9.7"
+        ],
+        [
+          "requires",
+          "sec:build-properties"
+        ]
+      ]
+    },
+    {
+      "id": "rule:release-checklist",
+      "kind": "rule",
+      "title": "Release checklist",
+      "status": "enforced",
+      "updated": "2026-11-22",
+      "summary": "Bump versionCode/versionName → bundleRelease + extractReleaseNativeSymbolTables + mergeReleaseNativeDebugMetadata → upload with scripts/upload_play_internal.py including --mapping and --native-symbols → commit, tag, push tag to the public repo so CI produces artifacts → store listing edit committed in the same session.",
+      "refs": [
+        "file:AGENTS.md",
+        "file:scripts/upload_play_internal.py"
+      ],
+      "edges": [
+        [
+          "guards",
+          "mod:scripts"
+        ],
+        [
+          "guards",
+          "rel:v1.9.7"
+        ],
+        [
+          "affects",
+          "art:release-aab"
+        ],
+        [
+          "requires",
+          "rule:play-edit-window"
+        ],
+        [
+          "requires",
+          "rule:notes-500-char"
+        ],
+        [
+          "requires",
+          "rule:jni-r8-keep"
+        ],
+        [
+          "requires",
+          "rule:public-snapshot-flow"
+        ]
+      ]
+    },
+    {
+      "id": "rule:screenshot-evidence",
+      "kind": "rule",
+      "title": "UI work needs a screenshot in the conversation",
+      "status": "enforced",
+      "updated": "2026-11-22",
+      "summary": "adb screencap → pull → read the PNG so it renders in chat; a file path is not evidence. Getting onto a model needs Home → Local model (SAF) because adb VIEW intents land on Home; a ~770-byte cube 3MF is enough when the phone has no model.",
+      "refs": [
+        "file:AGENTS.md"
+      ],
+      "edges": [
+        [
+          "guards",
+          "mod:android-app"
+        ],
+        [
+          "affects",
+          "art:screenshots-v1.9.0"
+        ],
+        [
+          "guarded_by",
+          "rule:adb-install-flow"
+        ]
+      ]
+    },
+    {
+      "id": "sec:build-properties",
+      "kind": "secret",
+      "title": "secrets/build.properties (endpoints, client ids, Agora, RSA key)",
+      "status": "current",
+      "updated": "2026-11-22",
+      "summary": "Gitignored build secrets injected as BuildConfig fields: cloud gateways and login URLs, cookie domains, client ids, the Elegoo RSA public key, the Agora App ID. Also the CI secret BUILD_PROPERTIES in both repos.",
+      "refs": [
+        "file:secrets/build.properties",
+        "file:secrets.example/build.properties",
+        "secret:BUILD_PROPERTIES"
+      ],
+      "next": [
+        "Any new secret(...) key in android/app/build.gradle.kts must be added to BUILD_PROPERTIES in both repos in the same change"
+      ],
+      "edges": [
+        [
+          "used_by",
+          "mod:android-app"
+        ],
+        [
+          "used_by",
+          "mod:cloud-auth"
+        ],
+        [
+          "used_by",
+          "ext:github-actions"
+        ],
+        [
+          "affects",
+          "feat:cloud-auth"
+        ]
+      ]
+    },
+    {
+      "id": "sec:cf-dns",
+      "kind": "secret",
+      "title": "secrets/cf-dns.env",
+      "status": "current",
+      "updated": "2026-11-22",
+      "summary": "Cloudflare DNS token for the landing site deployment.",
+      "refs": [
+        "file:secrets/cf-dns.env",
+        "secret:CLOUDFLARE_DNS_TOKEN"
+      ],
+      "edges": [
+        [
+          "used_by",
+          "mod:landing"
+        ],
+        [
+          "used_by",
+          "ext:cloudflare"
+        ]
+      ]
+    },
+    {
+      "id": "sec:google-services",
+      "kind": "secret",
+      "title": "secrets/google-services.json",
+      "status": "current",
+      "updated": "2026-11-22",
+      "summary": "Firebase config, copied into android/app/ at build time (task copyFirebaseConfig); also the CI secret GOOGLE_SERVICES_JSON.",
+      "refs": [
+        "file:secrets/google-services.json",
+        "file:android/app/google-services.json",
+        "secret:GOOGLE_SERVICES_JSON"
+      ],
+      "edges": [
+        [
+          "used_by",
+          "mod:android-app"
+        ],
+        [
+          "used_by",
+          "ext:firebase"
+        ]
+      ]
+    },
+    {
+      "id": "sec:keystores",
+      "kind": "secret",
+      "title": "Keystores (upload + pinned debug)",
+      "status": "current",
+      "updated": "2026-11-22",
+      "summary": "Upload keystore and properties for release signing, plus the pinned debug keystore so every machine signs debug builds with the same key and adb install -r updates in place.",
+      "refs": [
+        "file:secrets/upload-keystore.properties",
+        "file:secrets/slicepilot-upload.jks",
+        "file:secrets/debug.keystore",
+        "secret:KEYSTORE_PROPERTIES",
+        "secret:UPLOAD_KEYSTORE_BASE64"
+      ],
+      "edges": [
+        [
+          "used_by",
+          "mod:android-app"
+        ],
+        [
+          "used_by",
+          "rule:adb-install-flow"
+        ],
+        [
+          "used_by",
+          "rule:release-checklist"
+        ]
+      ]
+    },
+    {
+      "id": "sec:play-service-account",
+      "kind": "secret",
+      "title": "secrets/play-service-account.json",
+      "status": "current",
+      "updated": "2026-11-22",
+      "summary": "Google Cloud service-account key used by scripts/upload_play_internal.py and published as the CI secret PLAY_SERVICE_ACCOUNT_JSON.",
+      "refs": [
+        "file:secrets/play-service-account.json",
+        "secret:PLAY_SERVICE_ACCOUNT_JSON"
+      ],
+      "edges": [
+        [
+          "used_by",
+          "mod:scripts"
+        ],
+        [
+          "used_by",
+          "ext:github-actions"
+        ]
+      ]
+    },
+    {
+      "id": "test:app-unit-tests",
+      "kind": "test",
+      "title": "android/app unit tests (6 files)",
+      "status": "current",
+      "updated": "2026-11-22",
+      "summary": "LanPrintManagerTest, LanPrintMonitorTest, PairingCodeTest, MeshPartTest, ThreeMFParserTest, ConnectedPrinterTest — the app's only automated verification.",
+      "refs": [
+        "file:android/app/src/test/java/world/yemyat/slicepilot/",
+        "file:android/app/src/main/assets/demo/test_cube.stl"
+      ],
+      "next": [
+        "Add tests for the 3D preview and the v1.9.7 consolidated UI components"
+      ],
+      "edges": [
+        [
+          "produced_by",
+          "mod:android-app"
+        ],
+        [
+          "affects",
+          "iss:no-instrumented-tests"
+        ]
+      ]
+    },
+    {
+      "id": "test:cloud-auth-tests",
+      "kind": "test",
+      "title": "cloud-auth unit tests",
+      "status": "current",
+      "updated": "2026-11-22",
+      "summary": "CloudLoginDataTest and CloudSocialLoginTest covering the login payload shapes.",
+      "refs": [
+        "file:android/cloud-auth/src/test/java/"
+      ],
+      "edges": [
+        [
+          "produced_by",
+          "mod:cloud-auth"
+        ]
+      ]
+    }
+  ],
+  "edges": []
+}

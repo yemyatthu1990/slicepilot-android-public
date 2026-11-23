@@ -576,6 +576,7 @@ class LanPrintMonitor : PrintMonitor {
 
             var s = base
             val ps = json.optJSONObject("print_status")
+            var stateStr: String? = null
             if (ps != null) {
                 if (ps.has("filename")) s = s.copy(filename = ps.optString("filename", s.filename))
                 if (ps.has("current_layer")) s = s.copy(currentLayer = ps.optInt("current_layer", s.currentLayer))
@@ -588,19 +589,18 @@ class LanPrintMonitor : PrintMonitor {
                     s = s.copy(remainingSec = rem.coerceAtLeast(0))
                 }
                 if (ps.has("progress")) s = s.copy(progress = ps.optInt("progress", s.progress).coerceIn(0, 100))
-                val stateStr = ps.optString("state", "")
-                if (stateStr.isNotBlank()) {
-                    mapJobState(stateStr.lowercase(), null, null, s.state)?.let { s = s.copy(state = it) }
-                }
+                stateStr = ps.optString("state", "").lowercase().takeIf { it.isNotBlank() }
             }
             val ms = json.optJSONObject("machine_status")
+            var machine: Int? = null
+            var sub: Int? = null
             if (ms != null) {
                 if (ms.has("progress")) s = s.copy(progress = ms.optInt("progress", s.progress).coerceIn(0, 100))
-                val machine = if (ms.has("status")) ms.optInt("status", -1) else null
-                val sub = if (ms.has("sub_status")) ms.optInt("sub_status", -1) else null
-                if (machine != null || sub != null) {
-                    mapJobState(null, machine, sub, s.state)?.let { s = s.copy(state = it) }
-                }
+                if (ms.has("status")) machine = ms.optInt("status", -1)
+                if (ms.has("sub_status")) sub = ms.optInt("sub_status", -1)
+            }
+            if (stateStr != null || machine != null || sub != null) {
+                mapJobState(stateStr, machine, sub, s.state)?.let { s = s.copy(state = it) }
             }
 
             json.optJSONObject("extruder")?.let { ex ->
@@ -688,7 +688,7 @@ class LanPrintMonitor : PrintMonitor {
                         // printer back at its main screen
                         else -> null
                     }
-                return mapped?.let { latchState(it, previous) }
+                if (mapped != null) return latchState(mapped, previous)
             }
             subStatus?.let { sub ->
                 val mapped =

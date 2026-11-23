@@ -393,28 +393,90 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
                 LOGE("Failed to apply overrides: %s", e.what());
             }
         }
-        // ToolOrdering (flush-optimal nozzle assignment) indexes the flush
-        // matrix as filaments*filaments per nozzle; a dual-extruder support
-        // spool is appended as filament preset #2 (nativeSliceWithOverrides),
-        // which leaves the base preset's matrix undersized and crashes the
-        // slice. Resize (tile) it to shape.
-        const size_t n_active = g_preset_bundle ? g_preset_bundle->filament_presets.size() : 1;
-        if (n_active > 1) {
-            const size_t heads = config.option<ConfigOptionFloats>("nozzle_diameter")
-                ? std::max<size_t>(1, config.option<ConfigOptionFloats>("nozzle_diameter")->values.size()) : 1;
-            auto* mult = config.option<ConfigOptionFloats>("flush_multiplier");
+        // Enforce multi-filament / multi-extruder vector invariants after embedded 3MF
+        // settings and INI overrides: ToolOrdering and WipeTower derive filament_nums from
+        // filament_colour.values.size() and assert extruder_nums == filament_nums for
+        // non-BBL multi-extruder printers, and index flush_volumes_matrix as
+        // filament_nums * filament_nums per nozzle.
+        const size_t heads = config.option<ConfigOptionFloats>("nozzle_diameter")
+            ? std::max<size_t>(1, config.option<ConfigOptionFloats>("nozzle_diameter")->values.size()) : 1;
+        const size_t bundle_filaments = g_preset_bundle ? g_preset_bundle->filament_presets.size() : 1;
+        const size_t n_active = std::max<size_t>(std::max<size_t>(1, bundle_filaments), heads);
+        if (n_active > 1 || heads > 1) {
+            auto normalize_colours = [&config, n_active](const char *key) {
+                auto *opt = config.option<ConfigOptionStrings>(key, false);
+                std::vector<std::string> vals = opt ? opt->values : std::vector<std::string>{};
+                if (vals.size() != n_active) {
+                    const std::string fallback = vals.empty() ? "#26A69A" : vals.back();
+                    vals.resize(n_active, fallback);
+                    config.set_key_value(key, new ConfigOptionStrings(std::move(vals)));
+                    LOGI("Normalized %s to %zu entries", key, n_active);
+                }
+            };
+            normalize_colours("filament_colour");
+            normalize_colours("filament_multi_colour");
+
+            auto *fmap = config.option<ConfigOptionInts>("filament_map", false);
+            std::vector<int> fmaps = fmap ? fmap->values : std::vector<int>{};
+            const bool need_fmap = fmaps.size() != n_active || (heads > 1 && n_active > 1);
+            if (need_fmap) {
+                fmaps.resize(n_active, 1);
+                if (heads > 1) {
+                    for (size_t i = 0; i < n_active; ++i)
+                        fmaps[i] = static_cast<int>(std::min<size_t>(i + 1, heads));
+                }
+                config.set_key_value("filament_map", new ConfigOptionInts(std::move(fmaps)));
+                LOGI("Normalized filament_map to %zu entries (%zu nozzles)", n_active, heads);
+            }
+
+            auto *mult = config.option<ConfigOptionFloats>("flush_multiplier", false);
             std::vector<double> mults = mult ? mult->values : std::vector<double>{};
-            mults.resize(heads, 1.0);
-            config.set_key_value("flush_multiplier", new ConfigOptionFloats(mults));
-            auto* mat = config.option<ConfigOptionFloats>("flush_volumes_matrix");
+            if (mults.size() != heads) {
+                mults.resize(heads, 1.0);
+                config.set_key_value("flush_multiplier", new ConfigOptionFloats(std::move(mults)));
+            }
+
+            auto *mat = config.option<ConfigOptionFloats>("flush_volumes_matrix", false);
             std::vector<double> src = mat ? mat->values : std::vector<double>{};
             const size_t need = n_active * n_active * heads;
-            if (src.size() != need) {
-                std::vector<double> fixed(need, 0.0);
-                if (!src.empty())
-                    for (size_t i = 0; i < need; ++i) fixed[i] = src[i % src.size()];
-                config.set_key_value("flush_volumes_matrix", new ConfigOptionFloats(fixed));
-                LOGI("Resized flush_volumes_matrix to %zu (%zu filaments x %zu nozzles)", need, n_active, heads);
+            auto *ftypes = config.option<ConfigOptionStrings>("filament_type", false);
+            auto norm_type = [&](size_t idx) -> std::string {
+                if (!ftypes || ftypes->values.empty()) return "";
+                std::string t = idx < ftypes->values.size() ? ftypes->values[idx] : ftypes->values.back();
+                for (char &ch : t) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+                return t;
+            };
+            auto min_flush_for_pair = [&](size_t r, size_t c) -> double {
+                if (r == c) return 0.0;
+                const std::string tr = norm_type(r);
+                const std::string tc = norm_type(c);
+                // Dissimilar materials sharing one nozzle (e.g. PLA <-> PETG or breakaway support)
+                // need heavy flushing to prevent cross-contamination and brittle layer delamination.
+                if (heads == 1 && !tr.empty() && !tc.empty() && tr != tc) return 500.0;
+                return (heads == 1) ? 200.0 : 140.0;
+            };
+            const bool resized = (src.size() != need);
+            bool updated_flush = resized;
+            std::vector<double> fixed = resized ? std::vector<double>(need, 0.0) : src;
+            for (size_t h = 0; h < heads; ++h) {
+                for (size_t r = 0; r < n_active; ++r) {
+                    for (size_t c = 0; c < n_active; ++c) {
+                        const size_t idx = (h * n_active + r) * n_active + c;
+                        const double floor_vol = min_flush_for_pair(r, c);
+                        if (r == c) {
+                            if (fixed[idx] != 0.0) { fixed[idx] = 0.0; updated_flush = true; }
+                        } else if (resized || (heads == 1 && fixed[idx] < floor_vol)) {
+                            fixed[idx] = std::max(fixed[idx], floor_vol);
+                            updated_flush = true;
+                        }
+                    }
+                }
+            }
+            if (updated_flush) {
+                config.set_key_value("flush_volumes_matrix", new ConfigOptionFloats(std::move(fixed)));
+                LOGI("Normalized flush_volumes_matrix (%zu entries, %zu filaments x %zu nozzles, types=%s/%s)",
+                     need, n_active, heads, norm_type(0).c_str(),
+                     n_active > 1 ? norm_type(1).c_str() : "-");
             }
         }
         clamp_filament_selection(config);
@@ -741,17 +803,36 @@ Java_world_yemyat_slicepilot_NativeLib_nativeSliceWithOverrides(JNIEnv *env, jcl
                       " process=" + std::to_string(ok_r) + ")");
             return JNI_FALSE;
         }
-        g_preset_bundle->filament_presets = { g_preset_bundle->filaments.get_selected_preset_name() };
-        // Dual-extruder support material (CC2): the support spool becomes filament
-        // #2, which the engine maps to nozzle 2; the machine profile's
-        // change_filament_gcode (M6211 + T1) performs the Canvas swap.
-        if (!support_filament.empty() && support_filament != filament) {
-            if (g_preset_bundle->filaments.select_preset_by_name(support_filament, true)) {
-                g_preset_bundle->filament_presets.push_back(support_filament);
-                LOGI("Dual-material slice: support filament #2 = %s", support_filament.c_str());
+        const std::string primary_filament = g_preset_bundle->filaments.get_selected_preset_name();
+        g_preset_bundle->filament_presets = { primary_filament };
+        // Dual-extruder / multi-spool support material (CC2 / CC1 Canvas): the support spool
+        // becomes filament #2 (even when it shares the same preset name as spool #1, e.g. two
+        // PLA spools in different colours); the machine profile's change_filament_gcode performs
+        // the swap.
+        if (!support_filament.empty()) {
+            if (support_filament == primary_filament) {
+                g_preset_bundle->filament_presets.push_back(primary_filament);
+                LOGI("Dual-material slice: support filament #2 = %s (second spool, same preset)", primary_filament.c_str());
+            } else if (g_preset_bundle->filaments.select_preset_by_name(support_filament, true)) {
+                const std::string resolved_support = g_preset_bundle->filaments.get_selected_preset_name();
+                g_preset_bundle->filament_presets.push_back(resolved_support);
+                // Keep filament #1 as the active selection for any single-filament lookups.
+                g_preset_bundle->filaments.select_preset_by_name(primary_filament, true);
+                LOGI("Dual-material slice: support filament #2 = %s", resolved_support.c_str());
             } else {
-                LOGE("Support filament preset not found: %s", support_filament.c_str());
+                LOGE("Support filament preset not found: %s (falling back to %s)",
+                     support_filament.c_str(), primary_filament.c_str());
+                g_preset_bundle->filament_presets.push_back(primary_filament);
             }
+        }
+        // Multi-extruder machine profiles (e.g. CC2 0.4+0.4) require at least one filament
+        // entry per nozzle in full_config() so ToolOrdering's extruder_nums == filament_nums
+        // invariant always holds.
+        const auto *nozzles = g_preset_bundle->printers.get_edited_preset().config
+            .option<ConfigOptionFloats>("nozzle_diameter", false);
+        const size_t heads = nozzles ? std::max<size_t>(1, nozzles->values.size()) : 1;
+        while (g_preset_bundle->filament_presets.size() < heads) {
+            g_preset_bundle->filament_presets.push_back(primary_filament);
         }
         config = g_preset_bundle->full_config();
     } catch (const std::exception &e) {

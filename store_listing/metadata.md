@@ -1,6 +1,9 @@
 # Play Store listing
 
 Published 2026-11-13 from Play edit `13677982899649546337` (en-US listing + phone screenshots).
+**v1.9.13 (46) went to production at 100 % on 2026-11-23** (Play edit `13275814218166966505`; internal upload edit `09303183755892173428`, bundle sha1 `a6c4e1a3869813c4d1ab1739a587de68dd13656e`, ProGuard mapping + native symbols uploaded).
+**v1.9.12 (45) is on the internal track since 2026-11-23** (Play edit `12094404409159502249`, bundle sha1 `ea084abd74074b2018a69e465a4350fc4f95020b`, ProGuard mapping + native symbols uploaded).
+**v1.9.11 (44) is on the internal track since 2026-11-23** (Play edit `03715875132519618644`, bundle sha1 `0a1fadf3859e6e273292389758f2b8767cb483c3`, ProGuard mapping + native symbols uploaded).
 **v1.9.10 (43) went to production at 100 % on 2026-11-22** (Play edit `17732108991673397774`; internal upload edit `14373001468196358516`, bundle sha1 `e61deeb95622a515dd91c2356246aae57830cc27`, ProGuard mapping + native symbols uploaded).
 **v1.9.9 (42) went to production at 100 % on 2026-11-22** (Play edit `04999452179185381205`; internal upload edit `01648696905188893446`, internal publish edit `13562093267041175623`, bundle sha1 `20fe9b5c98f9b1cb214eb569afeffdc80fa18e77`, ProGuard mapping + native symbols uploaded).
 **v1.9.8 (41) is on the internal track since 2026-11-22** (Play edit `12439253403719215867`, bundle sha1 `b0a0c17f1e61baa2a6c7afecd51a0ad5c59decb7`, ProGuard mapping + native symbols uploaded).
@@ -49,6 +52,23 @@ AND THE NICE TOUCHES
 - Open STL/3MF files directly from your Files app
 
 SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint or Elegoo. All trademarks belong to their respective owners.
+
+## What's new (1.9.13)
+<!-- Production rollout (471 chars) covers 1.9.11–1.9.13 since production jumped from 1.9.10:
+     • Fixed slicing crash when selecting a different support material on Centauri Carbon 2 & Canvas
+     • Improved single-nozzle multi-material supports: stays on the single-nozzle profile (no Y offset, proper flushing), defaults to Interface only to cut swaps & waste (with Full support + 0.00 mm Z distance options), and boosts purge for dissimilar materials like PLA/PETG
+     • Fixed print notifications flipping to "Starting print…" and reappearing after dismissal when finished
+-->
+• Improved multi-material support slicing on Centauri Carbon 2 & Canvas: stays on the single-nozzle profile (no Y offset, proper flushing), defaults to Interface only to cut filament swaps & waste (with a Full support option and 0.00 mm Z distance), and boosts purge volume for dissimilar materials like PLA/PETG
+• Includes the print-finished notification fix and dual-material support crash fix
+
+## What's new (1.9.12)
+• Fixed print notifications flipping to "Starting print…" and reappearing after dismissal when a print finishes
+• Fixed slicing crash when selecting a different support material (dual-extruder / multi-spool supports on Centauri Carbon 2 & Canvas)
+
+## What's new (1.9.11)
+• Fixed slicing crash when selecting a different support material (dual-extruder / multi-spool supports on Centauri Carbon 2 & Canvas)
+• Fixed filament colour list formatting and multi-spool preset/flush-matrix sizing so both different-material and same-material second-spool supports slice cleanly
 
 ## What's new (1.9.10)
 • Print setup now opens immediately as soon as a model download finishes without pressing Back from Model detail or "See more"
