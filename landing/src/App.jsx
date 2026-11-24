@@ -25,7 +25,8 @@ function CTA() {
           <span className="text-gradient">Hit print from anywhere.</span>
         </h2>
         <p className="mx-auto mt-5 max-w-xl text-cream-500 sm:text-lg">
-          Free on Android. Works with the Centauri Carbon 2 over the cloud.
+          Free on Android. Customize parametric models, slice multi-colour 3MFs, and print to your Centauri Carbon 2
+          over cloud or local Wi-Fi.
         </p>
         <div className="mt-9 flex justify-center">
           <PlayButton className="px-7! py-4!" />
@@ -58,8 +59,8 @@ function Footer() {
         </nav>
         <p className="max-w-2xl text-xs leading-relaxed text-cream-500/60">
           SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by
-          MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint, Elegoo, or YE3D. All
-          trademarks belong to their respective owners.
+          MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint, or Elegoo. All trademarks belong
+          to their respective owners.
         </p>
         <p className="text-xs text-cream-500/40">© {new Date().getFullYear()} Yemyat Thu</p>
       </div>

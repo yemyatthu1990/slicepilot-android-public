@@ -4,8 +4,8 @@ import { PlayButton } from "./ui.jsx"
 
 const LINKS = [
   { href: "#features", label: "Features" },
+  { href: "#how", label: "Demo" },
   { href: "#screenshots", label: "Screenshots" },
-  { href: "#how", label: "How it works" },
 ]
 
 export default function Nav() {

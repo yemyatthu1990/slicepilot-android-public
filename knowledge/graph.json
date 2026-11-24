@@ -98,6 +98,10 @@
         [
           "produced_by",
           "rel:v1.10.2"
+        ],
+        [
+          "used_by",
+          "mod:landing"
         ]
       ]
     },
@@ -2292,7 +2296,7 @@
       "title": "landing/",
       "status": "active",
       "updated": "2026-11-22",
-      "summary": "Vite + React marketing site for slicepilot.eu, deployed to Cloudflare Pages (wrangler project slicepilot-landing) with a screenshot capture script.",
+      "summary": "Marketing landing page (slicepilot.eu) updated for v1.10.2: parametric customizer, multi-colour AMS/Canvas, cloud+LAN copy, live interactive Android screen-recorded demo video in HowItWorks with chapter jumps, 7 WebP v1.10.2 Play Store screenshots, feature_graphic.png OG image, and zero YE3D copy.",
       "refs": [
         "landing/",
         "landing/wrangler.jsonc",

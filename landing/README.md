@@ -12,10 +12,11 @@ Marketing landing page for the SlicePilot Android app.
   pointer parallax; framed right of the copy on desktop.
 - **Features** — six feature cards + community marquee
   (MakerWorld / Printables / Thingiverse / Nexprint).
-- **How it works** — auto-advancing animated usage guide; screenshots in a phone
-  mockup crossfade with each step (pauses on hover, clickable steps).
-- **Screenshots** — horizontal snap-scroll rail of phone mockups
-  (copied from `store_listing/screenshots/phone_new/`).
+- **How it works** — interactive walkthrough synced to a live on-device Android
+  screen recording (`public/videos/customize_multicolour_demo.mp4`) inside a
+  phone mockup with clickable chapter jumps.
+- **Screenshots** — horizontal snap-scroll rail of v1.10.2 Play Store slides
+  (WebP exports from `store_listing/screenshots/phone_v1.10.2/`).
 - **CTA + footer** — Google Play link, privacy policy, trademark disclaimer.
 
 ## Develop
@@ -36,13 +37,11 @@ npm run preview    # serve dist/
 The production build code-splits three.js into its own lazy chunk (~265 kB gz)
 so the page shell paints before WebGL boots.
 
-## Screenshots for the page
+## Screenshots & video for the page
 
-Refresh from on-device captures with:
-
-```sh
-cp ../store_listing/screenshots/phone_new/*.png public/screenshots/
-```
+Refresh from `store_listing/` (`phone_v1.10.2/*.png` -> WebP in
+`public/screenshots/v1.10.2/`, `feature_graphic.png` -> `public/`, and
+`videos/customize_multicolour_demo.mp4` -> `public/videos/`).
 
 ## Debug helper
 
@@ -56,6 +55,5 @@ node scripts/shot.cjs
 
 ## Store copy rule
 
-Never mention "YE3D" in user-facing copy (see the repo-root `AGENTS.md`); say
-"Centauri Carbon 2". The trademark disclaimer in the footer is the one place
-the name appears, mirroring the Play Store listing.
+Never mention "YE3D" anywhere in user-facing copy or the footer (see the
+repo-root `AGENTS.md`); say "Centauri Carbon 2".

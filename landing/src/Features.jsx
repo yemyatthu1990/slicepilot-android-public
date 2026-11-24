@@ -10,34 +10,34 @@ const Icon = ({ d }) => (
 
 const FEATURES = [
   {
-    icon: "M12 16v-8m0 8l-3.5-3.5M12 16l3.5-3.5M7 20H5a3 3 0 0 1-2.5-4.7 5 5 0 1 1 1.7-8A6 6 0 0 1 19.6 8.5 4.5 4.5 0 0 1 19 17.5L17 18",
-    title: "Cloud model browser",
-    text: "Search and browse MakerWorld, Printables, Thingiverse and Nexprint at once. See daily hot models, pick the exact print profile, download straight into the slicer.",
-  },
-  {
-    icon: "M7 8V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3M7 8H5a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h2m10-9h2a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2m-10 0v3a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-3H7Zm2-4h6",
-    title: "Cloud printing",
-    text: "Sign in, pick your Centauri Carbon 2, and send the finished G-code job from your phone. No SD cards, no desktop in the middle.",
-  },
-  {
-    icon: "M9 3v2m6-2v2M9 19v2m6-2v2M3 9h2m-2 6h2m14-6h2m-2 6h2M6 6h12v12H6zM9.5 9.5h5v5h-5z",
-    title: "Desktop-class engine",
-    text: "A full slicing engine ported from a desktop slicer, running natively on your device. Supports, adhesion, seams, speed and quality controls — the real thing.",
+    icon: "M12 20h9M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4L16.5 3.5Z",
+    title: "In-app parametric customizer",
+    text: "Personalize MakerWorld parametric models — like name keychains, signs, and tags — with an inline 3D preview, 48+ curated fonts, and a 20-swatch + RGB filament colour picker.",
   },
   {
     icon: "M12 3 3 7.5 12 12l9-4.5L12 3ZM3 12.5 12 17l9-4.5M3 17.5 12 22l9-4.5",
-    title: "3MF project support",
-    text: "Open 3MF projects and their embedded printer, filament and process settings are respected. STL works too, straight from your Files app.",
+    title: "Multi-colour 3MF & AMS / Canvas",
+    text: "Colour 3D model previews, automatic spool matching against loaded Centauri Carbon 2 AMS / Canvas filaments, and compact prime tower placement verified inside your build plate.",
+  },
+  {
+    icon: "M12 16v-8m0 8l-3.5-3.5M12 16l3.5-3.5M7 20H5a3 3 0 0 1-2.5-4.7 5 5 0 1 1 1.7-8A6 6 0 0 1 19.6 8.5 4.5 4.5 0 0 1 19 17.5L17 18",
+    title: "4 model communities in one app",
+    text: "Search and browse MakerWorld, Printables, Thingiverse and Nexprint together. Filter customizable models, inspect photos and comments, and download straight into the slicer.",
+  },
+  {
+    icon: "M9 3v2m6-2v2M9 19v2m6-2v2M3 9h2m-2 6h2m14-6h2m-2 6h2M6 6h12v12H6zM9.5 9.5h5v5h-5z",
+    title: "Desktop-class on-device engine",
+    text: "Full native slicing engine running locally on Android. Multi-part placement, supports (including multi-material support interfaces), brim, seams, speed, and background slicing.",
   },
   {
     icon: "M4 6h16M4 10h16M4 14h10m-6 4h6m4-4v6m0 0l-2.5-2.5M18 20l2.5-2.5",
-    title: "Fast G-code preview",
-    text: "Preview huge models in seconds with a fast native parser, progress and time-left estimates, layer-by-layer reveal, print time and material estimates.",
+    title: "Multi-colour G-code preview",
+    text: "Preview large 3MF and STL projects in seconds, then scrub sliced G-code layer by layer with print time, filament weight, and length estimates before you print.",
   },
   {
-    icon: "M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0",
-    title: "Slices in the background",
-    text: "Slice with a progress notification and keep using your phone. Slicing continues when the app is backgrounded — cancel any time.",
+    icon: "M7 8V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3M7 8H5a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h2m10-9h2a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2m-10 0v3a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-3H7Zm2-4h6",
+    title: "Cloud & local LAN printing",
+    text: "Connect to your Centauri Carbon 2 over cloud or local Wi-Fi: monitor live print progress, watch the live printer camera, control temperatures and fans, and send jobs directly.",
   },
 ]
 

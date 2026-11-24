@@ -28,7 +28,7 @@ export default function Hero() {
         <motion.div {...fade(0.1)} className="max-w-2xl">
           <span className="inline-flex items-center gap-2 rounded-full border border-ember-500/30 bg-ember-500/10 px-4 py-1.5 font-mono text-xs text-ember-300">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-ember-400" />
-            Now on Google Play — v1.6
+            Now on Google Play — v1.10.2
           </span>
         </motion.div>
 
@@ -42,9 +42,11 @@ export default function Hero() {
         </motion.h1>
 
         <motion.p {...fade(0.35)} className="mt-6 max-w-xl text-lg leading-relaxed text-cream-500 sm:text-xl">
-          SlicePilot puts a <span className="text-cream-100 font-medium">desktop-class 3D printing slicer</span> in
-          your pocket. Find models from four communities, slice on-device, and send the job straight to your
-          Centauri Carbon 2 — no desktop required.
+          SlicePilot puts a <span className="text-cream-100 font-medium">desktop-class 3D slicer</span>,{" "}
+          <span className="text-cream-100 font-medium">parametric customizer</span>, and{" "}
+          <span className="text-cream-100 font-medium">multi-colour AMS printing</span> in your pocket. Browse four
+          communities, personalize models in 3D, slice on-device, and print to your Centauri Carbon 2 over cloud or
+          local Wi-Fi.
         </motion.p>
 
         <motion.div {...fade(0.5)} className="mt-9 flex flex-wrap items-center gap-5">
@@ -53,7 +55,7 @@ export default function Hero() {
             href="#how"
             className="group inline-flex items-center gap-2 text-sm font-medium text-cream-300 transition-colors hover:text-ember-400"
           >
-            See how it works
+            Watch the live demo
             <svg viewBox="0 0 24 24" className="h-4 w-4 transition-transform group-hover:translate-y-0.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M12 5v14m0 0l-6-6m6 6l6-6" />
             </svg>
@@ -63,8 +65,9 @@ export default function Hero() {
         <motion.dl {...fade(0.65)} className="mt-14 flex flex-wrap gap-x-10 gap-y-4">
           {[
             ["4", "model communities"],
-            ["100%", "on-device slicing"],
-            ["STL + 3MF", "project support"],
+            ["Multi-colour", "AMS / Canvas slicing"],
+            ["48+ fonts", "in-app customizer"],
+            ["100%", "on-device engine"],
           ].map(([n, l]) => (
             <div key={l}>
               <dt className="font-display text-2xl font-bold text-ember-400">{n}</dt>
