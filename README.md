@@ -1,14 +1,21 @@
-# SlicePilot Android
+# SlicePilot — On-Device Android 3D Slicer & Elegoo Centauri Carbon 2 Print Controller
 
 [<img src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png" alt="Get it on Google Play" width="240">](https://play.google.com/store/apps/details?id=world.yemyat.slicepilot)
 
-Download on Google Play: <https://play.google.com/store/apps/details?id=world.yemyat.slicepilot>
+- **Google Play (Free):** <https://play.google.com/store/apps/details?id=world.yemyat.slicepilot>
+- **Website & Guides:** <https://slicepilot.eu> ([Centauri Carbon 2 & AMS](https://slicepilot.eu/elegoo-centauri-carbon-2/) · [Android 3D Slicer](https://slicepilot.eu/android-3d-slicer/) · [MakerWorld Customizer](https://slicepilot.eu/makerworld-customizer-android/) · [Comparison](https://slicepilot.eu/compare/))
 
-Website: <https://slicepilot.eu>
+**SlicePilot** puts a full desktop-class 3D slicer (native C++ `libslic3r`), an in-app **MakerWorld parametric customizer**, and **multi-colour AMS / Canvas** cloud & local LAN printing for the **Elegoo Centauri Carbon 2** straight on your Android phone — no PC required.
 
-Standalone Android app for SlicePilot, including the Android UI, JNI bridge, `libslic3r`, and vendored native sources required by the Android native build.
+## Highlights (v1.10.2)
 
-This repository intentionally does **not** include prebuilt native dependency binaries or downloaded third-party native source trees. Those are expected to be built locally or provided separately.
+- **Native On-Device Slicing (`libslic3r` via JNI):** Slice STL and multi-part / multi-colour 3MF projects locally on Android (`arm64-v8a`, 16 KB page aligned) with supports, multi-material support interfaces, brim/skirt/raft, seams, and background slicing.
+- **In-App MakerWorld Parametric Customizer:** Personalize OpenSCAD parametric models (name keychains, signs, tags) with an inline interactive 3D preview, 48+ curated fonts, a 20-swatch + RGB filament colour picker, and one-tap multi-colour 3MF export.
+- **Multi-Colour 3MF & Centauri Carbon 2 Canvas / AMS Support:** Colour 3D model preview, automatic spool matching against loaded AMS / Canvas filaments, compact waste-chute prime tower (`M6211`) verified strictly inside the 256×256 mm build plate, and layer-by-layer G-code preview.
+- **4 Model Communities in One App:** Unified search and browsing across **MakerWorld**, **Printables**, **Thingiverse**, and **Nexprint**, plus local STL/3MF files from Android Files.
+- **Cloud & Local LAN Printer Control:** Connect to your Elegoo Centauri Carbon 2 over Elegoo Cloud (password or Sign in with Google) or local Wi-Fi (LAN) to upload sliced G-code, monitor print progress, watch the live printer camera, and control temperatures, fans, and case light.
+
+This repository contains the Android app UI, `:cloud-auth` module, JNI bridge, `libslic3r` sources, landing page (`landing/`), and native build scripts. It intentionally does **not** include prebuilt native dependency binaries or downloaded third-party native source trees.
 
 ## Repository Layout
 

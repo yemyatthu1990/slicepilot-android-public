@@ -5,7 +5,9 @@ import Hero from "./Hero.jsx"
 import Features from "./Features.jsx"
 import HowItWorks from "./HowItWorks.jsx"
 import Screenshots from "./Screenshots.jsx"
+import FAQ from "./FAQ.jsx"
 import { PlayButton } from "./ui.jsx"
+import { GUIDES, REPO_URL } from "./seoData.js"
 
 function CTA() {
   return (
@@ -46,15 +48,28 @@ function Footer() {
             Slice<span className="text-ember-400">Pilot</span>
           </span>
         </div>
-        <nav className="flex gap-6 text-sm text-cream-500">
+        <nav className="flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm text-cream-500">
+          {GUIDES.map((g) => (
+            <a key={g.slug} className="transition-colors hover:text-cream-100" href={`/${g.slug}/`}>
+              {g.shortTitle}
+            </a>
+          ))}
+        </nav>
+        <nav className="flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm text-cream-500">
+          <a className="transition-colors hover:text-cream-100" href="https://play.google.com/store/apps/details?id=world.yemyat.slicepilot">
+            Google Play
+          </a>
+          <a className="transition-colors hover:text-cream-100" href={REPO_URL} target="_blank" rel="noreferrer">
+            GitHub
+          </a>
+          <a className="transition-colors hover:text-cream-100" href="/llms.txt">
+            llms.txt
+          </a>
           <a className="transition-colors hover:text-cream-100" href="http://yemyat.world/apps/slicepilot/privacy.html">
             Privacy policy
           </a>
           <a className="transition-colors hover:text-cream-100" href="mailto:thu.yemyat@gmail.com">
             Contact
-          </a>
-          <a className="transition-colors hover:text-cream-100" href="https://play.google.com/store/apps/details?id=world.yemyat.slicepilot">
-            Google Play
           </a>
         </nav>
         <p className="max-w-2xl text-xs leading-relaxed text-cream-500/60">
@@ -77,6 +92,7 @@ export default function App() {
         <Features />
         <HowItWorks />
         <Screenshots />
+        <FAQ />
         <CTA />
       </main>
       <Footer />

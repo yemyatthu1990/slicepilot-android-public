@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@source "../scripts/prerender.mjs";
 
 @theme {
   --font-display: "Sora", ui-sans-serif, system-ui, sans-serif;

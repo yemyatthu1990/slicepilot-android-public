@@ -6,6 +6,7 @@ const LINKS = [
   { href: "#features", label: "Features" },
   { href: "#how", label: "Demo" },
   { href: "#screenshots", label: "Screenshots" },
+  { href: "#faq", label: "FAQ" },
 ]
 
 export default function Nav() {

@@ -2296,7 +2296,7 @@
       "title": "landing/",
       "status": "active",
       "updated": "2026-11-22",
-      "summary": "Marketing landing page (slicepilot.eu) updated for v1.10.2: parametric customizer, multi-colour AMS/Canvas, cloud+LAN copy, live interactive Android screen-recorded demo video in HowItWorks with chapter jumps, 7 WebP v1.10.2 Play Store screenshots, feature_graphic.png OG image, and zero YE3D copy.",
+      "summary": "Marketing landing page (slicepilot.eu) updated for v1.10.2 with full SEO & LLM/GEO optimization: build-time static HTML prerendering, JSON-LD (SoftwareApplication, FAQPage, VideoObject, Article, BreadcrumbList), robots.txt, sitemap.xml, llms.txt, on-page FAQ, and 4 static guide pages (/elegoo-centauri-carbon-2/, /android-3d-slicer/, /makerworld-customizer-android/, /compare/).",
       "refs": [
         "landing/",
         "landing/wrangler.jsonc",
