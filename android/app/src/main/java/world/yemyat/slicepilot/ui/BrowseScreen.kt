@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.Download
@@ -312,6 +313,51 @@ fun ModelDetailHost(
     }
     if (detail != null) {
         val favEntries by browser.favorites.entries.collectAsState()
+        var customizing by rememberSaveable(detail.listing.source, detail.listing.id) { mutableStateOf(false) }
+        var webSignIn by rememberSaveable(detail.listing.source, detail.listing.id) { mutableStateOf(false) }
+        var resumeCustomizeAfterWebSignIn by rememberSaveable(detail.listing.source, detail.listing.id) {
+            mutableStateOf(false)
+        }
+
+        if (webSignIn) {
+            MakerWorldWebViewScreen(
+                url = "https://makerworld.com/en/sign-in?redirect=%2Fen%2F",
+                onBack = {
+                    webSignIn = false
+                    resumeCustomizeAfterWebSignIn = false
+                },
+                onCookies = { browser.customizer.setWebCookies(it) },
+                onSession = { access, refresh, uid ->
+                    browser.bambuAdoptSession(access, refresh, uid)
+                    webSignIn = false
+                    if (resumeCustomizeAfterWebSignIn && detail.parametric != null) {
+                        resumeCustomizeAfterWebSignIn = false
+                        customizing = true
+                    }
+                },
+                bannerHint = "Sign in to MakerWorld — your session is saved automatically for SlicePilot.",
+            )
+            return true
+        }
+
+        if (customizing && detail.parametric != null) {
+            ParametricCustomizeScreen(
+                modelTitle = detail.listing.name,
+                coverImageUrl = detail.images.firstOrNull() ?: detail.listing.thumbnailUrl,
+                parametric = detail.parametric,
+                customizer = browser.customizer,
+                onBack = { customizing = false },
+                onSession = { access, refresh, uid -> browser.bambuAdoptSession(access, refresh, uid) },
+                onModel = { path ->
+                    customizing = false
+                    onModelDownloaded()
+                    browser.closeDetail()
+                    vm.requestLoadModel(path)
+                },
+            )
+            return true
+        }
+
         ModelDetailScreen(
             detail = detail,
             downloadingFile = st.downloadingFile,
@@ -335,7 +381,12 @@ fun ModelDetailHost(
                     vm.requestLoadModel(path)
                 }
             },
+            onCustomize = { customizing = true },
             onBambuSignIn = { email, pass, onDone -> browser.bambuLogin(email, pass, onDone) },
+            onBambuWebSignIn = { forCustomize ->
+                resumeCustomizeAfterWebSignIn = forCustomize
+                webSignIn = true
+            },
             onBambuVerify = { code, onDone -> browser.bambuVerify(code, onDone) },
             onBambuUseAnotherAccount = { browser.bambuCancelVerification() },
             onNexprintSignIn = { email, pass, onResult ->
@@ -518,6 +569,32 @@ internal fun ModelCard(
         Column {
             Box {
                 RemoteThumbnail(item.thumbnailUrl, Modifier.fillMaxWidth().height(120.dp))
+                if (item.customizable) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        modifier =
+                            Modifier
+                                .align(Alignment.TopStart)
+                                .padding(Space.xs)
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(Color.Black.copy(alpha = 0.68f))
+                                .padding(horizontal = 7.dp, vertical = 3.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.Tune,
+                            contentDescription = "Customizable",
+                            tint = Color.White,
+                            modifier = Modifier.size(11.dp),
+                        )
+                        Text(
+                            "Custom",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White,
+                        )
+                    }
+                }
                 if (favorited) {
                     Icon(
                         Icons.Filled.Star,
@@ -595,13 +672,15 @@ private fun ModelDetailScreen(
     nexprintSignedIn: Boolean,
     onBack: () -> Unit,
     onDownload: (ModelFile) -> Unit,
+    onCustomize: () -> Unit = {},
     favoritingFile: String?,
     favoritedKeys: Set<String>,
     fileKey: (ModelFile) -> String,
     onFavorite: (ModelFile) -> Unit,
     onUnfavorite: (String) -> Unit,
-    /** Signs in, then calls `onDone` so the file picker the user asked for can open. */
+    /** Signs in, then calls `onDone` so the file picker or customizer the user asked for can open. */
     onBambuSignIn: (email: String, password: String, onDone: () -> Unit) -> Unit,
+    onBambuWebSignIn: (forCustomize: Boolean) -> Unit = {},
     onBambuVerify: (code: String, onDone: () -> Unit) -> Unit,
     /** Drops a pending code so the MakerWorld dialog returns to its email + password step. */
     onBambuUseAnotherAccount: () -> Unit,
@@ -623,6 +702,7 @@ private fun ModelDetailScreen(
     // dialog first and the picker follows a successful sign-in.
     var pickingFile by remember(listing.source, listing.id) { mutableStateOf(false) }
     var signingInFor by remember(listing.source, listing.id) { mutableStateOf<ModelSource?>(null) }
+    var pendingCustomize by remember(listing.source, listing.id) { mutableStateOf(false) }
     val downloading = downloadingFile != null
     val signedIn =
         when (listing.source) {
@@ -631,12 +711,18 @@ private fun ModelDetailScreen(
             else -> true
         }
 
-    fun openFilePicker() {
+    fun resumeAfterSignIn() {
         signingInFor = null
-        pickingFile = true
+        if (pendingCustomize) {
+            pendingCustomize = false
+            onCustomize()
+        } else {
+            pickingFile = true
+        }
     }
 
     fun startDownloadFlow() {
+        pendingCustomize = false
         when {
             // A download is already running and its progress lives in the picker.
             downloading -> pickingFile = true
@@ -645,6 +731,15 @@ private fun ModelDetailScreen(
 
             // `signedIn` is false only for the two account-gated sources.
             else -> signingInFor = ModelSource.from(listing.source)
+        }
+    }
+
+    fun startCustomizeFlow() {
+        if (signedIn) {
+            onCustomize()
+        } else {
+            pendingCustomize = true
+            signingInFor = ModelSource.MAKERWORLD
         }
     }
     val anyFavorited = remember(detail.files, favoritedKeys) { detail.files.any { fileKey(it) in favoritedKeys } }
@@ -697,24 +792,54 @@ private fun ModelDetailScreen(
                         size = ButtonSize.Large,
                         role = if (anyFavorited) ButtonRole.Tonal else ButtonRole.Secondary,
                     )
-                    BrandButton(
-                        text = if (downloading) "Downloading $progress%" else "Download & slice",
-                        onClick = { startDownloadFlow() },
-                        icon = {
-                            if (downloading) {
-                                CircularProgressIndicator(
-                                    progress = { progress / 100f },
-                                    modifier = Modifier.size(20.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.onPrimary,
-                                )
-                            } else {
-                                Icon(Icons.Filled.Download, null)
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                        height = ButtonSize.Large,
-                    )
+                    if (detail.parametric != null) {
+                        if (detail.files.isNotEmpty() || downloading) {
+                            BrandButton(
+                                text = if (downloading) "$progress%" else "Files",
+                                onClick = { startDownloadFlow() },
+                                role = ButtonRole.Secondary,
+                                icon = {
+                                    if (downloading) {
+                                        CircularProgressIndicator(
+                                            progress = { progress / 100f },
+                                            modifier = Modifier.size(18.dp),
+                                            strokeWidth = 2.dp,
+                                        )
+                                    } else {
+                                        Icon(Icons.Filled.Download, null, Modifier.size(18.dp))
+                                    }
+                                },
+                                modifier = Modifier.widthIn(min = 104.dp),
+                                height = ButtonSize.Large,
+                            )
+                        }
+                        BrandButton(
+                            text = "Customize",
+                            onClick = { startCustomizeFlow() },
+                            icon = { Icon(Icons.Filled.Tune, null, Modifier.size(20.dp)) },
+                            modifier = Modifier.weight(1f),
+                            height = ButtonSize.Large,
+                        )
+                    } else {
+                        BrandButton(
+                            text = if (downloading) "Downloading $progress%" else "Download & slice",
+                            onClick = { startDownloadFlow() },
+                            icon = {
+                                if (downloading) {
+                                    CircularProgressIndicator(
+                                        progress = { progress / 100f },
+                                        modifier = Modifier.size(20.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimary,
+                                    )
+                                } else {
+                                    Icon(Icons.Filled.Download, null)
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            height = ButtonSize.Large,
+                        )
+                    }
                 }
             }
         },
@@ -805,6 +930,49 @@ private fun ModelDetailScreen(
             detail.published?.let {
                 Text("Published $it", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            detail.parametric?.let { param ->
+                BrandCard(
+                    modifier = Modifier.fillMaxWidth().clickable { startCustomizeFlow() },
+                    contentPadding = Space.md,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Space.sm),
+                    ) {
+                        Box(
+                            modifier =
+                                Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Filled.Tune,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                "Customizable model",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                if (param.sourceFiles.size > 1) {
+                                    "Personalize text, size, or options across ${param.sourceFiles.size} templates before slicing."
+                                } else {
+                                    "Personalize text, font, or dimensions before slicing. Default files are still available under Files."
+                                },
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
             if (detail.description.isNotBlank()) {
                 DescriptionCard(detail)
             }
@@ -846,17 +1014,27 @@ private fun ModelDetailScreen(
                 needsCode = bambuNeedsCode,
                 pendingEmail = bambuPendingEmail,
                 error = error,
-                onSignIn = { mail, pass -> onBambuSignIn(mail, pass) { openFilePicker() } },
-                onVerify = { code -> onBambuVerify(code) { openFilePicker() } },
+                forCustomize = pendingCustomize,
+                onSignIn = { mail, pass -> onBambuSignIn(mail, pass) { resumeAfterSignIn() } },
+                onWebSignIn = {
+                    val wasCustomize = pendingCustomize
+                    signingInFor = null
+                    pendingCustomize = false
+                    onBambuWebSignIn(wasCustomize)
+                },
+                onVerify = { code -> onBambuVerify(code) { resumeAfterSignIn() } },
                 onUseAnotherAccount = onBambuUseAnotherAccount,
-                onDismiss = { signingInFor = null },
+                onDismiss = {
+                    signingInFor = null
+                    pendingCustomize = false
+                },
             )
         }
 
         ModelSource.NEXPRINT -> {
             ElegooSignInDialog(
                 onSignIn = onNexprintSignIn,
-                onSignedIn = { openFilePicker() },
+                onSignedIn = { resumeAfterSignIn() },
                 onDismiss = { signingInFor = null },
             )
         }
@@ -1113,7 +1291,9 @@ private fun MakerworldSignInDialog(
     /** The account the code went to, so the code stage can name it instead of guesswork. */
     pendingEmail: String,
     error: String?,
+    forCustomize: Boolean = false,
     onSignIn: (email: String, password: String) -> Unit,
+    onWebSignIn: (() -> Unit)? = null,
     onVerify: (code: String) -> Unit,
     /** Leaves the code stage unused, to sign in as someone else. */
     onUseAnotherAccount: () -> Unit,
@@ -1132,6 +1312,8 @@ private fun MakerworldSignInDialog(
         message =
             if (needsCode) {
                 makerworldCodeMessage(pendingEmail)
+            } else if (forCustomize) {
+                "Customizing MakerWorld models needs a free Bambu Lab account."
             } else {
                 "MakerWorld downloads need a free Bambu Lab account."
             },
@@ -1172,6 +1354,8 @@ private fun MakerworldSignInDialog(
             }
         },
         onBackToCredentials = if (needsCode) onUseAnotherAccount else null,
+        secondaryActionLabel = if (!needsCode && onWebSignIn != null) "Sign in with MakerWorld web" else null,
+        onSecondaryAction = if (!needsCode) onWebSignIn else null,
     )
 }
 
@@ -1272,6 +1456,9 @@ private fun SignInDialog(
     onCode: (String) -> Unit = {},
     /** Offered in the code stage to return to the credentials form. */
     onBackToCredentials: (() -> Unit)? = null,
+    /** Optional secondary sign-in route (e.g. MakerWorld web SSO for Google/Apple accounts). */
+    secondaryActionLabel: String? = null,
+    onSecondaryAction: (() -> Unit)? = null,
 ) {
     var showPassword by rememberSaveable { mutableStateOf(false) }
     // One gate for every way the form can be submitted — the button, the keyboard's Done key,
@@ -1433,6 +1620,17 @@ private fun SignInDialog(
                         loading = busy,
                         height = ButtonSize.Medium,
                     )
+
+                    if (secondaryActionLabel != null && onSecondaryAction != null) {
+                        BrandButton(
+                            text = secondaryActionLabel,
+                            onClick = onSecondaryAction,
+                            modifier = Modifier.fillMaxWidth(),
+                            role = ButtonRole.Secondary,
+                            enabled = !busy,
+                            height = ButtonSize.Medium,
+                        )
+                    }
 
                     onBackToCredentials?.let { back ->
                         TextButton(
@@ -1928,7 +2126,7 @@ private fun CommentAvatar(
  * The inline `loadBitmap` it used to live beside is now unused and scheduled for removal.
  */
 @Composable
-private fun RemoteThumbnail(
+internal fun RemoteThumbnail(
     url: String?,
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,

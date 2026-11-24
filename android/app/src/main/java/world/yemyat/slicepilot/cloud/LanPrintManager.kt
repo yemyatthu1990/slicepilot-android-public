@@ -61,6 +61,7 @@ class LanPrintManager {
     ): CloudResult<Unit> =
         withContext(Dispatchers.IO) {
             if (!gcode.exists()) return@withContext CloudResult.Err("Sliced file not found")
+            if (gcode.length() <= 0L) return@withContext CloudResult.Err("Sliced G-code file is empty — please slice again")
 
             val token = accessCode.ifBlank { CC2_DEFAULT_TOKEN }
 
@@ -558,6 +559,7 @@ class LanPrintManager {
     // ---------------- CC2 upload ----------------
 
     private fun uploadCc2(ip: String, file: File, token: String): CloudResult<Unit> {
+        if (!file.exists()) return CloudResult.Err("Sliced file not found")
         val total = file.length()
         if (total <= 0) return CloudResult.Err("G-code file is empty")
         val md5 = md5Hex(file)
@@ -571,27 +573,47 @@ class LanPrintManager {
                     raf.seek(offset)
                     raf.readFully(data)
 
-                    val conn = URL("http://$ip/upload").openConnection() as HttpURLConnection
-                    conn.requestMethod = "PUT"
-                    conn.doOutput = true
-                    conn.connectTimeout = 15000
-                    conn.readTimeout = 180000
-                    conn.setRequestProperty("Content-Type", "application/octet-stream")
-                    conn.setRequestProperty("Content-Range", "bytes $offset-${offset + len - 1}/$total")
-                    conn.setRequestProperty("X-File-Name", file.name)
-                    conn.setRequestProperty("X-File-MD5", md5)
-                    conn.setRequestProperty("X-Token", token)
-                    conn.setFixedLengthStreamingMode(len)
-                    conn.outputStream.use { it.write(data) }
-                    val code = conn.responseCode
-                    val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
-                        ?.bufferedReader()?.use { it.readText() }.orEmpty()
-                    conn.disconnect()
-                    if (code == 401) {
-                        return CloudResult.Err(ACCESS_CODE_REJECTED_MESSAGE)
+                    var chunkError: String? = null
+                    for (attempt in 0 until UPLOAD_CHUNK_ATTEMPTS) {
+                        try {
+                            val conn = URL("http://$ip/upload").openConnection() as HttpURLConnection
+                            conn.requestMethod = "PUT"
+                            conn.doOutput = true
+                            conn.connectTimeout = 15000
+                            conn.readTimeout = 180000
+                            conn.setRequestProperty("Content-Type", "application/octet-stream")
+                            conn.setRequestProperty("Content-Range", "bytes $offset-${offset + len - 1}/$total")
+                            conn.setRequestProperty("X-File-Name", file.name)
+                            conn.setRequestProperty("X-File-MD5", md5)
+                            conn.setRequestProperty("X-Token", token)
+                            conn.setFixedLengthStreamingMode(len)
+                            conn.outputStream.use { it.write(data) }
+                            val code = conn.responseCode
+                            val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                                ?.bufferedReader()?.use { it.readText() }.orEmpty()
+                            conn.disconnect()
+                            if (code == 401) {
+                                return CloudResult.Err(ACCESS_CODE_REJECTED_MESSAGE)
+                            }
+                            if (code in 200..299) {
+                                chunkError = null
+                                break
+                            }
+                            chunkError = "Upload failed HTTP $code: ${body.take(200)}"
+                            if (code in 400..499) {
+                                // Client/validation error: retrying won't help.
+                                return CloudResult.Err(chunkError)
+                            }
+                        } catch (e: java.io.IOException) {
+                            chunkError = friendlyLanError(ip, e.message ?: "upload failed")
+                            Log.w(TAG, "CC2 chunk offset=$offset attempt=${attempt + 1} failed: ${e.message}")
+                        }
+                        if (attempt + 1 < UPLOAD_CHUNK_ATTEMPTS) {
+                            Thread.sleep(500L * (attempt + 1))
+                        }
                     }
-                    if (code !in 200..299) {
-                        return CloudResult.Err("Upload failed HTTP $code: ${body.take(200)}")
+                    if (chunkError != null) {
+                        return CloudResult.Err(chunkError)
                     }
                     offset += len
                 }
@@ -599,7 +621,7 @@ class LanPrintManager {
             return CloudResult.Ok(Unit)
         } catch (e: Exception) {
             Log.e(TAG, "CC2 upload failed", e)
-            return CloudResult.Err(e.message ?: "upload failed")
+            return CloudResult.Err(friendlyLanError(ip, e.message ?: "upload failed"))
         }
     }
 
@@ -662,7 +684,7 @@ class LanPrintManager {
                 val reg = try { JSONObject(regMsg) } catch (_: Exception) { null }
                 val err = reg?.optString("error", "") ?: ""
                 if (err.isNotEmpty() && err != "ok") {
-                    return CloudResult.Err("Printer registration failed: $err")
+                    return CloudResult.Err(friendlyLanError(ip, "Printer registration failed: $err"))
                 }
             }
 
@@ -745,6 +767,21 @@ class LanPrintManager {
             model.contains("Centauri", ignoreCase = true) && !model.contains("2")
         const val CC1_DISCOVERY_PORT = 3000
         const val CC2_DEFAULT_TOKEN = "123456"
+        private const val UPLOAD_CHUNK_ATTEMPTS = 3
+
+        internal fun friendlyLanError(
+            ip: String,
+            raw: String,
+        ): String {
+            val lower = raw.lowercase()
+            return when {
+                lower.contains("too many clients") ->
+                    "Printer reached its max LAN connections (too many clients). Close ElegooSlicer or Matrix on other devices, or restart the printer."
+                lower.contains("failed to connect") || lower.contains("timed out") || lower.contains("econnrefused") ->
+                    "Couldn't reach printer on Wi-Fi ($ip). Check that your phone and printer are on the same network."
+                else -> raw
+            }
+        }
         const val DEFAULT_MQTT_USER = "elegoo"
         const val CHUNK_SIZE = 1024 * 1024
 

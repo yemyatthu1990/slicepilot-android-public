@@ -337,6 +337,45 @@ fun SlicePreviewScreen(
                             }
                             Spacer(Modifier.height(2.dp))
                         }
+                        if (preview.filamentColors.size > 1) {
+                            val activeAssignments = remember(preview.filamentColors) { vm.activeMultiColourAssignments() }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                preview.filamentColors.take(8).forEachIndexed { idx, hex ->
+                                    val dot = filamentColor(hex) ?: MaterialTheme.colorScheme.primary
+                                    val slotTag =
+                                        activeAssignments.firstOrNull { it.modelIndex == idx }?.let {
+                                            "→S${it.slot.trayId + 1}"
+                                        }.orEmpty()
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                        ) {
+                                            Box(
+                                                Modifier
+                                                    .size(10.dp)
+                                                    .clip(androidx.compose.foundation.shape.CircleShape)
+                                                    .background(dot),
+                                            )
+                                            Text(
+                                                "T${idx + 1}$slotTag",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         Text(
                             "Layer $currentLayer of $total",
                             fontWeight = FontWeight.SemiBold,

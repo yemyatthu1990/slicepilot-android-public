@@ -119,6 +119,7 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
             try {
                 Log.i(TAG, "print start: printer=${printer.name} file=${gcode.name} size=${gcode.length()}")
                 if (!gcode.exists()) return@withContext CloudResult.Err("Sliced file not found")
+                if (gcode.length() <= 0L) return@withContext CloudResult.Err("Sliced G-code file is empty — please slice again")
                 onStatus("Requesting cloud credentials…")
                 val cred = when (val r = cloud.getAgoraCredential()) {
                     is CloudResult.Ok -> r.value
@@ -190,6 +191,8 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
                 Log.i(TAG, "start(1020) result ok=${start.ok} msg=${start.message}")
                 if (!start.ok) return@withContext CloudResult.Err("Start print failed: ${start.message}")
                 CloudResult.Ok(Unit)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "print failed", e)
                 CloudResult.Err(e.message ?: "print failed")
@@ -228,6 +231,8 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
                     return@withContext CloudResult.Err(res.message)
                 }
                 CloudResult.Err("control failed")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "control($method) failed", e)
                 cachedCred = null
@@ -283,6 +288,8 @@ class CloudPrintManager(private val cloud: ElegooCloudClient) {
                     return@withContext result
                 }
                 CloudResult.Err("publish failed")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 cachedCred = null
                 CloudResult.Err(e.message ?: "publish failed")

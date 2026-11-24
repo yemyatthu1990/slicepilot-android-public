@@ -5699,6 +5699,9 @@ void GCode::append_full_config(const Print &print, std::string &str)
         std::vector<double> temp_cfg_flush_multiplier = cfg.option<ConfigOptionFloats>("flush_multiplier")->values;
         std::vector<double> temp_flush_volumes_matrix = cfg.option<ConfigOptionFloats>("flush_volumes_matrix")->values;
         auto                temp_filament_color       = cfg.option<ConfigOptionStrings>("filament_colour")->values;
+        if (temp_cfg_flush_multiplier.empty()) {
+            temp_cfg_flush_multiplier.assign(1, 1.0);
+        }
         size_t              heads_count_tmp           = temp_cfg_flush_multiplier.size(),
                matrix_value_count                     = temp_flush_volumes_matrix.size() / temp_cfg_flush_multiplier.size(),
                filament_count_tmp                     = temp_filament_color.size();
@@ -5713,8 +5716,35 @@ void GCode::append_full_config(const Print &print, std::string &str)
             cfg.option<ConfigOptionFloats>("flush_volumes_matrix")->values = temp_flush_volumes_matrix;
         } else if (filament_count_tmp == 1) {
         } // Not applicable to flush matrix situations
-        else { // flush_volumes_matrix value count error?
-            throw Slic3r::SlicingError(_(L("Flush volumes matrix do not match to the correct size!")));
+        else {
+            const size_t src_per_head = heads_count_tmp > 0 ? temp_flush_volumes_matrix.size() / heads_count_tmp : 0;
+            const ConfigOptionFloats *flush_volumes_opt = cfg.option<ConfigOptionFloats>("flush_volumes_vector");
+            const std::vector<double> flush_volumes = flush_volumes_opt ? flush_volumes_opt->values : std::vector<double>{};
+            auto flush_volume = [&flush_volumes](size_t i, size_t j) {
+                if (i == j) return 0.0;
+                const double a = 2 * i     < flush_volumes.size() ? flush_volumes[2 * i]     : 140.0;
+                const double b = 2 * j + 1 < flush_volumes.size() ? flush_volumes[2 * j + 1] : 140.0;
+                return a + b;
+            };
+            std::vector<double> rebuilt;
+            rebuilt.reserve(filament_count_tmp * filament_count_tmp * heads_count_tmp);
+            for (size_t head = 0; head < heads_count_tmp; ++head)
+                for (size_t i = 0; i < filament_count_tmp; ++i)
+                    for (size_t j = 0; j < filament_count_tmp; ++j) {
+                        const size_t k = i * filament_count_tmp + j;
+                        rebuilt.push_back(src_per_head > 0
+                            ? temp_flush_volumes_matrix[head * src_per_head + k % src_per_head]
+                            : flush_volume(i, j));
+                    }
+            temp_flush_volumes_matrix = rebuilt;
+            for (size_t idx = 0; idx < heads_count_tmp; ++idx) {
+                double multiplier = temp_cfg_flush_multiplier[idx];
+                auto begin = temp_flush_volumes_matrix.begin() + (std::vector<double>::difference_type)(idx * filament_count_tmp * filament_count_tmp);
+                std::transform(begin, begin + (std::vector<double>::difference_type)(filament_count_tmp * filament_count_tmp), begin,
+                               [multiplier](double v) { return std::round(v * multiplier); });
+            }
+            cfg.option<ConfigOptionFloats>("flush_volumes_matrix")->values = temp_flush_volumes_matrix;
+            BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << ": flush_volumes_matrix resized to " << filament_count_tmp << " filaments x " << heads_count_tmp << " nozzles";
         }
     }
     // Sorted list of config keys, which shall not be stored into the G-code. Initializer list.

@@ -142,6 +142,21 @@ std::array<float, 6> bbox_of(const std::vector<float> &pos) {
     return b;
 }
 
+// BambuStudio / PrusaSlicer 3MF triangle painting stores a per-triangle `paint_color`
+// (or `slic3rpe:mmu_segmentation`) hex string indexing CONST_FILAMENTS (see Model.cpp),
+// where the index is the 1-based filament number.
+int paint_to_filament(const XML_Char *v) {
+    static const char *const kFilaments[] = {
+        "",   "4",  "8",  "0C", "1C",  "2C",  "3C",  "4C",  "5C",  "6C",  "7C",  "8C",  "9C",  "AC",  "BC",  "CC", "DC",
+        "EC", "0FC", "1FC", "2FC", "3FC", "4FC", "5FC", "6FC", "7FC", "8FC", "9FC", "AFC", "BFC", "CFC", "DFC", "EFC",
+    };
+    if (!v || !v[0]) return 0;
+    for (size_t i = 1; i < sizeof kFilaments / sizeof kFilaments[0]; ++i)
+        if (!std::strcmp(v, kFilaments[i]))
+            return (int) i;
+    return 0;
+}
+
 // ---------------------------------------------------------------- clustering
 
 // Monotonic 0..100 progress reporter.
@@ -161,7 +176,8 @@ struct Prog {
 // the mesh *surface area* (not the bounding-box volume, which wastes resolution
 // on the empty space of multi-plate layouts), and refined until the decimated
 // mesh lands near the triangle target.
-void grid_cluster(std::vector<float> &pos, std::vector<int> &idx, int target) {
+void grid_cluster(std::vector<float> &pos, std::vector<int> &idx, int target,
+                  std::vector<int> *tri_ext = nullptr, std::vector<int> *tri_paint = nullptr) {
     const size_t tris = idx.size() / 3;
     if ((int) tris <= target || tris == 0) return;
     float mn[3] = {FLT_MAX, FLT_MAX, FLT_MAX}, mx[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
@@ -196,11 +212,17 @@ void grid_cluster(std::vector<float> &pos, std::vector<int> &idx, int target) {
     struct Cell { double x = 0, y = 0, z = 0; long n = 0; int vert = -1; };
     std::vector<int> nidx;
     std::vector<float> npos;
+    const bool tag = tri_ext && tri_ext->size() >= tris;
+    std::vector<int> ntags;
+    const bool tag2 = tri_paint && tri_paint->size() >= tris;
+    std::vector<int> ntags2;
     for (int iter = 0; iter < 3; ++iter) {
         std::unordered_map<int64_t, Cell> cell;
         cell.reserve(std::min((size_t) target * 4, tris));
         nidx.clear();
         nidx.reserve((size_t) target * 3);
+        if (tag) ntags.clear();
+        if (tag2) ntags2.clear();
         int v[3];
         for (size_t t = 0; t + 2 < idx.size(); t += 3) {
             bool ok = true;
@@ -219,6 +241,8 @@ void grid_cluster(std::vector<float> &pos, std::vector<int> &idx, int target) {
             if (!ok) continue;
             if (v[0] != v[1] && v[1] != v[2] && v[0] != v[2]) {
                 nidx.push_back(v[0]); nidx.push_back(v[1]); nidx.push_back(v[2]);
+                if (tag) ntags.push_back((*tri_ext)[t / 3]);
+                if (tag2) ntags2.push_back((*tri_paint)[t / 3]);
             }
         }
         const size_t out = nidx.size() / 3;
@@ -234,6 +258,8 @@ void grid_cluster(std::vector<float> &pos, std::vector<int> &idx, int target) {
             }
             pos.swap(npos);
             idx.swap(nidx);
+            if (tag) tri_ext->swap(ntags);
+            if (tag2) tri_paint->swap(ntags2);
             return;
         }
         // Too many triangles: enlarge the grid and repeat.
@@ -379,6 +405,7 @@ bool parse_stl(const std::string &path, int target, Preview &out, std::string &e
     smooth_normals(raw, idx, out.normals);
     out.positions.swap(raw);
     out.indices.swap(idx);
+    out.tri_ext.clear();
 
     // An STL carries no part structure, so the whole file is one part named after it.
     out.parts.clear();
@@ -399,6 +426,7 @@ bool parse_stl(const std::string &path, int target, Preview &out, std::string &e
 struct MObject {
     std::vector<float> verts;   // pass 2: xyz triples, unit-scaled (needed objects)
     std::vector<int> tris;      // pass 2: sampled vertex-index triples
+    std::vector<int> paint;     // pass 2: 1-based painted filament per sampled triangle, 0 = unpainted
     size_t tri_count = 0;       // pass 1: full triangle count
     std::vector<int> comp_obj;  // pass 1: component children
     std::vector<std::string> comp_path;
@@ -468,6 +496,7 @@ void XMLCALL mf_start(void *ud, const XML_Char *name, const XML_Char **attribs) 
             MObject &o = f.objects[c.cur_id];
             o.verts.clear();
             o.tris.clear();
+            o.paint.clear();
         } else if (c.cur_id >= 0) {
             const XML_Char *nm = attr(attribs, "name");
             if (nm && *nm) f.objects[c.cur_id].name = nm;
@@ -498,6 +527,10 @@ void XMLCALL mf_start(void *ud, const XML_Char *name, const XML_Char **attribs) 
                         o.tris.push_back(std::atoi(a));
                         o.tris.push_back(std::atoi(b));
                         o.tris.push_back(std::atoi(cc));
+                        const XML_Char *pc = attr(attribs, "paint_color");
+                        if (!pc) pc = attr(attribs, "slic3rpe:mmu_segmentation");
+                        if (!pc) pc = attr(attribs, "mmu_segmentation");
+                        o.paint.push_back(paint_to_filament(pc));
                     }
                 }
                 ++c.tri_seen;
@@ -627,11 +660,15 @@ size_t count_verts(const std::map<std::string, MFFile> &files, const std::string
 }
 
 // Instantiate [oid] of [fp] — plus everything it references through <component>, with the
-// matrices multiplied along the way — into one part's own [pos]/[tris], consuming at most
-// [budget] triangles from the shared budget.
+// matrices multiplied along the way — into one part's own [pos]/[tris]/[tri_ext]/[tri_paint],
+// consuming at most [budget] triangles from the shared budget.
+// `part_exts`, when set, holds the 1-based extruder of each of the object's <part>/<volume>
+// components in document order; nullptr on deeper levels.
 void place_object(const std::map<std::string, MFFile> &files, const std::string &fp, int oid,
                   const float *tr, int depth, size_t max_verts, size_t &budget,
-                  std::vector<float> &pos, std::vector<int> &tris) {
+                  int ext, const std::vector<int> *part_exts,
+                  std::vector<float> &pos, std::vector<int> &tris,
+                  std::vector<int> &tri_ext, std::vector<int> &tri_paint) {
     if (depth > 32 || budget == 0) return;
     if (pos.size() / 3 >= max_verts) return;
     const auto fit = files.find(fp);
@@ -659,15 +696,21 @@ void place_object(const std::map<std::string, MFFile> &files, const std::string 
             tris.push_back((int) (base + i0));
             tris.push_back((int) (base + i1));
             tris.push_back((int) (base + i2));
+            tri_ext.push_back(ext);
+            tri_paint.push_back(t / 3 < o.paint.size() ? o.paint[t / 3] : 0);
             --budget;
         }
     }
+    const bool use_part_ext = part_exts && o.comp_obj.size() > 1;
     for (size_t c = 0; c < o.comp_obj.size() && budget > 0; ++c) {
         std::array<float, 12> m;
         if (tr) mul_matrix(tr, o.comp_tr[c].data(), m.data());
         else m = o.comp_tr[c];
+        int child_ext = ext;
+        if (use_part_ext && c < part_exts->size() && (*part_exts)[c] > 0)
+            child_ext = (*part_exts)[c];
         place_object(files, comp_file(fp, o.comp_path[c]), o.comp_obj[c], m.data(), depth + 1,
-                     max_verts, budget, pos, tris);
+                     max_verts, budget, child_ext, nullptr, pos, tris, tri_ext, tri_paint);
     }
 }
 
@@ -694,7 +737,7 @@ bool parse_3mf(const std::string &path, int target, Preview &out, std::string &e
             mz_zip_archive_file_stat stt;
             if (mz_zip_reader_file_stat(&zip, (mz_uint) rels_idx, &stt) && stt.m_uncomp_size < 64 * 1024) {
                 std::vector<char> buf(stt.m_uncomp_size);
-                if (mz_zip_reader_extract_to_mem(&zip, (mz_uint) rels_idx, buf.data(), buf.size(), 0) == buf.size()) {
+                if (mz_zip_reader_extract_to_mem(&zip, (mz_uint) rels_idx, buf.data(), buf.size(), 0)) {
                     const std::string rels(buf.data(), buf.size());
                     const size_t p = rels.find("3dmodel");
                     if (p != std::string::npos) {
@@ -710,6 +753,75 @@ bool parse_3mf(const std::string &path, int target, Preview &out, std::string &e
         }
     }
     if (locate(root) < 0) { mz_zip_reader_end(&zip); err = "no model part"; return false; }
+
+    // Per-object and per-part extruder assignment from the model's plate metadata
+    // (Bambu model_settings.config / Prusa Slic3r_PE_model.config):
+    // root object id -> 1-based filament number, plus one entry per <part>/<volume>
+    // in document order.
+    std::unordered_map<int, int> ext_map;
+    std::unordered_map<int, std::vector<int>> part_ext_map;
+    {
+        struct ExtCtx {
+            std::unordered_map<int, int> *obj = nullptr;
+            std::unordered_map<int, std::vector<int>> *parts = nullptr;
+            int cur = -1;
+            bool in_part = false;
+            int part_ext = 0;
+        };
+        auto se = [](void *ud, const XML_Char *name, const XML_Char **attribs) {
+            ExtCtx &c = *(ExtCtx *) ud;
+            const char *el = bare_name(name);
+            const bool is_volume = !std::strcmp(el, "part") || !std::strcmp(el, "volume");
+            if (!std::strcmp(el, "object")) {
+                const XML_Char *id = attr(attribs, "id");
+                c.cur = id ? std::atoi(id) : -1;
+                c.in_part = false;
+                c.part_ext = 0;
+            } else if (is_volume && c.cur >= 0) {
+                c.in_part = true;
+                c.part_ext = 0;
+            } else if (!std::strcmp(el, "metadata") && c.cur >= 0) {
+                const XML_Char *k = attr(attribs, "key"), *v = attr(attribs, "value");
+                if (k && v && !std::strcmp(k, "extruder")) {
+                    if (c.in_part)
+                        c.part_ext = std::atoi(v);
+                    else
+                        (*c.obj)[c.cur] = std::atoi(v);
+                }
+            }
+        };
+        auto ee = [](void *ud, const XML_Char *name) {
+            ExtCtx &c = *(ExtCtx *) ud;
+            const char *el = bare_name(name);
+            const bool is_volume = !std::strcmp(el, "part") || !std::strcmp(el, "volume");
+            if (is_volume && c.in_part) {
+                if (c.cur >= 0) (*c.parts)[c.cur].push_back(c.part_ext);
+                c.in_part = false;
+                c.part_ext = 0;
+            } else if (!std::strcmp(el, "object")) {
+                c.cur = -1;
+                c.in_part = false;
+            }
+        };
+        for (const char *cfg : {"Metadata/model_settings.config", "Metadata/Slic3r_PE_model.config"}) {
+            const int ci = locate(cfg);
+            if (ci < 0) continue;
+            mz_zip_archive_file_stat cst;
+            if (!mz_zip_reader_file_stat(&zip, (mz_uint) ci, &cst) || cst.m_uncomp_size > 16u * 1024 * 1024)
+                continue;
+            std::vector<char> buf(cst.m_uncomp_size);
+            if (!mz_zip_reader_extract_to_mem(&zip, (mz_uint) ci, buf.data(), buf.size(), 0))
+                continue;
+            XML_Parser p = XML_ParserCreate(nullptr);
+            ExtCtx ctx{&ext_map, &part_ext_map};
+            XML_SetUserData(p, &ctx);
+            XML_SetStartElementHandler(p, se);
+            XML_SetEndElementHandler(p, ee);
+            XML_Parse(p, buf.data(), (int) buf.size(), 1);
+            XML_ParserFree(p);
+            if (!ext_map.empty() || !part_ext_map.empty()) break;
+        }
+    }
 
     // Pass 1 over the referenced file graph: counts, build items, components.
     std::map<std::string, MFFile> files;
@@ -836,8 +948,10 @@ bool parse_3mf(const std::string &path, int target, Preview &out, std::string &e
     std::vector<float> raw;
     std::vector<int> idx;
     std::vector<float> nrm;
+    std::vector<int> all_tri_ext;
     raw.reserve((size_t) target * 9);
     idx.reserve((size_t) target * 3);
+    all_tri_ext.reserve((size_t) target);
     out.parts.clear();
 
     size_t budget = max_tris;
@@ -848,9 +962,15 @@ bool parse_3mf(const std::string &path, int target, Preview &out, std::string &e
 
         std::vector<float> p;
         std::vector<int> t;
+        std::vector<int> p_ext;
+        std::vector<int> p_paint;
         p.reserve(item_verts[i]);
+        auto pit = part_ext_map.find(it.objectid);
+        const int obj_ext = ext_map.count(it.objectid) && ext_map[it.objectid] > 0 ? ext_map[it.objectid] : 1;
         place_object(files, fp, it.objectid, it.has_tr ? it.tr.data() : nullptr, 0,
-                     max_verts, budget, p, t);
+                     max_verts, budget, obj_ext,
+                     pit == part_ext_map.end() ? nullptr : &pit->second,
+                     p, t, p_ext, p_paint);
         if (p.empty()) continue;
         // Authored bounds, before the clusterer moves vertices onto grid centres.
         const std::array<float, 6> authored = bbox_of(p);
@@ -858,11 +978,19 @@ bool parse_3mf(const std::string &path, int target, Preview &out, std::string &e
         // shape instead of being thinned to a handful of triangles.
         const int part_target =
             (int) std::max<size_t>(1, (size_t) target * (p.size() / 3) / std::max<size_t>(1, total_verts));
-        grid_cluster(p, t, part_target);
+        grid_cluster(p, t, part_target, &p_ext, &p_paint);
         compact_vertices(p, t);
         std::vector<float> pn;
         smooth_normals(p, t, pn);
         if (p.empty() || t.empty()) continue;
+
+        const size_t part_tris = t.size() / 3;
+        if (p_ext.size() == part_tris && p_paint.size() == part_tris) {
+            for (size_t k = 0; k < part_tris; ++k)
+                all_tri_ext.push_back(p_paint[k] > 0 ? p_paint[k] : (p_ext[k] > 0 ? p_ext[k] : 1));
+        } else {
+            all_tri_ext.insert(all_tri_ext.end(), part_tris, obj_ext);
+        }
 
         PartGeometry part;
         part.vertex_start = (int) (raw.size() / 3);
@@ -887,6 +1015,7 @@ bool parse_3mf(const std::string &path, int target, Preview &out, std::string &e
     out.positions.swap(raw);
     out.indices.swap(idx);
     out.normals.swap(nrm);
+    out.tri_ext.swap(all_tri_ext);
     prog(100);
     return true;
 }

@@ -137,7 +137,9 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (intent.getBooleanExtra("open_preview", false)) {
-            vm.openPreviewFromPaths(intent.getStringExtra("gcode_path"), intent.getStringExtra("model_path"))
+            if (!vm.openPreviewFromPaths(intent.getStringExtra("gcode_path"), intent.getStringExtra("model_path"))) {
+                vm.openPreviewIfReady()
+            }
         }
         if (intent.getBooleanExtra("open_print_monitor", false)) {
             vm.openPrintMonitor()
@@ -266,6 +268,7 @@ class MainActivity : ComponentActivity() {
     ) {
         val screen by vm.screen.collectAsState()
         val cloudMessage by vm.cloudMessage.collectAsState()
+        val cloudReconnectNeeded by vm.cloudReconnectNeeded.collectAsState()
         val slicing by vm.slicing.collectAsState()
         val pendingModelPath by vm.pendingModelPath.collectAsState()
         val askPrinterForModel by vm.askPrinterForModel.collectAsState()
@@ -345,9 +348,10 @@ class MainActivity : ComponentActivity() {
 
         val gcodeSaver =
             rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/x-gcode")) { uri: Uri? ->
-                val path = vm.gcodePath
-                if (uri != null && path != null) {
+                if (uri != null) {
                     scope.launch {
+                        vm.awaitSliceFinalized()
+                        val path = vm.gcodePath ?: return@launch
                         try {
                             withContext(Dispatchers.IO) {
                                 contentResolver.openOutputStream(uri)?.use { out ->
@@ -596,6 +600,7 @@ class MainActivity : ComponentActivity() {
         // always dismiss any open connect sheet or browse overlays so PrintSetup is visible
         // immediately without pressing Back.
         LaunchedEffect(screen) {
+            EventNotifier.trackScreen(screen.analyticsName)
             if (screen == Screen.PrintSetup) showConnect = false
             if (screen != Screen.Home) {
                 expandedSource = null
@@ -677,9 +682,21 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        LaunchedEffect(cloudMessage) {
-            cloudMessage?.let {
-                snackbarHostState.showSnackbar(it)
+        LaunchedEffect(cloudMessage, cloudReconnectNeeded) {
+            cloudMessage?.let { msg ->
+                val result =
+                    if (cloudReconnectNeeded) {
+                        snackbarHostState.showSnackbar(
+                            message = msg,
+                            actionLabel = "Sign in",
+                            duration = androidx.compose.material3.SnackbarDuration.Long,
+                        )
+                    } else {
+                        snackbarHostState.showSnackbar(msg)
+                    }
+                if (result == androidx.compose.material3.SnackbarResult.ActionPerformed) {
+                    showConnect = true
+                }
                 vm.consumeCloudMessage()
             }
         }
@@ -747,20 +764,46 @@ class MainActivity : ComponentActivity() {
         val out = intent.getStringExtra("out") ?: File(cacheDir, "headless.gcode").absolutePath
         val filamentColor = intent.getStringExtra("filament_color")
         val supportFilament = intent.getStringExtra("support_filament") ?: ""
+        val multiColour = intent.getBooleanExtra("multi_colour", false)
+        val filamentsExtra = intent.getStringExtra("filaments")
+        val filaments: Array<String> =
+            filamentsExtra
+                ?.split(';')
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                ?.toTypedArray()
+                ?.takeIf { it.isNotEmpty() }
+                ?: listOfNotNull(filament.takeIf { it.isNotBlank() }, supportFilament.takeIf { it.isNotBlank() }).toTypedArray()
         val overrides =
-            filamentColor?.let { c ->
-                val color = if (c.startsWith("#")) c else "#$c"
-                "filament_colour=$color\nfilament_multi_colour=$color\n"
-            } ?: ""
-        android.util.Log.i("SliceCore", "Headless slice start: printer=$printer filament=$filament process=$process")
+            buildString {
+                filamentColor?.let { c ->
+                    val colors =
+                        c.split(';', '|', ',')
+                            .map { it.trim() }
+                            .filter { it.isNotEmpty() }
+                            .joinToString(";") { if (it.startsWith("#")) it else "#$it" }
+                    if (colors.isNotEmpty()) {
+                        appendLine("filament_colour=$colors")
+                        appendLine("filament_multi_colour=$colors")
+                    }
+                }
+                if (multiColour && filaments.size > 1) {
+                    appendLine("single_extruder_multi_material=1")
+                    appendLine("enable_prime_tower=1")
+                }
+            }
+        android.util.Log.i(
+            "SliceCore",
+            "Headless slice start: printer=$printer filaments=${filaments.size} multi=$multiColour process=$process",
+        )
         val ok =
             NativeLib.nativeSliceWithOverrides(
                 model,
                 printer,
-                filament,
+                filaments,
                 process,
                 overrides,
-                supportFilament,
+                multiColour,
                 out,
                 object : NativeLib.SliceCallback {
                     override fun onProgress(

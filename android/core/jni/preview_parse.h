@@ -25,6 +25,9 @@ struct Preview {
     std::vector<float> positions;  // xyz triples
     std::vector<float> normals;    // xyz triples, per vertex
     std::vector<int> indices;      // vertex-index triples
+    // 1-based filament/extruder per triangle (indices.size() / 3 entries) for
+    // multi-colour 3MF preview colouring; empty for STL.
+    std::vector<int> tri_ext;
     // Parts in file order; the concatenation of their ranges is exactly the three arrays
     // above, so a part can be drawn or sliced on its own without copying geometry.
     std::vector<PartGeometry> parts;

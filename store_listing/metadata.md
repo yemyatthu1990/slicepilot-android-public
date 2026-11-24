@@ -1,6 +1,9 @@
 # Play Store listing
 
-Published 2026-11-13 from Play edit `13677982899649546337` (en-US listing + phone screenshots).
+Published 2026-11-24 from Play edit `18093862744728633418` (en-US listing + 7 `phone_v1.10.2` promotional screenshots + `1024×500` feature graphic + v1.10.2 production 100%).
+**v1.10.2 (49) went to production at 100 % on 2026-11-24** (Play edit `18093862744728633418`; internal upload edit `17281019097205255164`, bundle sha1 `3cd877681e1b6197278f4945b1fae46bc88ce2a3`, ProGuard mapping + native symbols uploaded).
+**v1.10.1 (48) is on the internal track since 2026-11-24** (Play edit `07714278245451368962`, bundle sha1 `a80b3f487eecb7b9cd008c4e0d5b4a5a7be2fcfa`, ProGuard mapping + native symbols uploaded).
+**v1.10.0 (47) is on the internal track since 2026-11-24** (Play edit `06110040950066223659`, bundle sha1 `fe5b261f0ced31dbbaeafbf422babf474e4c475d`, ProGuard mapping + native symbols uploaded).
 **v1.9.13 (46) went to production at 100 % on 2026-11-23** (Play edit `13275814218166966505`; internal upload edit `09303183755892173428`, bundle sha1 `a6c4e1a3869813c4d1ab1739a587de68dd13656e`, ProGuard mapping + native symbols uploaded).
 **v1.9.12 (45) is on the internal track since 2026-11-23** (Play edit `12094404409159502249`, bundle sha1 `ea084abd74074b2018a69e465a4350fc4f95020b`, ProGuard mapping + native symbols uploaded).
 **v1.9.11 (44) is on the internal track since 2026-11-23** (Play edit `03715875132519618644`, bundle sha1 `0a1fadf3859e6e273292389758f2b8767cb483c3`, ProGuard mapping + native symbols uploaded).
@@ -15,43 +18,70 @@ Earlier: **v1.9.5 (38) went to production at 100 % on 2026-11-14** (Play edit `0
 production had been v1.8.3 (32) since 2026-10-21.
 The first draft of this copy, edit `01915840855682935073`, expired before it could be submitted:
 Play edits live about an hour, so an edit is built and committed in one sitting, not parked.
-Screenshots: `store_listing/screenshots/phone_v1.9.0/` (captured on a Pixel 4a, v1.9.0 build;
-earlier sets live in `phone_new/` for v1.6.2 and `phone/` before that).
+Screenshots: `store_listing/screenshots/phone_v1.10.2/` (7 promotional 1080×1920 phone slides built from live v1.10.2 Pixel 4a captures + `1024×500` `store_listing/feature_graphic.png`; demo video at `store_listing/videos/customize_multicolour_demo.mp4`; earlier sets live in `phone_v1.9.0/`, `phone_new/`, and `phone/`).
 
 ## App name
 SlicePilot
 
 ## Short description
-Download MakerWorld, Printables, Thingiverse & Nexprint models — slice & print
+Customize, slice & multi-colour print 3D models right from your phone
 
 ## Full description
-SlicePilot brings a full desktop-class slicer to your Android phone.
+SlicePilot brings a full desktop-class 3D slicer, MakerWorld parametric customizer, and multi-colour AMS/Canvas printing straight to your Android phone.
 
-DOWNLOAD MODELS FROM THE CLOUD
-Find and download models without leaving the app — search and browse four model communities right on your phone:
+CUSTOMIZE PARAMETRIC MODELS IN-APP
+Personalize MakerWorld parametric models — like custom name keychains, signs, and tags — without leaving the app:
+- Edit text, sizes, and OpenSCAD options with an interactive inline 3D preview
+- Browse 48+ curated fonts with quick-pick chips
+- Pick filament colours with 20 one-tap swatches or custom RGB sliders
+- Automatic multi-colour 3MF export ready for AMS/Canvas slicing
+
+MULTI-COLOUR 3MF & AMS / CANVAS SUPPORT
+- Colour 3D model preview for multi-colour 3MF projects
+- Automatic spool matching against the filaments loaded in your Centauri Carbon 2 Canvas
+- Smart, compact prime tower placement verified inside your build plate
+- Layer-by-layer G-code preview with print time, filament weight, and length estimates
+
+DOWNLOAD MODELS FROM 4 COMMUNITIES
+Search and browse four 3D model communities right on your phone:
 - MakerWorld
 - Printables
 - Thingiverse
 - Nexprint
-Search across all of them at once, see what's popular today, pick the exact print profile you want (file sizes and print presets included) and download it straight into the slicer. No file manager, no browser detour.
+See what's popular today, filter customizable models, inspect photos and comments, and download straight into the slicer.
 
-CLOUD PRINT FOR THE CENTAURI CARBON 2
-SlicePilot talks to the Centauri Carbon 2 over the cloud: sign in, pick your printer, and send the finished G-code job from your phone.
+CLOUD & LOCAL LAN PRINTING FOR CENTAURI CARBON 2
+Connect to your Centauri Carbon 2 over the cloud or local Wi-Fi: monitor live print progress, watch the live printer camera, control temperatures and fans, and send sliced G-code straight from your phone.
 
-DESKTOP-CLASS SLICING ENGINE
-- Full slicing engine ported from a desktop slicer, running on your device
-- Fast native parser: preview huge models in seconds with progress and time-left estimates
-- 3MF project support: embedded printer, filament and process settings are respected
-- Supports, adhesion (skirt/brim/raft), seam, speed and quality controls
-- G-code preview with layer-by-layer reveal, print time and material estimates
-
-AND THE NICE TOUCHES
-- Slice in the background with a progress notification — keep using your phone
-- Slicing continues when the app is backgrounded; cancel any time
-- Light and dark themes
+DESKTOP-CLASS ON-DEVICE SLICING ENGINE
+- Full slicing engine running natively on your device
+- Fast native 3MF/STL parser with multi-part placement controls
+- Supports (including multi-material support interfaces), brim/skirt/raft, seam, speed, and quality settings
+- Background slicing with progress notifications
+- Warm light and sleek dark themes
 - Open STL/3MF files directly from your Files app
 
 SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint or Elegoo. All trademarks belong to their respective owners.
+
+## What's new (1.10.2)
+<!-- Production rollout (437 chars) covers 1.10.0–1.10.2 since production jumped from 1.9.13:
+     • Multi-colour 3MF & AMS/Canvas support on Centauri Carbon 2: colour 3D preview, automatic spool matching, compact waste-chute prime tower strictly inside the build plate, and G-code preview
+     • Customize MakerWorld parametric models (like name keychains) right in the app with inline 3D preview, 48+ font & colour pickers, and multi-colour AMS export
+     • Fixed post-slice preview navigation, cloud re-auth, camera stability, and LAN uploads
+-->
+• Multi-colour 3MF & AMS/Canvas support on Centauri Carbon 2: colour 3D preview, automatic spool matching, compact waste-chute prime tower strictly inside the build plate, and G-code preview
+• Customize MakerWorld parametric models (like name keychains) right in the app with inline 3D preview, 48+ font & colour pickers, and multi-colour AMS export
+• Fixed post-slice preview navigation, cloud re-auth, camera stability, and LAN uploads
+
+## What's new (1.10.1)
+• Fixed slice completion sometimes staying on the slicing screen instead of opening the G-code preview & Print screen, and fixed tapping the "Slice complete" notification
+• Multi-colour 3MF & AMS/Canvas support on Centauri Carbon 2 with smart prime tower placement inside the build plate
+• Customize MakerWorld parametric models right in the app with inline 3D preview, font & colour pickers, and multi-colour AMS export
+
+## What's new (1.10.0)
+• Multi-colour 3MF & AMS/Canvas support on Centauri Carbon 2: colour 3D preview, automatic spool matching, multi-colour G-code preview, and smart prime tower placement inside the build plate
+• Customize MakerWorld parametric models (like name keychains) right in the app with an inline 3D preview, font & colour pickers, and multi-colour AMS export
+• Cloud re-auth, Agora camera, LAN upload, and stability fixes
 
 ## What's new (1.9.13)
 <!-- Production rollout (471 chars) covers 1.9.11–1.9.13 since production jumped from 1.9.10:
@@ -156,6 +186,17 @@ SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by
 - Cloud print to the YE3D Centauri Carbon 2
 - Light and dark themes, bottom buttons no longer hidden behind the gesture bar
 - Crash fixes: seam dropdown, large model preview uploads
+
+## Screenshot set (7) — v1.10.2
+Built from live v1.10.2 captures on the wired Pixel 4a (1080×2340, demo Centauri Carbon 2 with 4 loaded AMS spools, MakerWorld #3049453 parametric keychain) and framed into `1080×1920` promotional slides + a `1024×500` feature graphic (`store_listing/feature_graphic.png`), uploaded in Play edit `18093862744728633418`:
+
+1. `01_customize_3d.png` — MakerWorld parametric keychain customizer with live inline 3D preview & font chips (`Fredoka`, `Alex`)
+2. `02_colour_picker.png` — One-tap 20-swatch filament colour picker & RGB sliders
+3. `03_multicolour_ams.png` — Multi-colour 3MF Print setup with automatic Centauri Carbon 2 AMS/Canvas spool mapping
+4. `04_gcode_preview.png` — Multi-colour G-code preview showing the compact prime tower cleanly inside the build plate + layer slider & estimates
+5. `05_discover_models.png` — Browse 4 model communities (MakerWorld, Printables, Thingiverse, Nexprint)
+6. `06_printer_control.png` — Live Centauri Carbon 2 printer dashboard, live camera, temperatures, fans, and loaded spools
+7. `07_themes.png` — Warm light & sleek dark themes side by side
 
 ## Screenshot set (max 8) — v1.9.0
 Shot on the wired Pixel 4a (1080×2340) off the v1.9.0 debug build, so the two themes and all

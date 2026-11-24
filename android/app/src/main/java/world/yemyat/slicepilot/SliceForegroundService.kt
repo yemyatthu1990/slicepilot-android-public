@@ -65,6 +65,8 @@ class SliceForegroundService : Service() {
         const val EXTRA_MODEL_PATH = "model_path"
         const val EXTRA_PRINTER = "printer"
         const val EXTRA_FILAMENT = "filament"
+        const val EXTRA_FILAMENTS = "filaments"
+        const val EXTRA_MULTI_COLOUR = "multi_colour"
         const val EXTRA_PROCESS = "process"
         const val EXTRA_OVERRIDES = "overrides"
         const val EXTRA_SUPPORT_FILAMENT = "support_filament"
@@ -103,19 +105,26 @@ class SliceForegroundService : Service() {
             process: String,
             overrides: String,
             supportFilament: String = "",
+            filaments: Array<String>? = null,
+            multiColour: Boolean = false,
             outPath: String,
             autoPrint: Boolean,
             transform: SliceTransform,
             partPoseRows: FloatArray? = null,
             partPoseCount: Int = 0,
         ) {
+            val resolvedFilaments =
+                filaments?.filter { it.isNotBlank() }?.toTypedArray()?.takeIf { it.isNotEmpty() }
+                    ?: listOfNotNull(filament.takeIf { it.isNotBlank() }, supportFilament.takeIf { it.isNotBlank() }).toTypedArray()
             val intent =
                 Intent(context, SliceForegroundService::class.java).apply {
                     action = ACTION_START
                     putExtra(EXTRA_JOB_ID, jobId)
                     putExtra(EXTRA_MODEL_PATH, modelPath)
                     putExtra(EXTRA_PRINTER, printer)
-                    putExtra(EXTRA_FILAMENT, filament)
+                    putExtra(EXTRA_FILAMENT, resolvedFilaments.firstOrNull().orEmpty())
+                    putExtra(EXTRA_FILAMENTS, resolvedFilaments)
+                    putExtra(EXTRA_MULTI_COLOUR, multiColour)
                     putExtra(EXTRA_PROCESS, process)
                     putExtra(EXTRA_OVERRIDES, overrides)
                     putExtra(EXTRA_SUPPORT_FILAMENT, supportFilament)
@@ -132,6 +141,17 @@ class SliceForegroundService : Service() {
                     putExtra(EXTRA_PART_POSE_ROWS, partPoseRows)
                     putExtra(EXTRA_PART_POSE_COUNT, partPoseCount)
                 }
+            // Mark the job active synchronously before the async startForegroundService dispatch so
+            // AppViewModel.observeSliceService never sees a stale jobId=0L emission and bounces
+            // Screen.Slicing back to PrintSetup before onStartCommand runs.
+            _state.value =
+                SliceServiceState(
+                    jobId = jobId,
+                    isRunning = true,
+                    progress = 0f,
+                    status = "Starting…",
+                    autoPrint = autoPrint,
+                )
             startService(context, intent)
         }
 
@@ -288,17 +308,27 @@ class SliceForegroundService : Service() {
         if (jobId == 0L || modelPath.isNullOrBlank() || printer.isNullOrBlank() || filament.isNullOrBlank() || process.isNullOrBlank() ||
             outPath.isNullOrBlank()
         ) {
+            if (jobId != 0L && _state.value.jobId == jobId) {
+                _state.value = SliceServiceState(status = "Cancelled")
+            }
             stopSelf()
             return
         }
         if (!NativeLib.isLoaded) {
             EventNotifier.trackEvent("slice_skipped_native_missing", emptyMap())
+            if (_state.value.jobId == jobId) {
+                _state.value = SliceServiceState(jobId = jobId, isRunning = false, error = "Slicer engine failed to load")
+            }
             stopSelf()
             return
         }
 
         val overrides = intent.getStringExtra(EXTRA_OVERRIDES).orEmpty()
         val supportFilament = intent.getStringExtra(EXTRA_SUPPORT_FILAMENT).orEmpty()
+        val multiColour = intent.getBooleanExtra(EXTRA_MULTI_COLOUR, false)
+        val filaments =
+            intent.getStringArrayExtra(EXTRA_FILAMENTS)?.filter { it.isNotBlank() }?.toTypedArray()?.takeIf { it.isNotEmpty() }
+                ?: listOfNotNull(filament.takeIf { it.isNotBlank() }, supportFilament.takeIf { it.isNotBlank() }).toTypedArray()
         val autoPrint = intent.getBooleanExtra(EXTRA_AUTO_PRINT, false)
         val transform =
             SliceTransform(
@@ -359,10 +389,10 @@ class SliceForegroundService : Service() {
                     NativeLib.nativeSliceWithOverrides(
                         modelPath,
                         printer,
-                        filament,
+                        filaments,
                         process,
                         overrides,
-                        supportFilament,
+                        multiColour,
                         outPath,
                         object : NativeLib.SliceCallback {
                             override fun onProgress(
@@ -398,11 +428,15 @@ class SliceForegroundService : Service() {
     }
 
     private fun cancelSlicing(jobId: Long) {
-        ensureForeground(buildProgressNotification("Cancelling…", _state.value.progress))
         if (jobId != 0L && _state.value.jobId != jobId) {
-            stopAndClear()
+            // A stale cancel for a finished/previous job must not tear down a newly started job.
+            if (!_state.value.isRunning) {
+                ensureForeground(buildProgressNotification("Cancelling…", _state.value.progress))
+                stopAndClear()
+            }
             return
         }
+        ensureForeground(buildProgressNotification("Cancelling…", _state.value.progress))
         sliceJob?.cancel()
         NativeLib.nativeCancel()
         _state.update {

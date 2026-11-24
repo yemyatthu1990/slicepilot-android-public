@@ -227,10 +227,20 @@ class PreviewRenderer(
         val parts = scene.partDraws
         if (parts.isEmpty()) {
             // One anonymous piece (every single-part file, and every file before pieces):
-            // the whole index buffer with the model's single transform.
-            setColor(scene.modelColor)
+            // the whole index buffer with the model's single transform, optionally split by
+            // filament colour group for multi-colour 3MF models.
             GLES30.glUniformMatrix4fv(uModel, 1, false, scene.transform, 0)
-            GLES30.glDrawElements(GLES30.GL_TRIANGLES, modelIndexCount, GLES30.GL_UNSIGNED_INT, 0)
+            val groups = scene.modelGroups
+            if (groups != null) {
+                for (g in groups) {
+                    if (g.count <= 0) continue
+                    setColor(g.color)
+                    GLES30.glDrawElements(GLES30.GL_TRIANGLES, g.count, GLES30.GL_UNSIGNED_INT, g.offset * 4)
+                }
+            } else {
+                setColor(scene.modelColor)
+                GLES30.glDrawElements(GLES30.GL_TRIANGLES, modelIndexCount, GLES30.GL_UNSIGNED_INT, 0)
+            }
             return
         }
         // Posed pieces: one draw per range of the shared index buffer, each with its own

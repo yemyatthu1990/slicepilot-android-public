@@ -79,6 +79,29 @@
       ]
     },
     {
+      "id": "art:screenshots-phone-v1.10.2",
+      "kind": "artifact",
+      "title": "Play Store phone screenshots & feature graphic (v1.10.2)",
+      "status": "current",
+      "summary": "7 promotional 1080x1920 PNG phone screenshots (6 generated with Nano Banana from live v1.10.2 Pixel 4a captures + matching 04_gcode_preview slide) and upgraded 1024x500 feature_graphic.png published in Play edit 18093862744728633418, plus screen-recorded customize_multicolour_demo.mp4.",
+      "updated": "2026-11-24",
+      "refs": [
+        "file:store_listing/screenshots/phone_v1.10.2/",
+        "file:store_listing/feature_graphic.png",
+        "file:store_listing/metadata.md"
+      ],
+      "edges": [
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "produced_by",
+          "rel:v1.10.2"
+        ]
+      ]
+    },
+    {
       "id": "art:screenshots-v1.9.0",
       "kind": "artifact",
       "title": "Store screenshots (phone_v1.9.0 set)",
@@ -1444,23 +1467,23 @@
       "id": "feat:multi-colour",
       "kind": "feature",
       "title": "Multi-colour (AMS) spool mapping and preview",
-      "status": "code_complete",
+      "status": "shipped",
       "owner": "dev",
-      "updated": "2026-10-21",
-      "summary": "Per-part spool mapping, project-3mf config safety and a multi-colour Print-setup preview exist on feature/multi-colour; never merged, never built, so nothing of it is in the shipped app.",
+      "updated": "2026-11-24",
+      "summary": "End-to-end MakerWorld multi-colour + AMS/Canvas support implemented on branch feat/multi-colour-ams: native Slic3r_PE/Bambu 3MF inspection & full import, per-triangle multi-colour 3D preview (single & multi-part), smart AMS spool auto-matching + UI picker, FlushVolCalculator + dissimilar-material flush matrix, per-tool multi-colour G-code preview, and N-tool slot_map printing.",
       "refs": [
         "commit:87d7f96",
         "commit:80d00a0",
-        "commit:992ce86"
+        "commit:992ce86",
+        "commit:8ad52b3",
+        "commit:80d7bff"
       ],
       "verification": {
-        "level": "code_review",
-        "ref": "commit:87d7f96",
-        "at": "2026-10-21"
+        "level": "store",
+        "ref": "play-prod-v1.10.2-49",
+        "at": "2026-11-24"
       },
-      "next": [
-        "Decide together with the multi-filament line whether any of it is revived"
-      ],
+      "next": [],
       "edges": [
         [
           "worked_on",
@@ -1469,6 +1492,10 @@
         [
           "implemented_by",
           "mod:android-app"
+        ],
+        [
+          "shipped_in",
+          "rel:v1.10.2"
         ]
       ]
     },
@@ -1567,26 +1594,24 @@
       "id": "feat:parametric-customizer",
       "kind": "feature",
       "title": "MakerWorld Customizer parametric designs",
-      "status": "in_progress",
+      "status": "shipped",
       "owner": "dev",
-      "updated": "2026-10-22",
-      "summary": "Five commits on parametric/makerworld-customizer reuse MakerWorld's own generation payload for protected designs, pick the source file for multi-file designs, and save the customization with PUT. Work stopped 2026-10-22 and the branch base is now ~3 weeks behind main.",
+      "updated": "2026-11-24",
+      "summary": "MakerWorld parametric (MakerLab) model customization ported onto current main with Design.kt UI, inline orbitable multi-colour 3D preview card (reusing generated 3MF on slice), searchable 48+ font picker + quick-pick chips, full OpenSCAD parameter parsing (sections, text, fonts, colors, choices/dropdowns, sliders, numbers, booleans, Hidden/module cutoff), automatic MakerWorld WebView SSO (token cookie + getSupportedCommands bridge + auto-harvest to native form), protected design PUT history + -D CLI overrides, multi-file template picker, and automatic multi-colour OBJ+MTL to Bambu 3MF packing for AMS/Canvas slicing (plus preview_parse.cpp mz_zip_reader_extract_to_mem + XML_SetUserData fix). Verified live on Pixel 4a and release AAB R8 dex check.",
       "refs": [
         "commit:5cdcb9b",
         "commit:b9bdbbb",
         "commit:1cacd70",
         "commit:7bb89df",
-        "commit:0b74b11"
+        "commit:0b74b11",
+        "commit:80d7bff"
       ],
       "verification": {
-        "level": "code_review",
-        "ref": "commit:0b74b11",
-        "at": "2026-10-22"
+        "level": "store",
+        "ref": "play-prod-v1.10.2-49",
+        "at": "2026-11-24"
       },
-      "next": [
-        "Decide: rebase onto current main and finish, or abandon the line",
-        "If kept, re-test the WebView script-loading report before trusting the customizer UI"
-      ],
+      "next": [],
       "edges": [
         [
           "worked_on",
@@ -1603,6 +1628,10 @@
         [
           "affects",
           "iss:branch-debt"
+        ],
+        [
+          "shipped_in",
+          "rel:v1.10.2"
         ]
       ]
     },
@@ -2449,6 +2478,125 @@
       "edges": []
     },
     {
+      "id": "rel:v1.10.0",
+      "kind": "release",
+      "title": "v1.10.0 (47)",
+      "status": "superseded",
+      "summary": "Adds end-to-end MakerWorld multi-colour 3MF & AMS/Canvas support on Centauri Carbon 2 (colour 3D preview, spool matching, multi-colour G-code preview, smart prime tower bed placement via place_wipe_tower_on_bed), MakerWorld parametric model customizer (inline 3D preview, searchable 48+ font picker, 20-swatch + RGB colour picker, automatic WebView SSO, multi-colour AMS 3MF export), plus cloud re-auth, Agora camera, LAN upload, and stability fixes. Uploaded to Play internal track as completed (edit 06110040950066223659, sha1 fe5b261f0ced31dbbaeafbf422babf474e4c475d) with ProGuard mapping and native symbols.",
+      "updated": "2026-11-24",
+      "refs": [
+        "file:store_listing/metadata.md",
+        "file:android/app/build.gradle.kts",
+        "commit:80d7bff"
+      ],
+      "next": [],
+      "attrs": {
+        "date": "2026-11-24",
+        "version_code": 47,
+        "play_edits": "internal 06110040950066223659",
+        "sha1": "fe5b261f0ced31dbbaeafbf422babf474e4c475d",
+        "notes": "3 bullets, 418 chars"
+      },
+      "edges": [
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "affects",
+          "mod:android-app"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.10.1",
+      "kind": "release",
+      "title": "v1.10.1 (48)",
+      "status": "superseded",
+      "summary": "Fixes slice completion sometimes staying on Slicing/PrintSetup instead of navigating to SlicePreviewScreen (immediate Screen.Preview transition before offscreen thumbnailing/archiving, removed EGL14.eglTerminate(EGL_DEFAULT_DISPLAY) from ThumbnailRenderer, synchronous SliceForegroundService state update + stale cancel/jobId=0L guards, and archived-path fallback when tapping the Slice complete notification), plus all v1.10.0 multi-colour AMS, MakerWorld parametric customizer, and prime tower placement features. Uploaded to Play internal track as completed (edit 07714278245451368962, sha1 a80b3f487eecb7b9cd008c4e0d5b4a5a7be2fcfa) with ProGuard mapping and native symbols.",
+      "updated": "2026-11-24",
+      "refs": [
+        "file:store_listing/metadata.md",
+        "file:android/app/build.gradle.kts",
+        "commit:58325f9"
+      ],
+      "next": [],
+      "attrs": {
+        "date": "2026-11-24",
+        "version_code": 48,
+        "play_edits": "internal 07714278245451368962",
+        "sha1": "a80b3f487eecb7b9cd008c4e0d5b4a5a7be2fcfa",
+        "notes": "3 bullets, 421 chars"
+      },
+      "edges": [
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.10.0"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.10.2",
+      "kind": "release",
+      "title": "v1.10.2 (49)",
+      "status": "live",
+      "summary": "Fixes prime tower extending past the build plate: stops forcing purge_in_prime_tower=1 (using enable_prime_tower=1 so CC2 keeps purge_in_prime_tower=0, flushing via M6211 into its waste chute with a compact tower) and adds post-Print::process() ensure_generated_wipe_tower_on_bed() in slice_jni.cpp to clamp the exact generated prime tower geometry (corners, ribs, brim, cone, extrusions) strictly inside the bed; includes all v1.10.1 post-slice preview navigation fixes and v1.10.0 multi-colour AMS + MakerWorld parametric customizer features. Uploaded to Play internal track as completed (edit 17281019097205255164, sha1 3cd877681e1b6197278f4945b1fae46bc88ce2a3) with ProGuard mapping and native symbols.",
+      "updated": "2026-11-24",
+      "refs": [
+        "file:store_listing/metadata.md",
+        "file:android/app/build.gradle.kts",
+        "commit:a91ce51"
+      ],
+      "next": [
+        "Monitor Play vitals / Crashlytics on v1.10.2 production rollout"
+      ],
+      "attrs": {
+        "date": "2026-11-24",
+        "version_code": 49,
+        "play_edits": "production 18093862744728633418 · internal 17281019097205255164",
+        "sha1": "3cd877681e1b6197278f4945b1fae46bc88ce2a3",
+        "notes": "3 bullets, 437 chars (production)"
+      },
+      "edges": [
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.10.1"
+        ],
+        [
+          "supersedes",
+          "rel:v1.9.13"
+        ]
+      ]
+    },
+    {
       "id": "rel:v1.5.9",
       "kind": "release",
       "title": "v1.5.9 (12)",
@@ -3158,9 +3306,9 @@
       "id": "rel:v1.9.13",
       "kind": "release",
       "title": "v1.9.13 (46)",
-      "status": "live",
+      "status": "superseded",
       "summary": "Keeps Centauri Carbon 2 on its single-nozzle Canvas profile (eliminating the synthetic 0.4+0.4 +1.5mm Y extruder_offset and zero-flush bug), adds a Support material scope toggle (Interface only default vs Full support) and 0.00mm Z distance option, guards multi-material support slicing on supportMaterialAvailable(), and enforces 500mm3 single-nozzle purge volumes for dissimilar materials (200mm3 for same-type swaps); includes the v1.9.12 print-finished notification fix and v1.9.11 dual-material support crash fix. Uploaded to Play internal track as completed (edit 09303183755892173428, sha1 a6c4e1a3869813c4d1ab1739a587de68dd13656e) with ProGuard mapping and native symbols.",
-      "updated": "2026-11-23",
+      "updated": "2026-11-24",
       "refs": [
         "file:store_listing/metadata.md",
         "file:android/app/build.gradle.kts",
@@ -3168,9 +3316,7 @@
         "file:android/app/src/main/java/world/yemyat/slicepilot/ui/AdvancedSettings.kt",
         "file:android/core/jni/slice_jni.cpp"
       ],
-      "next": [
-        "Monitor Play vitals / Crashlytics on v1.9.13 production rollout"
-      ],
+      "next": [],
       "attrs": {
         "date": "2026-11-23",
         "version_code": 46,

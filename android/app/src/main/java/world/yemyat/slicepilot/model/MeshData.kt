@@ -23,6 +23,11 @@ class MeshData(
      * mesh is one anonymous part — see [partsForRendering].
      */
     val parts: List<MeshPart> = emptyList(),
+    /**
+     * 1-based filament/extruder index per triangle (length == indices.size / 3) for
+     * multi-colour 3MF models; null for STL or single-colour files.
+     */
+    val triExtruders: IntArray? = null,
 ) {
     val centerX get() = (minX + maxX) / 2f
     val centerY get() = (minY + maxY) / 2f

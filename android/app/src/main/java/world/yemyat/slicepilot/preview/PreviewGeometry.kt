@@ -2,6 +2,7 @@ package world.yemyat.slicepilot.preview
 
 import world.yemyat.slicepilot.model.GcodePart
 import world.yemyat.slicepilot.model.GcodePreview
+import world.yemyat.slicepilot.model.GcodePreviewParser
 
 class MeshGeometry(
     val vertices: FloatArray,
@@ -22,6 +23,7 @@ class GcodePartGeometry(
     val cumulativeVertices: IntArray,
     val layerCount: Int,
     val color: FloatArray,
+    val tool: Int = 0,
 )
 
 object PreviewGeometry {
@@ -132,43 +134,48 @@ object PreviewGeometry {
         defaultColor: FloatArray,
     ): List<GcodePartGeometry> {
         val layerCount = preview.layers.size
-        val byType = LinkedHashMap<GcodePart, Int>()
-        val countsByType = HashMap<GcodePart, IntArray>()
+        // Group by (feature, tool) so multi-colour G-code layers render each extruder
+        // in its own filament colour instead of collapsing all tools into one colour.
+        val byKey = LinkedHashMap<Pair<GcodePart, Int>, Int>()
+        val countsByKey = HashMap<Pair<GcodePart, Int>, IntArray>()
         for (layer in preview.layers) {
             for (pg in layer.parts) {
                 if (pg.vertices.isEmpty()) continue
-                byType[pg.part] = (byType[pg.part] ?: 0) + pg.vertices.size
-                countsByType.getOrPut(pg.part) { IntArray(layerCount + 1) }
+                val key = pg.part to pg.tool
+                byKey[key] = (byKey[key] ?: 0) + pg.vertices.size
+                countsByKey.getOrPut(key) { IntArray(layerCount + 1) }
             }
         }
-        val posArrays = HashMap<GcodePart, FloatArray>()
-        for ((part, size) in byType) {
-            posArrays[part] = FloatArray(size)
+        val posArrays = HashMap<Pair<GcodePart, Int>, FloatArray>()
+        for ((key, size) in byKey) {
+            posArrays[key] = FloatArray(size)
         }
-        val writeOffsets = HashMap<GcodePart, Int>()
+        val writeOffsets = HashMap<Pair<GcodePart, Int>, Int>()
         for (layer in preview.layers) {
             for (pg in layer.parts) {
                 if (pg.vertices.isEmpty()) continue
-                val pos = posArrays.getValue(pg.part)
-                val o = writeOffsets[pg.part] ?: 0
+                val key = pg.part to pg.tool
+                val pos = posArrays.getValue(key)
+                val o = writeOffsets[key] ?: 0
                 System.arraycopy(pg.vertices, 0, pos, o, pg.vertices.size)
-                writeOffsets[pg.part] = o + pg.vertices.size
+                writeOffsets[key] = o + pg.vertices.size
                 val layerIndex = (layer.index + 1).coerceIn(0, layerCount)
-                countsByType.getValue(pg.part)[layerIndex] = pg.vertices.size / 3
+                countsByKey.getValue(key)[layerIndex] += pg.vertices.size / 3
             }
         }
-        val out = ArrayList<GcodePartGeometry>(byType.size)
-        for ((part, _) in byType) {
-            val cumulative = countsByType.getValue(part)
+        val out = ArrayList<GcodePartGeometry>(byKey.size)
+        for ((key, _) in byKey) {
+            val cumulative = countsByKey.getValue(key)
             for (i in 1..layerCount) cumulative[i] += cumulative[i - 1]
             if (cumulative[layerCount] <= 0) continue
             out.add(
                 GcodePartGeometry(
-                    part = part,
-                    vertices = posArrays.getValue(part),
+                    part = key.first,
+                    vertices = posArrays.getValue(key),
                     cumulativeVertices = cumulative,
                     layerCount = layerCount,
-                    color = colorFor(part, defaultColor),
+                    color = colorFor(key.first, key.second, preview, defaultColor),
+                    tool = key.second,
                 ),
             )
         }
@@ -177,36 +184,25 @@ object PreviewGeometry {
 
     private fun colorFor(
         part: GcodePart,
+        tool: Int,
+        preview: GcodePreview,
         defaultColor: FloatArray,
     ): FloatArray =
         when (part) {
             GcodePart.SUPPORT -> floatArrayOf(0.18f, 0.72f, 0.35f)
             GcodePart.SUPPORT_INTERFACE -> floatArrayOf(0.95f, 0.55f, 0.15f)
             GcodePart.TRAVEL -> floatArrayOf(0.75f, 0.75f, 0.78f)
-            else -> defaultColor
+            else -> GcodePreviewParser.parseColorHex(preview.filamentColors.getOrNull(tool)) ?: defaultColor
         }
 
     fun parseColor(hex: String?): FloatArray? {
         if (hex.isNullOrBlank()) return null
         val first =
             hex
-                .split('|')
+                .split(';', '|', ',')
                 .firstOrNull { it.isNotBlank() }
                 ?.trim()
                 ?.removePrefix("#") ?: return null
-        val full =
-            when (first.length) {
-                6 -> first
-                8 -> first.substring(2)
-                else -> return null
-            }
-        return try {
-            val r = Integer.parseInt(full.substring(0, 2), 16) / 255f
-            val g = Integer.parseInt(full.substring(2, 4), 16) / 255f
-            val b = Integer.parseInt(full.substring(4, 6), 16) / 255f
-            floatArrayOf(r, g, b)
-        } catch (_: Exception) {
-            null
-        }
+        return GcodePreviewParser.parseColorHex(first)
     }
 }

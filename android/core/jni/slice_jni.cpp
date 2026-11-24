@@ -7,6 +7,9 @@
 #include <mutex>
 #include <typeinfo>
 #include <set>
+#include <algorithm>
+#include <cctype>
+#include <cmath>
 
 #include <android/log.h>
 
@@ -14,11 +17,15 @@
 #include "libslic3r/Config.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/GCode/WipeTower.hpp"
 #include "libslic3r/Utils.hpp"
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/AppConfig.hpp"
 #include "libslic3r/Exception.hpp"
+#include "libslic3r/Color.hpp"
+#include "libslic3r/FlushVolCalc.hpp"
+#include "libslic3r/Format/bbs_3mf.hpp"
 
 #include "preview_parse.h"
 
@@ -88,6 +95,9 @@ std::vector<PartPose> g_part_poses;
 
 std::unique_ptr<AppConfig>     g_app_config;
 std::unique_ptr<PresetBundle> g_preset_bundle;
+// Serialise access to g_preset_bundle across UI threads (printer/process listing &
+// selection) and slice launch.
+std::mutex g_preset_mutex;
 
 std::string jstring_to_string(JNIEnv *env, jstring s) {
     if (!s) return {};
@@ -122,6 +132,18 @@ Vec3d bed_center_from_config(const DynamicPrintConfig &config) {
     return Vec3d(c.x(), c.y(), 0.0);
 }
 
+// Exact uncached world-space bounding box of one instance, reflecting both any
+// authored 3MF instance/volume transforms and any rotations/mirrors just applied.
+BoundingBoxf3 instance_world_bbox(const ModelObject *obj, const ModelInstance *inst) {
+    BoundingBoxf3 bb;
+    const Transform3d inst_mat = inst->get_matrix();
+    for (const ModelVolume *vol : obj->volumes) {
+        if (!vol->is_model_part()) continue;
+        bb.merge(vol->mesh().transformed_bounding_box(inst_mat * vol->get_matrix()));
+    }
+    return bb;
+}
+
 // Place every object with the pose the app gave that piece: turn its own mesh around its
 // own centre, then park its instances where the pose says. It is what apply_model_transform
 // does to the whole model, done one object at a time - which is what lets a 3MF holding two
@@ -149,16 +171,18 @@ void apply_part_poses(Model &model, const Vec3d &bedCenter) {
             if (pose.mirrorZ) vol->mirror(Z);
         }
         obj->invalidate_bounding_box();
-        // The mesh now hangs centred on the object origin. A 3MF keeps the authored
-        // placement in the instance, so the pose is written there: the piece's own centre
-        // goes to (bed centre + offset) and its lowest point to the bed.
-        const BoundingBoxf3 posed = obj->raw_mesh_bounding_box();
-        if (!posed.defined) continue;
-        const Vec3d center = posed.center();
-        const Vec3d delta(bedCenter.x() + pose.offsetX - center.x(),
-                          bedCenter.y() + pose.offsetY - center.y(),
-                          -posed.min.z());
-        for (ModelInstance *inst : obj->instances) inst->set_offset(inst->get_offset() + delta);
+        // Shift each instance from its actual world-space box so the piece's centre
+        // lands at (bed centre + offset) and its lowest point sits on Z = 0, whether
+        // the instance started at the origin (fast path) or an authored 3MF offset.
+        for (ModelInstance *inst : obj->instances) {
+            const BoundingBoxf3 posed = instance_world_bbox(obj, inst);
+            if (!posed.defined) continue;
+            const Vec3d center = posed.center();
+            const Vec3d delta(bedCenter.x() + pose.offsetX - center.x(),
+                              bedCenter.y() + pose.offsetY - center.y(),
+                              -posed.min.z());
+            inst->set_offset(inst->get_offset() + delta);
+        }
         obj->invalidate_bounding_box();
     }
     // Pieces the user unticked are not sliced at all: leaving them in the model would print
@@ -195,22 +219,15 @@ void apply_model_transform(Model &model, const Vec3d &bedCenter) {
         obj->invalidate_bounding_box();
     }
 
-    // Shift the whole model (instances included) so its XY center sits at the
-    // requested offset (bed center by default) and its lowest point is on the bed.
-    // Moving instances is required for 3MF files, whose placement lives in the
-    // object instance transform rather than the mesh.
-    //
-    // Measure the meshes just transformed. ModelObject::instance_bounding_box() was
-    // used here before and it returns the *cached* instance mesh, which does not
-    // reflect the volume edit above: on ipadmini.stl (mesh 54.853 x 17.374 x
-    // 75.000 mm) rot=(270,720,630) puts the lowest point 8.687 mm under the mesh
-    // center, while the cached box logged dz=15.107 - so the part landed off the
-    // plate and the slicer rejected the print ("One object has an empty first layer
-    // and can't be printed."), i.e. the UI rotation appeared to be ignored.
+    // Measure the actual uncached world-space bounds (including authored 3MF instance
+    // transforms) so full-import 3MFs do not get double-shifted off the plate or lifted
+    // into mid-air, while rotated meshes still drop cleanly to Z = 0.
     BoundingBoxf3 global_bb;
     for (ModelObject *obj : model.objects) {
-        BoundingBoxf3 bb = obj->raw_mesh_bounding_box();
-        if (bb.defined) global_bb.merge(bb);
+        for (ModelInstance *inst : obj->instances) {
+            BoundingBoxf3 bb = instance_world_bbox(obj, inst);
+            if (bb.defined) global_bb.merge(bb);
+        }
     }
     if (global_bb.defined) {
         const Vec3d center = global_bb.center();
@@ -228,47 +245,78 @@ void apply_model_transform(Model &model, const Vec3d &bedCenter) {
 }
 
 // Overlay the print settings embedded in a project 3MF onto the active config,
-// so the file's support/quality settings are respected. Machine & filament keys
-// are intentionally left to the selected presets.
-void merge_embedded_print_settings(DynamicPrintConfig &config, const DynamicPrintConfig &embedded) {
+// so the file's support/quality settings are respected. Machine & filament preset
+// keys are left to the selected Elegoo presets (so a Bambu 3MF never overwrites
+// printer G-code, nozzle geometry, limits, or the user's mapped spool temperatures).
+// In multi-colour mode, per-feature filament IDs from the project are preserved.
+void merge_embedded_print_settings(DynamicPrintConfig &config, const DynamicPrintConfig &embedded, bool multi) {
     if (embedded.empty()) return;
-    static const std::set<std::string> skip_keys = {
+    static const std::set<std::string> always_skip = {
+        "support_filament",
+        "support_interface_filament",
+        "filament_type",
+        "filament_colour",
+        "filament_multi_colour",
+        "filament_ids",
+        "filament_settings_id",
+        "filament_map",
+        "wipe_tower_x",
+        "wipe_tower_y",
+        "wipe_tower_rotation_angle",
+    };
+    static const std::set<std::string> single_only_skip = {
         "outer_wall_filament_id",
         "inner_wall_filament_id",
         "sparse_infill_filament_id",
         "internal_solid_filament_id",
         "top_surface_filament_id",
         "bottom_surface_filament_id",
-        "support_filament",
-        "support_interface_filament",
         "wipe_tower_filament",
-        "filament_type",
-        "filament_colour",
-        "filament_ids",
-        "filament_settings_id",
-        "filament_map",
     };
     int applied = 0;
     for (const std::string &key : Preset::print_options()) {
-        if (skip_keys.count(key) > 0) continue;
+        if (always_skip.count(key) > 0) continue;
+        if (!multi && single_only_skip.count(key) > 0) continue;
         if (const ConfigOption *opt = embedded.option(key)) {
             config.set_key_value(key, opt->clone());
             ++applied;
         }
     }
-    LOGI("Applied %d print settings embedded in the model file", applied);
+    LOGI("Applied %d print settings embedded in the model file (multi=%d)", applied, int(multi));
 }
 
-void clamp_filament_selection(DynamicPrintConfig &config) {
-    int num_filaments = g_preset_bundle ? static_cast<int>(g_preset_bundle->filament_presets.size()) : 1;
+size_t embedded_filament_count(const DynamicPrintConfig &embedded) {
+    size_t n = 1;
+    if (const auto *fc = embedded.option<ConfigOptionStrings>("filament_colour"))
+        n = std::max(n, fc->values.size());
+    if (const auto *ft = embedded.option<ConfigOptionStrings>("filament_type"))
+        n = std::max(n, ft->values.size());
+    return n;
+}
+
+bool same_filament_colours(const DynamicPrintConfig &config, size_t n) {
+    const auto *fc = config.option<ConfigOptionStrings>("filament_colour");
+    if (!fc || fc->values.size() < 2) return true;
+    auto norm = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+        return s;
+    };
+    const std::string first = norm(fc->values.front());
+    for (size_t i = 1; i < std::min(n, fc->values.size()); ++i)
+        if (norm(fc->values[i]) != first) return false;
+    return true;
+}
+
+void clamp_filament_selection(DynamicPrintConfig &config, int num_filaments, bool multi_colour) {
     if (num_filaments < 1) num_filaments = 1;
 
-    auto clamp_option = [&config, num_filaments](const char *key, int lo, int hi) {
+    auto clamp_option = [&config, num_filaments, multi_colour](const char *key, int lo, int hi) {
         ConfigOptionInt *opt = config.option<ConfigOptionInt>(key, false);
         if (!opt) return;
         int v = opt->value;
         if (v < lo || v > hi) {
-            opt->value = (v < lo) ? lo : 0;
+            opt->value = (v < lo) ? lo : (multi_colour ? hi : 0);
             LOGI("Clamped %s from %d to %d (selected filament count=%d)", key, v, opt->value, num_filaments);
         }
     };
@@ -285,12 +333,452 @@ void clamp_filament_selection(DynamicPrintConfig &config) {
     clamp_option("bottom_surface_filament_id", 0, num_filaments);
 }
 
-void run_slice(std::string model_path, DynamicPrintConfig config, std::string overrides_ini, std::string out_path) {
+// Ensures the prime/wipe tower is placed strictly inside the active printer's
+// build plate and clear of both bed exclusion zones and the placed model(s).
+// libslic3r's built-in defaults (wipe_tower_x=15, wipe_tower_y=220, width=60)
+// extend past Y=256 on 256x256 beds like the Centauri Carbon 2, and foreign
+// 3MF files can carry tower coordinates from larger/different beds.
+void place_wipe_tower_on_bed(DynamicPrintConfig &config, const Model &model) {
+    const auto *enabled = config.option<ConfigOptionBool>("enable_prime_tower", false);
+    if (!enabled || !enabled->value) return;
+
+    double bed_min_x = 0.0, bed_min_y = 0.0, bed_max_x = 256.0, bed_max_y = 256.0;
+    const Points bed_pts = get_bed_shape(config, false);
+    if (!bed_pts.empty()) {
+        const BoundingBox bed_bb = get_extents(bed_pts);
+        bed_min_x = unscale<double>(bed_bb.min.x());
+        bed_min_y = unscale<double>(bed_bb.min.y());
+        bed_max_x = unscale<double>(bed_bb.max.x());
+        bed_max_y = unscale<double>(bed_bb.max.y());
+    }
+    const double bed_w = bed_max_x - bed_min_x;
+    const double bed_h = bed_max_y - bed_min_y;
+    if (bed_w < 60.0 || bed_h < 60.0) return;
+
+    // Active printer exclusion area (e.g. front-left filament cutter / purge corner).
+    struct Rect2 {
+        double min_x, min_y, max_x, max_y;
+        double overlap_area(const Rect2 &o) const {
+            const double ox = std::max(0.0, std::min(max_x, o.max_x) - std::max(min_x, o.min_x));
+            const double oy = std::max(0.0, std::min(max_y, o.max_y) - std::max(min_y, o.min_y));
+            return ox * oy;
+        }
+    };
+    std::vector<Rect2> exclude_rects;
+    if (const auto *excl = config.option<ConfigOptionPoints>("bed_exclude_area", false)) {
+        if (excl->values.size() >= 3) {
+            double ex0 = DBL_MAX, ey0 = DBL_MAX, ex1 = -DBL_MAX, ey1 = -DBL_MAX;
+            for (const Vec2d &pt : excl->values) {
+                ex0 = std::min(ex0, pt.x());
+                ey0 = std::min(ey0, pt.y());
+                ex1 = std::max(ex1, pt.x());
+                ey1 = std::max(ey1, pt.y());
+            }
+            if (ex1 > ex0 && ey1 > ey0) {
+                exclude_rects.push_back(Rect2{ex0 - 4.0, ey0 - 4.0, ex1 + 4.0, ey1 + 4.0});
+            }
+        }
+    }
+
+    // Placed model footprints expanded by 6 mm clearance.
+    std::vector<Rect2> model_rects;
+    for (const ModelObject *obj : model.objects) {
+        for (const ModelInstance *inst : obj->instances) {
+            const BoundingBoxf3 bb = instance_world_bbox(obj, inst);
+            if (bb.defined) {
+                model_rects.push_back(Rect2{
+                    bb.min.x() - 6.0, bb.min.y() - 6.0,
+                    bb.max.x() + 6.0, bb.max.y() + 6.0,
+                });
+            }
+        }
+    }
+
+    const auto *w_opt = config.option<ConfigOptionFloat>("prime_tower_width", false);
+    const auto *vol_opt = config.option<ConfigOptionFloat>("prime_volume", false);
+    const auto *brim_opt = config.option<ConfigOptionFloat>("prime_tower_brim_width", false);
+    double width = (w_opt && w_opt->value > 2.0) ? w_opt->value : 35.0;
+    const double max_width = std::max(25.0, bed_w * 0.35);
+    if (width > max_width) {
+        width = max_width;
+        config.set_key_value("prime_tower_width", new ConfigOptionFloat(width));
+    }
+    const double volume = (vol_opt && vol_opt->value > 1.0) ? vol_opt->value : 45.0;
+    const double brim = (brim_opt && brim_opt->value >= 0.0) ? std::max(3.0, brim_opt->value) : 5.0;
+    // Conservative depth bound covering prime paths, extra walls, and stabilization cone base.
+    const double est_depth = std::clamp(std::max(45.0, (volume / std::max(width, 20.0)) * 6.0), 38.0, 65.0);
+    const double pad = brim + 8.0;
+
+    const double min_x = bed_min_x + pad;
+    const double max_x = std::max(min_x, bed_max_x - width - pad);
+    const double min_y = bed_min_y + pad;
+    const double max_y = std::max(min_y, bed_max_y - est_depth - pad);
+    const double mid_x = std::clamp((bed_min_x + bed_max_x - width) * 0.5, min_x, max_x);
+    const double mid_y = std::clamp((bed_min_y + bed_max_y - est_depth) * 0.5, min_y, max_y);
+
+    auto tower_rect = [&](double x, double y) -> Rect2 {
+        return Rect2{x - brim, y - brim, x + width + brim, y + est_depth + brim};
+    };
+    auto score = [&](double x, double y) -> std::pair<double, double> {
+        const Rect2 r = tower_rect(x, y);
+        double excl_ov = 0.0;
+        for (const Rect2 &e : exclude_rects) excl_ov += r.overlap_area(e);
+        double model_ov = 0.0;
+        for (const Rect2 &m : model_rects) model_ov += r.overlap_area(m);
+        return {excl_ov, model_ov};
+    };
+
+    // Keep current position only if rotation is 0, strictly in-bounds, and collision-free.
+    const auto *tx_opt = config.option<ConfigOptionFloats>("wipe_tower_x", false);
+    const auto *ty_opt = config.option<ConfigOptionFloats>("wipe_tower_y", false);
+    const auto *rot_opt = config.option<ConfigOptionFloat>("wipe_tower_rotation_angle", false);
+    if (tx_opt && !tx_opt->values.empty() && ty_opt && !ty_opt->values.empty() &&
+        (!rot_opt || std::abs(rot_opt->value) < 0.01)) {
+        const double cx = tx_opt->values.front();
+        const double cy = ty_opt->values.front();
+        if (cx >= min_x && cx <= max_x && cy >= min_y && cy <= max_y) {
+            const auto [e_ov, m_ov] = score(cx, cy);
+            if (e_ov == 0.0 && m_ov == 0.0) {
+                LOGI("Keeping prime tower at (%.1f, %.1f) inside bed", cx, cy);
+                return;
+            }
+        }
+    }
+
+    // Evaluate perimeter candidates inside the build plate (rear-right preferred).
+    const std::vector<std::pair<double, double>> candidates = {
+        {max_x, max_y},
+        {min_x, max_y},
+        {max_x, min_y},
+        {min_x, min_y},
+        {mid_x, max_y},
+        {max_x, mid_y},
+        {min_x, mid_y},
+        {mid_x, min_y},
+    };
+    double best_x = max_x;
+    double best_y = max_y;
+    std::pair<double, double> best_score = {DBL_MAX, DBL_MAX};
+    for (const auto &[cx, cy] : candidates) {
+        const auto sc = score(cx, cy);
+        if (sc < best_score) {
+            best_score = sc;
+            best_x = cx;
+            best_y = cy;
+            if (sc.first == 0.0 && sc.second == 0.0) break;
+        }
+    }
+
+    config.set_key_value("wipe_tower_x", new ConfigOptionFloats{best_x});
+    config.set_key_value("wipe_tower_y", new ConfigOptionFloats{best_y});
+    config.set_key_value("wipe_tower_rotation_angle", new ConfigOptionFloat(0.0));
+    LOGI("Placed prime tower at (%.1f, %.1f) size=%.0fx%.0fmm inside bed [%.0f..%.0f]x[%.0f..%.0f] (excl_ov=%.1f model_ov=%.1f)",
+         best_x, best_y, width, est_depth, bed_min_x, bed_max_x, bed_min_y, bed_max_y,
+         best_score.first, best_score.second);
+}
+
+// Verifies the *actual* generated wipe-tower geometry (including ribs, rib_offset,
+// brim, stabilization cone, and every extrusion move) against the active bed bounds
+// right after Print::process() and before G-code export. If any part of the generated
+// tower still extends past the build plate or enters an exclusion zone, snaps
+// wipe_tower_x/y using the exact local extents and re-runs only psSkirtBrim (~1 ms).
+void ensure_generated_wipe_tower_on_bed(Print *print, DynamicPrintConfig &config, const Model &model) {
+    if (!print || !print->has_wipe_tower()) return;
+    const auto &wt_data = print->wipe_tower_data();
+    if (wt_data.tool_changes.empty()) return;
+
+    double bed_min_x = 0.0, bed_min_y = 0.0, bed_max_x = 256.0, bed_max_y = 256.0;
+    const Points bed_pts = get_bed_shape(config, false);
+    if (!bed_pts.empty()) {
+        const BoundingBox bed_bb = get_extents(bed_pts);
+        bed_min_x = unscale<double>(bed_bb.min.x());
+        bed_min_y = unscale<double>(bed_bb.min.y());
+        bed_max_x = unscale<double>(bed_bb.max.x());
+        bed_max_y = unscale<double>(bed_bb.max.y());
+    }
+    const double bed_w = bed_max_x - bed_min_x;
+    const double bed_h = bed_max_y - bed_min_y;
+    if (bed_w < 60.0 || bed_h < 60.0) return;
+
+    const int plate_idx = print->get_plate_index();
+    const Vec3d origin = print->get_plate_origin();
+    const double cur_x = print->config().wipe_tower_x.get_at(plate_idx);
+    const double cur_y = print->config().wipe_tower_y.get_at(plate_idx);
+    const bool is_type2 = print->wipe_tower_type() == WipeTowerType::Type2;
+    const Vec2f rib_off = is_type2 ? Vec2f::Zero() : print->get_rib_offset();
+    const double rot_rad = print->config().wipe_tower_rotation_angle.value * (M_PI / 180.0);
+    const double ca = std::cos(rot_rad);
+    const double sa = std::sin(rot_rad);
+
+    double wt_min_x = DBL_MAX, wt_min_y = DBL_MAX;
+    double wt_max_x = -DBL_MAX, wt_max_y = -DBL_MAX;
+    auto expand = [&](double x, double y) {
+        if (!std::isfinite(x) || !std::isfinite(y)) return;
+        wt_min_x = std::min(wt_min_x, x);
+        wt_min_y = std::min(wt_min_y, y);
+        wt_max_x = std::max(wt_max_x, x);
+        wt_max_y = std::max(wt_max_y, y);
+    };
+
+    // 1. Exact first-layer corners (includes brim, rib_offset, and stabilization cone).
+    for (const Point &pt : print->first_layer_wipe_tower_corners(true)) {
+        expand(unscale<double>(pt.x()), unscale<double>(pt.y()));
+    }
+
+    // 2. Every actual prime-tower extrusion move as transformed by WipeTowerIntegration.
+    for (const auto &layer_tcrs : wt_data.tool_changes) {
+        for (const auto &tcr : layer_tcrs) {
+            if (tcr.priming) continue;
+            for (const auto &ext : tcr.extrusions) {
+                const double rx = ext.pos.x() * ca - ext.pos.y() * sa;
+                const double ry = ext.pos.x() * sa + ext.pos.y() * ca;
+                const double wx = rx + cur_x + rib_off.x() + origin.x();
+                const double wy = ry + cur_y + rib_off.y() + origin.y();
+                const double hw = std::max(0.25, static_cast<double>(ext.width) * 0.5);
+                expand(wx - hw, wy - hw);
+                expand(wx + hw, wy + hw);
+            }
+        }
+    }
+
+    if (wt_min_x > wt_max_x || wt_min_y > wt_max_y) return;
+
+    constexpr double kEdgeMargin = 6.0;
+    const double safe_min_x = bed_min_x + kEdgeMargin;
+    const double safe_max_x = bed_max_x - kEdgeMargin;
+    const double safe_min_y = bed_min_y + kEdgeMargin;
+    const double safe_max_y = bed_max_y - kEdgeMargin;
+
+    struct Rect2 {
+        double min_x, min_y, max_x, max_y;
+        double overlap_area(const Rect2 &o) const {
+            const double ox = std::max(0.0, std::min(max_x, o.max_x) - std::max(min_x, o.min_x));
+            const double oy = std::max(0.0, std::min(max_y, o.max_y) - std::max(min_y, o.min_y));
+            return ox * oy;
+        }
+    };
+    std::vector<Rect2> exclude_rects;
+    if (const auto *excl = config.option<ConfigOptionPoints>("bed_exclude_area", false)) {
+        if (excl->values.size() >= 3) {
+            double ex0 = DBL_MAX, ey0 = DBL_MAX, ex1 = -DBL_MAX, ey1 = -DBL_MAX;
+            for (const Vec2d &pt : excl->values) {
+                ex0 = std::min(ex0, pt.x());
+                ey0 = std::min(ey0, pt.y());
+                ex1 = std::max(ex1, pt.x());
+                ey1 = std::max(ey1, pt.y());
+            }
+            if (ex1 > ex0 && ey1 > ey0) {
+                exclude_rects.push_back(Rect2{ex0 - 4.0, ey0 - 4.0, ex1 + 4.0, ey1 + 4.0});
+            }
+        }
+    }
+    std::vector<Rect2> model_rects;
+    for (const ModelObject *obj : model.objects) {
+        for (const ModelInstance *inst : obj->instances) {
+            const BoundingBoxf3 bb = instance_world_bbox(obj, inst);
+            if (bb.defined) {
+                model_rects.push_back(Rect2{
+                    bb.min.x() - 4.0, bb.min.y() - 4.0,
+                    bb.max.x() + 4.0, bb.max.y() + 4.0,
+                });
+            }
+        }
+    }
+
+    const Rect2 cur_rect{wt_min_x, wt_min_y, wt_max_x, wt_max_y};
+    double cur_excl_ov = 0.0;
+    for (const Rect2 &e : exclude_rects) cur_excl_ov += cur_rect.overlap_area(e);
+    const bool in_bounds =
+        wt_min_x >= safe_min_x && wt_max_x <= safe_max_x &&
+        wt_min_y >= safe_min_y && wt_max_y <= safe_max_y;
+    if (in_bounds && cur_excl_ov == 0.0) {
+        LOGI("Verified prime tower bbox [%.1f..%.1f]x[%.1f..%.1f] strictly inside bed [%.0f..%.0f]x[%.0f..%.0f]",
+             wt_min_x, wt_max_x, wt_min_y, wt_max_y, bed_min_x, bed_max_x, bed_min_y, bed_max_y);
+        return;
+    }
+
+    // Exact local extents relative to current (cur_x, cur_y).
+    const double local_min_x = wt_min_x - cur_x;
+    const double local_max_x = wt_max_x - cur_x;
+    const double local_min_y = wt_min_y - cur_y;
+    const double local_max_y = wt_max_y - cur_y;
+    const double exact_w = local_max_x - local_min_x;
+    const double exact_h = local_max_y - local_min_y;
+
+    double min_x = safe_min_x - local_min_x;
+    double max_x = safe_max_x - local_max_x;
+    if (min_x > max_x) {
+        const double center_x = (bed_min_x + bed_max_x) * 0.5 - (local_min_x + local_max_x) * 0.5;
+        min_x = max_x = center_x;
+    }
+    double min_y = safe_min_y - local_min_y;
+    double max_y = safe_max_y - local_max_y;
+    if (min_y > max_y) {
+        const double center_y = (bed_min_y + bed_max_y) * 0.5 - (local_min_y + local_max_y) * 0.5;
+        min_y = max_y = center_y;
+    }
+    const double mid_x = (min_x + max_x) * 0.5;
+    const double mid_y = (min_y + max_y) * 0.5;
+
+    auto score = [&](double cx, double cy) -> std::pair<double, double> {
+        const Rect2 r{cx + local_min_x, cy + local_min_y, cx + local_max_x, cy + local_max_y};
+        double excl_ov = 0.0;
+        for (const Rect2 &e : exclude_rects) excl_ov += r.overlap_area(e);
+        double model_ov = 0.0;
+        for (const Rect2 &m : model_rects) model_ov += r.overlap_area(m);
+        return {excl_ov, model_ov};
+    };
+
+    const std::vector<std::pair<double, double>> candidates = {
+        {std::clamp(cur_x, min_x, max_x), std::clamp(cur_y, min_y, max_y)},
+        {max_x, max_y},
+        {min_x, max_y},
+        {max_x, min_y},
+        {min_x, min_y},
+        {mid_x, max_y},
+        {max_x, mid_y},
+        {min_x, mid_y},
+        {mid_x, min_y},
+    };
+    double best_x = candidates.front().first;
+    double best_y = candidates.front().second;
+    std::pair<double, double> best_score = {DBL_MAX, DBL_MAX};
+    for (const auto &[cx, cy] : candidates) {
+        const auto sc = score(cx, cy);
+        if (sc < best_score) {
+            best_score = sc;
+            best_x = cx;
+            best_y = cy;
+            if (sc.first == 0.0 && sc.second == 0.0) break;
+        }
+    }
+
+    LOGI("Snapping prime tower from (%.1f, %.1f) [%.1f..%.1f]x[%.1f..%.1f] to (%.1f, %.1f) [%.1f..%.1f]x[%.1f..%.1f] (exact %.1fx%.1fmm, excl_ov=%.1f model_ov=%.1f)",
+         cur_x, cur_y, wt_min_x, wt_max_x, wt_min_y, wt_max_y,
+         best_x, best_y,
+         best_x + local_min_x, best_x + local_max_x,
+         best_y + local_min_y, best_y + local_max_y,
+         exact_w, exact_h, best_score.first, best_score.second);
+
+    config.set_key_value("wipe_tower_x", new ConfigOptionFloats{best_x});
+    config.set_key_value("wipe_tower_y", new ConfigOptionFloats{best_y});
+    config.set_key_value("wipe_tower_rotation_angle", new ConfigOptionFloat(0.0));
+    print->apply(model, config);
+    print->process();
+}
+
+// Per-filament minimum flush volume for one nozzle (port of Slic3r::GUI::get_min_flush_volumes).
+std::vector<int> min_flush_volumes_for(const DynamicPrintConfig &config, size_t nozzle_id) {
+    const ConfigOptionFloatsNullable *nozzle_volume = config.option<ConfigOptionFloatsNullable>("nozzle_volume");
+    int nozzle_volume_val = 0;
+    if (nozzle_volume && !nozzle_volume->values.empty())
+        nozzle_volume_val = static_cast<int>(nozzle_volume->get_at(std::min(nozzle_id, nozzle_volume->values.size() - 1)));
+
+    const ConfigOptionInt *enable = config.option<ConfigOptionInt>("enable_long_retraction_when_cut");
+    const int machine_level = enable ? enable->value : 0;
+    const ConfigOptionBools *machine_flags = config.option<ConfigOptionBools>("long_retractions_when_cut");
+    const bool machine_activated = machine_flags && nozzle_id < machine_flags->values.size() && machine_flags->values[nozzle_id];
+
+    const ConfigOptionFloats *diameters = config.option<ConfigOptionFloats>("filament_diameter");
+    if (!diameters || diameters->values.empty()) return {};
+    const size_t n = diameters->values.size();
+
+    std::vector<double> filament_retract(n, 18.0);
+    if (const ConfigOptionFloats *o = config.option<ConfigOptionFloats>("filament_retraction_distances_when_cut"))
+        if (!o->values.empty()) filament_retract = o->values;
+    filament_retract.resize(n, 18.0);
+
+    std::vector<double> printer_retract;
+    if (const ConfigOptionFloats *o = config.option<ConfigOptionFloats>("retraction_distances_when_cut"))
+        printer_retract = o->values;
+    const double machine_retract = printer_retract.empty() ? 18.0
+        : printer_retract[std::min(nozzle_id, printer_retract.size() - 1)];
+
+    std::vector<unsigned char> filament_long(n, 0);
+    if (const ConfigOptionBools *o = config.option<ConfigOptionBools>("filament_long_retractions_when_cut"))
+        for (size_t i = 0; i < n && i < o->values.size(); ++i) filament_long[i] = o->values[i] ? 1 : 0;
+
+    std::vector<int> out;
+    out.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        int retract = (machine_level && machine_activated) ? static_cast<int>(machine_retract) : 0;
+        const unsigned char filament_activated = filament_long[i];
+        if (filament_activated == 0)
+            retract = 0;
+        else if (filament_activated == 1 && machine_level == LongRectrationLevel::EnableFilament)
+            retract = std::isnan(filament_retract[i]) ? static_cast<int>(machine_retract) : static_cast<int>(filament_retract[i]);
+        out.emplace_back(nozzle_volume_val - static_cast<int>(PI * 1.75 * 1.75 / 4.0 * retract));
+    }
+    return out;
+}
+
+// Compute one nozzle's n_active x n_active flush block with FlushVolCalculator
+// (per-printer flush_volumes.json override first, HSV colour transition formula second).
+bool resolve_flush_block(const DynamicPrintConfig &config, size_t nozzle_id, size_t n_active,
+                         std::vector<double> &block, std::string &reason) {
+    const ConfigOptionStrings *colours = config.option<ConfigOptionStrings>("filament_colour");
+    if (!colours || colours->values.size() < n_active) {
+        reason = "filament_colour has " + std::to_string(colours ? colours->values.size() : 0) + " entries, " +
+                 std::to_string(n_active) + " slots need colours";
+        return false;
+    }
+    std::vector<ColorRGBA> rgb;
+    for (size_t i = 0; i < n_active; ++i) {
+        ColorRGBA c;
+        if (!decode_color(colours->values[i], c)) {
+            reason = "undecodable filament_colour \"" + colours->values[i] + "\"";
+            return false;
+        }
+        rgb.push_back(c);
+    }
+
+    const std::vector<int> mins = min_flush_volumes_for(config, nozzle_id);
+    if (mins.size() < n_active) {
+        reason = "min_flush_volumes resolved " + std::to_string(mins.size()) + " of " + std::to_string(n_active) + " slots";
+        return false;
+    }
+
+    const ConfigOptionBools *is_support = config.option<ConfigOptionBools>("filament_is_support");
+    const ConfigOptionString *printer_id = config.option<ConfigOptionString>("printer_settings_id");
+    const std::string printer_settings_id = printer_id ? printer_id->value : std::string();
+    const ConfigOptionIntsNullable *datasets = config.option<ConfigOptionIntsNullable>("nozzle_flush_dataset");
+    int dataset = 0;
+    if (datasets && nozzle_id < datasets->values.size()) dataset = datasets->values[nozzle_id];
+
+    const auto byte = [](float v) { return static_cast<unsigned char>(std::lround(v * 255.0f)); };
+    block.assign(n_active * n_active, 0.0);
+    for (size_t from = 0; from < n_active; ++from) {
+        const bool from_is_support = is_support && from < is_support->values.size() && is_support->values[from];
+        const unsigned char from_rgba[4] = { byte(rgb[from].r()), byte(rgb[from].g()), byte(rgb[from].b()), byte(rgb[from].a()) };
+        for (size_t to = 0; to < n_active; ++to) {
+            double volume = 0.0;
+            if (from != to) {
+                const bool to_is_support = is_support && to < is_support->values.size() && is_support->values[to];
+                if (to_is_support) {
+                    volume = g_flush_volume_to_support;
+                } else {
+                    const unsigned char to_rgba[4] = { byte(rgb[to].r()), byte(rgb[to].g()), byte(rgb[to].b()), byte(rgb[to].a()) };
+                    FlushVolCalculator calculator(from_is_support ? g_min_flush_volume_from_support : mins[from],
+                                                  g_max_flush_volume, dataset);
+                    volume = calculator.calc_flush_vol(from_rgba[0], from_rgba[1], from_rgba[2], from_rgba[3],
+                                                       to_rgba[0], to_rgba[1], to_rgba[2], to_rgba[3], printer_settings_id);
+                    if (from_is_support) volume = std::max<int>(g_min_flush_volume_from_support, static_cast<int>(volume));
+                }
+            }
+            block[from * n_active + to] = volume;
+        }
+    }
+    return true;
+}
+
+void run_slice(std::string model_path, DynamicPrintConfig config, std::string overrides_ini,
+               std::string out_path, size_t bundle_filaments, bool multi_colour) {
     try {
         report_progress(0, "Loading model", 0);
         try {
             auto fsize = boost::filesystem::file_size(boost::filesystem::path(model_path));
-            LOGI("Slice input: %s size=%llu bytes", model_path.c_str(), (unsigned long long) fsize);
+            LOGI("Slice input: %s size=%llu bytes (filaments=%zu multi=%d)",
+                 model_path.c_str(), (unsigned long long) fsize, bundle_filaments, int(multi_colour));
         } catch (const std::exception &e) {
             LOGE("Slice input stat failed for %s: %s", model_path.c_str(), e.what());
         }
@@ -299,12 +787,10 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
         ConfigSubstitutionContext embedded_substitutions(ForwardCompatibilitySubstitutionRule::EnableSilent);
         Model model;
         {
-            // Fast path for 3MF: stream the full-resolution geometry with the
-            // preview parser (expat/miniz, single pass) instead of libslic3r's
-            // 3MF importer, which materializes every component instance through
-            // the model API (extremely slow for Bambu assemblies). Config-only
-            // import keeps the embedded print settings. Fall back to the full
-            // import for STL, grids, or on any error.
+            // Fast path for single-material 3MF: stream full-resolution geometry with
+            // preview_parse. Multi-colour / multi-filament 3MFs MUST use full
+            // Model::read_from_file so per-part extruders and triangle painting
+            // (mmu_segmentation_facets) survive into the sliced G-code.
             bool fast = false;
             FILE *hdr = std::fopen(model_path.c_str(), "rb");
             bool is_zip = false;
@@ -313,16 +799,16 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
                 is_zip = std::fread(m, 1, 2, hdr) == 2 && m[0] == 'P' && m[1] == 'K';
                 std::fclose(hdr);
             }
-            if (is_zip) {
+            const bool fast_path_allowed = is_zip && !multi_colour && bundle_filaments <= 1;
+            if (is_zip && !fast_path_allowed) {
+                LOGI("Skipping fast 3mf path for multi-material slice (filaments=%zu, multi=%d)",
+                     bundle_filaments, int(multi_colour));
+            }
+            if (fast_path_allowed) {
                 preview::Preview full;
                 std::string perr;
                 if (preview::parse_preview(model_path, 20000000, full, perr, {}, false)
                     && !full.indices.empty() && !full.has_grid_transforms) {
-                    // One object per part, in the order the parser reported them, which is the
-                    // order nativeSetPartPoses' rows arrive in. Merging the parts into a single
-                    // object (as this path used to) made the pose count disagree with the object
-                    // count, so apply_model_transform() dropped the poses and sliced the file
-                    // exactly as authored: the plate the user laid out never reached the G-code.
                     auto add_part_object = [&](const preview::PartGeometry &part) {
                         indexed_triangle_set its;
                         its.vertices.reserve(part.vertex_count);
@@ -347,7 +833,6 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
                         for (const preview::PartGeometry &part : full.parts) add_part_object(part);
                         LOGI("Fast 3mf path: %zu per-part objects", full.parts.size());
                     } else {
-                        // Geometry without a part list (defensive): one object, as before.
                         indexed_triangle_set its;
                         its.vertices.reserve(full.positions.size() / 3);
                         for (size_t i = 0; i + 2 < full.positions.size(); i += 3)
@@ -360,16 +845,12 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
                         model.add_object("model", model_path.c_str(), TriangleMesh(std::move(its)));
                         model.objects.back()->add_instance();
                     }
-                    // Embedded config / plate metadata, geometry skipped (fast).
-                    // Failure here only loses embedded config keys (the app config
-                    // already carries the parsed project settings), so keep the
-                    // fast geometry and continue.
                     try {
                         Model cfg_only = Model::read_from_file(model_path, &embedded, &embedded_substitutions,
                             LoadStrategy::LoadConfig | LoadStrategy::Silence);
                     } catch (const std::exception &e) {
-                        LOGE("fast 3mf config-only read failed (%s); continuing without embedded config",
-                            e.what());
+                        if (embedded.empty())
+                            LOGE("fast 3mf config-only read failed (%s); continuing without embedded config", e.what());
                     }
                     fast = !model.objects.empty();
                 }
@@ -377,15 +858,34 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
                     LOGI("fast 3mf slice path not used: %s",
                         full.has_grid_transforms ? "part_platform grids" : perr.c_str());
             }
-            if (!fast)
+            if (!fast) {
+                auto on_import = [](int stage, int current, int total, bool &cancel) {
+                    if (g_state.cancel_requested.load(std::memory_order_relaxed)) {
+                        cancel = true;
+                        return;
+                    }
+                    int base = 2, span = 0;
+                    switch (stage) {
+                        case IMPORT_STAGE_OPEN:            base = 2;  span = 1; break;
+                        case IMPORT_STAGE_READ_FILES:      base = 3;  span = 2; break;
+                        case IMPORT_STAGE_EXTRACT:         base = 5;  span = 4; break;
+                        case IMPORT_STAGE_LOADING_OBJECTS: base = 9;  span = 4; break;
+                        case IMPORT_STAGE_LOADING_PLATES:  base = 13; span = 1; break;
+                        default: return;
+                    }
+                    const int pct = total > 0 ? base + span * std::min(current, total) / total : base;
+                    report_progress(0, "Loading model", pct);
+                };
                 model = Model::read_from_file(model_path, &embedded, &embedded_substitutions,
-                    LoadStrategy::AddDefaultInstances | LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+                    LoadStrategy::AddDefaultInstances | LoadStrategy::LoadModel | LoadStrategy::LoadConfig,
+                    nullptr, nullptr, nullptr, nullptr, on_import);
+            }
         }
         LOGI("Model loaded: %zu objects, embedded config keys=%zu in %lld ms",
             model.objects.size(), embedded.keys().size(),
             (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - t_model0).count());
-        merge_embedded_print_settings(config, embedded);
+        merge_embedded_print_settings(config, embedded, multi_colour);
         if (!overrides_ini.empty()) {
             try {
                 config.load_from_ini_string(overrides_ini, ForwardCompatibilitySubstitutionRule::EnableSilent);
@@ -395,12 +895,10 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
         }
         // Enforce multi-filament / multi-extruder vector invariants after embedded 3MF
         // settings and INI overrides: ToolOrdering and WipeTower derive filament_nums from
-        // filament_colour.values.size() and assert extruder_nums == filament_nums for
-        // non-BBL multi-extruder printers, and index flush_volumes_matrix as
+        // filament_colour.values.size() and index flush_volumes_matrix as
         // filament_nums * filament_nums per nozzle.
         const size_t heads = config.option<ConfigOptionFloats>("nozzle_diameter")
             ? std::max<size_t>(1, config.option<ConfigOptionFloats>("nozzle_diameter")->values.size()) : 1;
-        const size_t bundle_filaments = g_preset_bundle ? g_preset_bundle->filament_presets.size() : 1;
         const size_t n_active = std::max<size_t>(std::max<size_t>(1, bundle_filaments), heads);
         if (n_active > 1 || heads > 1) {
             auto normalize_colours = [&config, n_active](const char *key) {
@@ -433,11 +931,13 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
             std::vector<double> mults = mult ? mult->values : std::vector<double>{};
             if (mults.size() != heads) {
                 mults.resize(heads, 1.0);
-                config.set_key_value("flush_multiplier", new ConfigOptionFloats(std::move(mults)));
             }
+            const bool uniform_colour = same_filament_colours(config, n_active);
+            for (double &m : mults) {
+                if (!(m >= 1.0) && !uniform_colour) m = 1.0;
+            }
+            config.set_key_value("flush_multiplier", new ConfigOptionFloats(std::move(mults)));
 
-            auto *mat = config.option<ConfigOptionFloats>("flush_volumes_matrix", false);
-            std::vector<double> src = mat ? mat->values : std::vector<double>{};
             const size_t need = n_active * n_active * heads;
             auto *ftypes = config.option<ConfigOptionStrings>("filament_type", false);
             auto norm_type = [&](size_t idx) -> std::string {
@@ -455,34 +955,52 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
                 if (heads == 1 && !tr.empty() && !tc.empty() && tr != tc) return 500.0;
                 return (heads == 1) ? 200.0 : 140.0;
             };
-            const bool resized = (src.size() != need);
-            bool updated_flush = resized;
-            std::vector<double> fixed = resized ? std::vector<double>(need, 0.0) : src;
+
+            // Compute colour-accurate flush volumes via FlushVolCalculator (per-printer JSON
+            // overrides + HSV transition formula), then apply the dissimilar-material floor.
+            // Fall back to safe non-zero defaults only if a slot has no decodable colour.
+            std::vector<double> resolved(need, 0.0);
+            bool complete = true;
+            for (size_t head = 0; head < heads; ++head) {
+                std::vector<double> block;
+                std::string reason;
+                if (!resolve_flush_block(config, head, n_active, block, reason)) {
+                    complete = false;
+                    LOGE("Flush volumes unresolved for nozzle %zu: %s", head, reason.c_str());
+                    break;
+                }
+                for (size_t i = 0; i < block.size(); ++i)
+                    resolved[head * block.size() + i] = block[i];
+            }
             for (size_t h = 0; h < heads; ++h) {
                 for (size_t r = 0; r < n_active; ++r) {
                     for (size_t c = 0; c < n_active; ++c) {
                         const size_t idx = (h * n_active + r) * n_active + c;
-                        const double floor_vol = min_flush_for_pair(r, c);
                         if (r == c) {
-                            if (fixed[idx] != 0.0) { fixed[idx] = 0.0; updated_flush = true; }
-                        } else if (resized || (heads == 1 && fixed[idx] < floor_vol)) {
-                            fixed[idx] = std::max(fixed[idx], floor_vol);
-                            updated_flush = true;
+                            resolved[idx] = 0.0;
+                        } else if (!complete) {
+                            resolved[idx] = min_flush_for_pair(r, c);
+                        } else {
+                            // Preserve dissimilar-material safety floor on single-nozzle printers.
+                            const std::string tr = norm_type(r);
+                            const std::string tc = norm_type(c);
+                            if (heads == 1 && !tr.empty() && !tc.empty() && tr != tc) {
+                                resolved[idx] = std::max(resolved[idx], 500.0);
+                            }
                         }
                     }
                 }
             }
-            if (updated_flush) {
-                config.set_key_value("flush_volumes_matrix", new ConfigOptionFloats(std::move(fixed)));
-                LOGI("Normalized flush_volumes_matrix (%zu entries, %zu filaments x %zu nozzles, types=%s/%s)",
-                     need, n_active, heads, norm_type(0).c_str(),
-                     n_active > 1 ? norm_type(1).c_str() : "-");
-            }
+            config.set_key_value("flush_volumes_matrix", new ConfigOptionFloats(resolved));
+            LOGI("flush_volumes_matrix %s for %zu slots x %zu nozzles: %s",
+                 complete ? "computed" : "fallback", n_active, heads,
+                 ConfigOptionFloats(resolved).serialize().c_str());
         }
-        clamp_filament_selection(config);
+        clamp_filament_selection(config, static_cast<int>(n_active), multi_colour);
         Vec3d bedCenter = bed_center_from_config(config);
         LOGI("Bed center: x=%.3f y=%.3f", bedCenter.x(), bedCenter.y());
         apply_model_transform(model, bedCenter);
+        place_wipe_tower_on_bed(config, model);
 
         auto print = std::make_unique<Print>();
         print->set_status_callback([](const PrintBase::SlicingStatus &status) {
@@ -507,8 +1025,9 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
         }
 
         const auto t_apply0 = std::chrono::steady_clock::now();
-        g_state.print_raw->apply(model, std::move(config));
+        g_state.print_raw->apply(model, config);
         g_state.print_raw->process();
+        ensure_generated_wipe_tower_on_bed(g_state.print_raw, config, model);
         const auto t_process0 = std::chrono::steady_clock::now();
         g_state.print_raw->export_gcode(out_path, nullptr);
         const auto t_end = std::chrono::steady_clock::now();
@@ -554,7 +1073,8 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
 
 // Launch a slice job with a fully-built config. Returns false if a slice is already running.
 bool launch_slice(const std::string &model_path, DynamicPrintConfig config, const std::string &overrides_ini,
-                 const std::string &out_path, JNIEnv *env, jobject callback) {
+                 const std::string &out_path, size_t bundle_filaments, bool multi_colour,
+                 JNIEnv *env, jobject callback) {
     std::thread old;
     {
         std::lock_guard<std::mutex> lock(g_state.mutex);
@@ -579,7 +1099,8 @@ bool launch_slice(const std::string &model_path, DynamicPrintConfig config, cons
     if (old.joinable()) old.join();
     {
         std::lock_guard<std::mutex> lock(g_state.mutex);
-        g_state.worker = std::thread(run_slice, model_path, std::move(config), overrides_ini, out_path);
+        g_state.worker = std::thread(run_slice, model_path, std::move(config), overrides_ini,
+                                     out_path, bundle_filaments, multi_colour);
     }
     return true;
 }
@@ -645,8 +1166,13 @@ Java_world_yemyat_slicepilot_NativeLib_nativeInit(JNIEnv *env, jclass, jstring d
     boost::filesystem::create_directories(boost::filesystem::path(res));
     Slic3r::set_data_dir(data);
     Slic3r::set_resources_dir(res);
+    // Model::get_backup_path() roots at temporary_dir(); on Android it is unset,
+    // which makes 3mf project-config extraction write to "/elegooslicer_model/..." and fail.
+    Slic3r::set_temporary_dir(data + "/tmp");
+    boost::filesystem::create_directories(boost::filesystem::path(data + "/tmp"));
     LOGI("nativeInit data=%s res=%s", data.c_str(), res.c_str());
 
+    std::lock_guard<std::mutex> lock(g_preset_mutex);
     try {
         g_app_config = std::make_unique<AppConfig>();
         g_preset_bundle = std::make_unique<PresetBundle>();
@@ -676,29 +1202,33 @@ Java_world_yemyat_slicepilot_NativeLib_nativeSlice(JNIEnv *env, jclass, jstring 
     std::string out = jstring_to_string(env, outPath);
 
     DynamicPrintConfig config = DynamicPrintAndCLIConfig::full_print_config();
-    return launch_slice(model, std::move(config), ini, out, env, callback) ? JNI_TRUE : JNI_FALSE;
+    return launch_slice(model, std::move(config), ini, out, 1, false, env, callback) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jstring JNICALL
 Java_world_yemyat_slicepilot_NativeLib_nativeGetPrinters(JNIEnv *env, jclass) {
+    std::lock_guard<std::mutex> lock(g_preset_mutex);
     if (!g_preset_bundle) return env->NewStringUTF("[]");
     return env->NewStringUTF(presets_to_json(g_preset_bundle->printers).c_str());
 }
 
 JNIEXPORT jstring JNICALL
 Java_world_yemyat_slicepilot_NativeLib_nativeGetFilaments(JNIEnv *env, jclass) {
+    std::lock_guard<std::mutex> lock(g_preset_mutex);
     if (!g_preset_bundle) return env->NewStringUTF("[]");
     return env->NewStringUTF(presets_to_json(g_preset_bundle->filaments).c_str());
 }
 
 JNIEXPORT jstring JNICALL
 Java_world_yemyat_slicepilot_NativeLib_nativeGetProcesses(JNIEnv *env, jclass) {
+    std::lock_guard<std::mutex> lock(g_preset_mutex);
     if (!g_preset_bundle) return env->NewStringUTF("[]");
     return env->NewStringUTF(presets_to_json(g_preset_bundle->prints).c_str());
 }
 
 JNIEXPORT jboolean JNICALL
 Java_world_yemyat_slicepilot_NativeLib_nativeSelectPrinter(JNIEnv *env, jclass, jstring printerName) {
+    std::lock_guard<std::mutex> lock(g_preset_mutex);
     if (!g_preset_bundle) return JNI_FALSE;
     std::string name = jstring_to_string(env, printerName);
     try {
@@ -713,6 +1243,7 @@ Java_world_yemyat_slicepilot_NativeLib_nativeSelectPrinter(JNIEnv *env, jclass, 
 
 JNIEXPORT jboolean JNICALL
 Java_world_yemyat_slicepilot_NativeLib_nativeSelectProcess(JNIEnv *env, jclass, jstring processName) {
+    std::lock_guard<std::mutex> lock(g_preset_mutex);
     if (!g_preset_bundle) return JNI_FALSE;
     std::string name = jstring_to_string(env, processName);
     try {
@@ -727,14 +1258,57 @@ Java_world_yemyat_slicepilot_NativeLib_nativeSelectProcess(JNIEnv *env, jclass, 
 
 JNIEXPORT jstring JNICALL
 Java_world_yemyat_slicepilot_NativeLib_nativeGetCompatibleProcesses(JNIEnv *env, jclass) {
+    std::lock_guard<std::mutex> lock(g_preset_mutex);
     if (!g_preset_bundle) return env->NewStringUTF("[]");
     return env->NewStringUTF(presets_to_json(g_preset_bundle->prints, true).c_str());
 }
 
 JNIEXPORT jstring JNICALL
 Java_world_yemyat_slicepilot_NativeLib_nativeGetCompatibleFilaments(JNIEnv *env, jclass) {
+    std::lock_guard<std::mutex> lock(g_preset_mutex);
     if (!g_preset_bundle) return env->NewStringUTF("[]");
     return env->NewStringUTF(presets_to_json(g_preset_bundle->filaments, true).c_str());
+}
+
+// Report the filament list baked into a 3MF plate config (Bambu Studio / OrcaSlicer / PrusaSlicer):
+// {"multi":bool,"filaments":[{"type":..,"color":"#RRGGBB","preset":..},..]}.
+// STL / plain 3MF report a single filament.
+JNIEXPORT jstring JNICALL
+Java_world_yemyat_slicepilot_NativeLib_nativeInspectModel(JNIEnv *env, jclass, jstring modelPath) {
+    std::string model = jstring_to_string(env, modelPath);
+    std::string out = "{\"multi\":false,\"filaments\":[]}";
+    try {
+        DynamicPrintConfig cfg;
+        ConfigSubstitutionContext subs(ForwardCompatibilitySubstitutionRule::EnableSilent);
+        try {
+            Model::read_from_file(model, &cfg, &subs, LoadStrategy::LoadConfig | LoadStrategy::Silence);
+        } catch (const std::exception &e) {
+            // A config-only read of a 2023 Bambu 3MF v1 (external meshes) fills cfg
+            // and then throws "file is empty" because no geometry was loaded; keep cfg.
+            if (cfg.empty()) throw;
+            LOGI("inspect %s: config-only read ended with '%s' (config kept)", model.c_str(), e.what());
+        }
+        const size_t n = embedded_filament_count(cfg);
+        const auto *colors = cfg.option<ConfigOptionStrings>("filament_colour");
+        const auto *types = cfg.option<ConfigOptionStrings>("filament_type");
+        const auto *presets = cfg.option<ConfigOptionStrings>("filament_settings_id");
+        std::string arr;
+        for (size_t i = 0; i < n; ++i) {
+            std::string color = (colors && i < colors->values.size()) ? colors->values[i] : "";
+            std::string type = (types && i < types->values.size()) ? types->values[i] : "";
+            std::string preset = (presets && i < presets->values.size()) ? presets->values[i] : "";
+            if (!color.empty() && color[0] != '#') color = "#" + color;
+            if (!arr.empty()) arr += ",";
+            arr += "{\"type\":\"" + json_escape(type) + "\",\"color\":\"" + json_escape(color) +
+                   "\",\"preset\":\"" + json_escape(preset) + "\"}";
+        }
+        out = "{\"multi\":" + std::string(n > 1 ? "true" : "false") + ",\"filaments\":[" + arr + "]}";
+        LOGI("inspect %s: config keys=%zu filaments=%zu", model.c_str(), cfg.keys().size(), n);
+    } catch (const std::exception &e) {
+        LOGE("inspect model failed: %s", e.what());
+        out = "{\"error\":\"" + json_escape(e.what()) + "\"}";
+    }
+    return env->NewStringUTF(out.c_str());
 }
 
 JNIEXPORT jboolean JNICALL
@@ -747,100 +1321,119 @@ Java_world_yemyat_slicepilot_NativeLib_nativeSliceWithPreset(JNIEnv *env, jclass
     std::string process = jstring_to_string(env, processName);
     std::string out = jstring_to_string(env, outPath);
 
-    if (!g_preset_bundle) {
-        set_error("PresetBundle not loaded");
-        return JNI_FALSE;
-    }
-
     DynamicPrintConfig config;
-    try {
-        bool ok_p = g_preset_bundle->printers.select_preset_by_name(printer, true);
-        bool ok_f = g_preset_bundle->filaments.select_preset_by_name(filament, true);
-        bool ok_r = g_preset_bundle->prints.select_preset_by_name(process, true);
-        if (!ok_p || !ok_f || !ok_r) {
-            set_error("Preset not found (printer=" + std::to_string(ok_p) +
-                      " filament=" + std::to_string(ok_f) +
-                      " process=" + std::to_string(ok_r) + ")");
+    {
+        std::lock_guard<std::mutex> lock(g_preset_mutex);
+        if (!g_preset_bundle) {
+            set_error("PresetBundle not loaded");
             return JNI_FALSE;
         }
-        g_preset_bundle->filament_presets = { g_preset_bundle->filaments.get_selected_preset_name() };
-        config = g_preset_bundle->full_config();
-    } catch (const std::exception &e) {
-        set_error(std::string("Preset selection failed: ") + e.what());
-        return JNI_FALSE;
+        try {
+            bool ok_p = g_preset_bundle->printers.select_preset_by_name(printer, true);
+            bool ok_f = g_preset_bundle->filaments.select_preset_by_name(filament, true);
+            bool ok_r = g_preset_bundle->prints.select_preset_by_name(process, true);
+            if (!ok_p || !ok_f || !ok_r) {
+                set_error("Preset not found (printer=" + std::to_string(ok_p) +
+                          " filament=" + std::to_string(ok_f) +
+                          " process=" + std::to_string(ok_r) + ")");
+                return JNI_FALSE;
+            }
+            g_preset_bundle->filament_presets = { g_preset_bundle->filaments.get_selected_preset_name() };
+            config = g_preset_bundle->full_config();
+        } catch (const std::exception &e) {
+            set_error(std::string("Preset selection failed: ") + e.what());
+            return JNI_FALSE;
+        }
     }
 
-    return launch_slice(model, std::move(config), "", out, env, callback) ? JNI_TRUE : JNI_FALSE;
+    return launch_slice(model, std::move(config), "", out, 1, false, env, callback) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
 Java_world_yemyat_slicepilot_NativeLib_nativeSliceWithOverrides(JNIEnv *env, jclass, jstring modelPath,
-                                                        jstring printerName, jstring filamentName,
+                                                        jstring printerName, jobjectArray filamentNames,
                                                         jstring processName, jstring overridesIni,
-                                                        jstring supportFilamentName,
+                                                        jboolean multiColour,
                                                         jstring outPath, jobject callback) {
     std::string model = jstring_to_string(env, modelPath);
     std::string printer = jstring_to_string(env, printerName);
-    std::string filament = jstring_to_string(env, filamentName);
     std::string process = jstring_to_string(env, processName);
     std::string overrides = jstring_to_string(env, overridesIni);
-    std::string support_filament = supportFilamentName ? jstring_to_string(env, supportFilamentName) : "";
     std::string out = jstring_to_string(env, outPath);
 
-    if (!g_preset_bundle) {
-        set_error("PresetBundle not loaded");
+    std::vector<std::string> requested_filaments;
+    if (filamentNames) {
+        const jsize len = env->GetArrayLength(filamentNames);
+        requested_filaments.reserve(static_cast<size_t>(std::max<jsize>(0, len)));
+        for (jsize i = 0; i < len; ++i) {
+            jstring js = static_cast<jstring>(env->GetObjectArrayElement(filamentNames, i));
+            std::string s = jstring_to_string(env, js);
+            if (js) env->DeleteLocalRef(js);
+            if (!s.empty()) requested_filaments.push_back(std::move(s));
+        }
+    }
+    if (requested_filaments.empty()) {
+        set_error("No filament preset provided");
         return JNI_FALSE;
     }
 
     DynamicPrintConfig config;
-    try {
-        bool ok_p = g_preset_bundle->printers.select_preset_by_name(printer, true);
-        bool ok_f = g_preset_bundle->filaments.select_preset_by_name(filament, true);
-        bool ok_r = g_preset_bundle->prints.select_preset_by_name(process, true);
-        if (!ok_p || !ok_f || !ok_r) {
-            set_error("Preset not found (printer=" + std::to_string(ok_p) +
-                      " filament=" + std::to_string(ok_f) +
-                      " process=" + std::to_string(ok_r) + ")");
+    size_t active_presets = 1;
+    {
+        std::lock_guard<std::mutex> lock(g_preset_mutex);
+        if (!g_preset_bundle) {
+            set_error("PresetBundle not loaded");
             return JNI_FALSE;
         }
-        const std::string primary_filament = g_preset_bundle->filaments.get_selected_preset_name();
-        g_preset_bundle->filament_presets = { primary_filament };
-        // Dual-extruder / multi-spool support material (CC2 / CC1 Canvas): the support spool
-        // becomes filament #2 (even when it shares the same preset name as spool #1, e.g. two
-        // PLA spools in different colours); the machine profile's change_filament_gcode performs
-        // the swap.
-        if (!support_filament.empty()) {
-            if (support_filament == primary_filament) {
-                g_preset_bundle->filament_presets.push_back(primary_filament);
-                LOGI("Dual-material slice: support filament #2 = %s (second spool, same preset)", primary_filament.c_str());
-            } else if (g_preset_bundle->filaments.select_preset_by_name(support_filament, true)) {
-                const std::string resolved_support = g_preset_bundle->filaments.get_selected_preset_name();
-                g_preset_bundle->filament_presets.push_back(resolved_support);
-                // Keep filament #1 as the active selection for any single-filament lookups.
-                g_preset_bundle->filaments.select_preset_by_name(primary_filament, true);
-                LOGI("Dual-material slice: support filament #2 = %s", resolved_support.c_str());
-            } else {
-                LOGE("Support filament preset not found: %s (falling back to %s)",
-                     support_filament.c_str(), primary_filament.c_str());
-                g_preset_bundle->filament_presets.push_back(primary_filament);
+        try {
+            bool ok_p = g_preset_bundle->printers.select_preset_by_name(printer, true);
+            bool ok_f = g_preset_bundle->filaments.select_preset_by_name(requested_filaments[0], true);
+            bool ok_r = g_preset_bundle->prints.select_preset_by_name(process, true);
+            if (!ok_p || !ok_f || !ok_r) {
+                set_error("Preset not found (printer=" + std::to_string(ok_p) +
+                          " filament=" + std::to_string(ok_f) +
+                          " process=" + std::to_string(ok_r) + ")");
+                return JNI_FALSE;
             }
+            const std::string primary_filament = g_preset_bundle->filaments.get_selected_preset_name();
+            std::vector<std::string> resolved_filaments;
+            resolved_filaments.reserve(requested_filaments.size());
+            resolved_filaments.push_back(primary_filament);
+            for (size_t i = 1; i < requested_filaments.size(); ++i) {
+                const std::string &req = requested_filaments[i];
+                if (req == primary_filament) {
+                    resolved_filaments.push_back(primary_filament);
+                } else if (g_preset_bundle->filaments.select_preset_by_name(req, true)) {
+                    resolved_filaments.push_back(g_preset_bundle->filaments.get_selected_preset_name());
+                } else {
+                    LOGE("Filament preset #%zu not found: %s (falling back to %s)",
+                         i + 1, req.c_str(), primary_filament.c_str());
+                    resolved_filaments.push_back(primary_filament);
+                }
+            }
+            // Restore filament #1 as the active selection for any single-filament lookups.
+            g_preset_bundle->filaments.select_preset_by_name(primary_filament, true);
+
+            // Multi-extruder machine profiles require at least one filament entry per nozzle.
+            const auto *nozzles = g_preset_bundle->printers.get_edited_preset().config
+                .option<ConfigOptionFloats>("nozzle_diameter", false);
+            const size_t heads = nozzles ? std::max<size_t>(1, nozzles->values.size()) : 1;
+            while (resolved_filaments.size() < heads) {
+                resolved_filaments.push_back(primary_filament);
+            }
+            active_presets = resolved_filaments.size();
+            g_preset_bundle->filament_presets = std::move(resolved_filaments);
+            LOGI("Slice presets: printer=%s process=%s filaments=%zu multi=%d",
+                 printer.c_str(), process.c_str(), active_presets, multiColour == JNI_TRUE ? 1 : 0);
+            config = g_preset_bundle->full_config();
+        } catch (const std::exception &e) {
+            set_error(std::string("Slice config failed: ") + e.what());
+            return JNI_FALSE;
         }
-        // Multi-extruder machine profiles (e.g. CC2 0.4+0.4) require at least one filament
-        // entry per nozzle in full_config() so ToolOrdering's extruder_nums == filament_nums
-        // invariant always holds.
-        const auto *nozzles = g_preset_bundle->printers.get_edited_preset().config
-            .option<ConfigOptionFloats>("nozzle_diameter", false);
-        const size_t heads = nozzles ? std::max<size_t>(1, nozzles->values.size()) : 1;
-        while (g_preset_bundle->filament_presets.size() < heads) {
-            g_preset_bundle->filament_presets.push_back(primary_filament);
-        }
-        config = g_preset_bundle->full_config();
-    } catch (const std::exception &e) {
-        set_error(std::string("Slice config failed: ") + e.what());
-        return JNI_FALSE;
     }
 
-    return launch_slice(model, std::move(config), overrides, out, env, callback) ? JNI_TRUE : JNI_FALSE;
+    return launch_slice(model, std::move(config), overrides, out, active_presets,
+                        multiColour == JNI_TRUE, env, callback) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
@@ -980,7 +1573,7 @@ Java_world_yemyat_slicepilot_NativeLib_nativeParsePreview(
         const float bb[6] = {mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]};
         env->SetFloatArrayRegion(bbox, 0, 6, bb);
 
-        jobjectArray out = env->NewObjectArray(6, env->FindClass("java/lang/Object"), nullptr);
+        jobjectArray out = env->NewObjectArray(7, env->FindClass("java/lang/Object"), nullptr);
         env->SetObjectArrayElement(out, 0, pos);
         env->SetObjectArrayElement(out, 1, nrm);
         env->SetObjectArrayElement(out, 2, idx);
@@ -1021,6 +1614,14 @@ Java_world_yemyat_slicepilot_NativeLib_nativeParsePreview(
         env->SetObjectArrayElement(out, 5, part_names);
         env->DeleteLocalRef(part_rows);
         env->DeleteLocalRef(part_names);
+
+        // Per-triangle 1-based extruder ids for multi-colour 3MF preview colouring.
+        if (pv.tri_ext.size() == tc) {
+            jintArray ext = env->NewIntArray((jsize) pv.tri_ext.size());
+            env->SetIntArrayRegion(ext, 0, (jsize) pv.tri_ext.size(), pv.tri_ext.data());
+            env->SetObjectArrayElement(out, 6, ext);
+            env->DeleteLocalRef(ext);
+        }
 
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t0).count();

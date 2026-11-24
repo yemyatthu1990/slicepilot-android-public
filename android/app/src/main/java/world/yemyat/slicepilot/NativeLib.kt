@@ -141,13 +141,15 @@ object NativeLib {
 
     external fun nativeGetCompatibleFilaments(): String
 
+    external fun nativeInspectModel(modelPath: String): String
+
     external fun nativeSliceWithOverrides(
         modelPath: String,
         printerName: String,
-        filamentName: String,
+        filamentNames: Array<String>,
         processName: String,
         overridesIni: String,
-        supportFilamentName: String,
+        multiColour: Boolean,
         outPath: String,
         callback: SliceCallback,
     ): Boolean
@@ -234,6 +236,7 @@ object NativeLib {
             // the bbox, which leaves the mesh as one anonymous piece).
             val rows = parts.getOrNull(4) as? FloatArray ?: FloatArray(0)
             val names = (parts.getOrNull(5) as? Array<*>)?.mapNotNull { it as? String } ?: emptyList()
+            val triExtruders = parts.getOrNull(6) as? IntArray
             val pieces: List<world.yemyat.slicepilot.model.MeshPart> =
                 world.yemyat.slicepilot.model.MeshPart
                     .fromRows(rows, names)
@@ -248,6 +251,7 @@ object NativeLib {
                 bb[4],
                 bb[5],
                 pieces,
+                triExtruders,
             )
         } catch (t: Throwable) {
             android.util.Log.e("NativeLib", "nativeParsePreview result decode failed", t)

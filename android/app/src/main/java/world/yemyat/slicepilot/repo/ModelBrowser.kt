@@ -27,6 +27,8 @@ data class ModelListing(
     val author: String?,
     val thumbnailUrl: String?,
     val downloads: Int?,
+    /** True when the listing advertises parametric customization (MakerWorld MakerLab). */
+    val customizable: Boolean = false,
 )
 
 /** A downloadable file (STL / 3MF / ZIP) belonging to a listing. */
@@ -34,6 +36,63 @@ data class ModelFile(
     val name: String,
     val url: String,
     val sizeBytes: Long?,
+)
+
+/**
+ * A MakerWorld parametric (MakerLab) model: the downloadable 3MF is only the
+ * default variant; customizations (engraved text, dimensions, fonts) are
+ * rendered server-side by MakerWorld from the model's OpenSCAD or Fusion source.
+ */
+data class ParametricInfo(
+    val designId: String,
+    val unikey: String,
+    val modelType: String, // "scad" | "f3d"
+    val modelName: String,
+    val modelUrl: String,
+    val customizerUrl: String,
+    val mobileUrl: String = "",
+    /** Designer opted into MakerWorld's protected source (not publicly downloadable). */
+    val isProtected: Boolean = false,
+    val dirName: String = "",
+    val modelFileName: String = "",
+    /** Every customizable source file the design ships; the first entry matches the fields above. */
+    val sourceFiles: List<SourceFile> = emptyList(),
+) {
+    /** Points this info at one specific [SourceFile] (used for multi-file parametric designs). */
+    fun forFile(file: SourceFile): ParametricInfo {
+        val protectedSuffix = if (file.isProtected) "&protected=true" else ""
+        return copy(
+            unikey = file.unikey,
+            modelType = file.modelType,
+            modelName = file.modelName,
+            modelUrl = file.modelUrl,
+            isProtected = file.isProtected,
+            dirName = file.dirName,
+            modelFileName = file.modelFileName,
+            customizerUrl =
+                "https://makerworld.com/en/makerlab/parametricModelMaker?designId=$designId" +
+                    "&modelName=" + URLEncoder.encode(file.modelName, "UTF-8") +
+                    if (file.isProtected) {
+                        "&protected=true"
+                    } else {
+                        "&unikey=${file.unikey}"
+                    },
+            mobileUrl =
+                "https://makerworld.com/en/makerlab-app/parametricModelMaker/edit?designId=$designId" +
+                    "&unikey=${file.unikey}&local=en&source=model_page$protectedSuffix",
+        )
+    }
+}
+
+/** One customizable source file (`.scad` or `.f3d`) inside a MakerWorld parametric design. */
+data class SourceFile(
+    val modelName: String,
+    val modelFileName: String,
+    val unikey: String,
+    val modelType: String,
+    val modelUrl: String = "",
+    val isProtected: Boolean = false,
+    val dirName: String = "",
 )
 
 /** One community comment on a model, as reported by the source site. */
@@ -86,6 +145,8 @@ data class ModelDetail(
     val comments: List<ModelComment> = emptyList(),
     /** Total on the site, which can be far larger than [comments]. */
     val commentsTotal: Int? = null,
+    /** Present on MakerWorld parametric (MakerLab) models that can be customized before slicing. */
+    val parametric: ParametricInfo? = null,
 )
 
 /** Per-source search results shown as one section in the combined results list. */
@@ -161,6 +222,9 @@ class ModelBrowser(
     private val _state = MutableStateFlow(BrowseState())
     val state: StateFlow<BrowseState> = _state.asStateFlow()
 
+    /** MakerWorld parametric-model customization (see [MakerworldCustomizer]). */
+    val customizer = MakerworldCustomizer(prefs, cacheDir)
+
     // Results cache keyed by "source|query", so re-visiting a tab is instant.
     private val resultsCache = HashMap<String, List<ModelListing>>()
 
@@ -197,6 +261,33 @@ class ModelBrowser(
     val bambuToken: String
         get() = prefs.getString("bambu_token", "").orEmpty()
 
+    /**
+     * Adopts a sign-in completed inside the in-app MakerWorld WebView so one
+     * sign-in covers API downloads, native customization, and protected pages.
+     */
+    fun bambuAdoptSession(
+        access: String,
+        refresh: String,
+        uid: String,
+    ) {
+        if (access.isBlank()) return
+        prefs
+            .edit()
+            .putString("bambu_token", access)
+            .apply {
+                if (refresh.isNotBlank()) putString("bambu_refresh_token", refresh)
+                if (uid.isNotBlank()) putString("bambu_uid", uid)
+            }.apply()
+        _state.value =
+            _state.value.copy(
+                bambuSignedIn = true,
+                bambuSigningIn = false,
+                bambuNeedsCode = false,
+                bambuPendingEmail = "",
+                error = null,
+            )
+    }
+
     init {
         if (bambuToken.isNotBlank()) {
             _state.value = _state.value.copy(bambuSignedIn = true)
@@ -214,9 +305,8 @@ class ModelBrowser(
         _state.value = _state.value.copy(bambuSigningIn = true, error = null)
         scope.launch {
             try {
-                val token = withContext(Dispatchers.IO) { MakerworldApi.bambuLogin(email.trim(), password) }
-                prefs.edit().putString("bambu_token", token).apply()
-                _state.value = _state.value.copy(bambuSigningIn = false, bambuSignedIn = true)
+                val session = withContext(Dispatchers.IO) { MakerworldApi.bambuLogin(email.trim(), password) }
+                bambuAdoptSession(session.accessToken, session.refreshToken, session.uid)
                 onDone()
             } catch (e: MakerworldApi.BambuVerificationRequired) {
                 // Not a failure, so `error` stays empty. This message used to travel through the
@@ -260,15 +350,8 @@ class ModelBrowser(
         _state.value = _state.value.copy(bambuSigningIn = true, error = null)
         scope.launch {
             try {
-                val token = withContext(Dispatchers.IO) { MakerworldApi.bambuLoginWithCode(email, code.trim()) }
-                prefs.edit().putString("bambu_token", token).apply()
-                _state.value =
-                    _state.value.copy(
-                        bambuSigningIn = false,
-                        bambuSignedIn = true,
-                        bambuNeedsCode = false,
-                        bambuPendingEmail = "",
-                    )
+                val session = withContext(Dispatchers.IO) { MakerworldApi.bambuLoginWithCode(email, code.trim()) }
+                bambuAdoptSession(session.accessToken, session.refreshToken, session.uid)
                 onDone()
             } catch (e: Exception) {
                 _state.value = _state.value.copy(bambuSigningIn = false, error = readable(e))
@@ -521,7 +604,7 @@ class ModelBrowser(
                         when (listing.source) {
                             ModelSource.PRINTABLES.id -> PrintablesApi.detail(listing)
                             ModelSource.NEXPRINT.id -> NexprintApi.detail(listing, cloudTokenProvider())
-                            ModelSource.MAKERWORLD.id -> MakerworldApi.detail(listing)
+                            ModelSource.MAKERWORLD.id -> MakerworldApi.detail(listing, bambuToken)
                             else -> ThingiverseApi.detail(listing, thingiverseToken)
                         }
                     }
@@ -747,6 +830,7 @@ class ModelBrowser(
     ) {
         android.util.Log.i("ModelBrowser", "download tapped: ${file.name} busy=${_state.value.downloadingFile}")
         if (_state.value.downloadingFile != null) return
+        val provider = modelProviderIdFor(file.url, _state.value.detail?.listing?.source)
         _state.update { it.copy(downloadingFile = file.name, downloadProgress = 0, error = null) }
         scope.launch {
             try {
@@ -756,13 +840,21 @@ class ModelBrowser(
                     }
                 EventNotifier.trackEvent(
                     "model_downloaded",
-                    mapOf("source" to file.url, "file" to file.name),
+                    mapOf("source" to provider, "file" to file.name),
                 )
                 _state.update { it.copy(downloadingFile = null, downloadProgress = 100) }
                 onDone(path)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                _state.update { it.copy(downloadingFile = null, downloadProgress = 0) }
+                throw e
             } catch (e: Exception) {
                 val msg = readable(e)
                 android.util.Log.w("ModelBrowser", "download failed: $msg", e)
+                EventNotifier.trackError(
+                    "model_download_failed",
+                    null,
+                    mapOf("source" to provider, "file" to file.name, "message" to msg),
+                )
                 _state.update {
                     it.copy(
                         downloadingFile = null,
@@ -1961,6 +2053,9 @@ private object MakerworldApi {
                     author = o.optJSONObject("designCreator")?.optString("name", "")?.takeIf { it.isNotBlank() },
                     thumbnailUrl = o.optString("cover", "").takeIf { it.startsWith("http") },
                     downloads = o.optInt("downloadCount").takeIf { it > 0 },
+                    customizable =
+                        o.optBoolean("customizedByMakerLab", false) ||
+                            o.optString("categoryByMakerLab", "").contains("Parametric", ignoreCase = true),
                 ),
             )
         }
@@ -2042,13 +2137,17 @@ private object MakerworldApi {
     }
 
     /** Model detail from the public Bambu cloud design-service API. */
-    fun detail(listing: ModelListing): ModelDetail {
+    fun detail(
+        listing: ModelListing,
+        token: String = "",
+    ): ModelDetail {
         val conn = URL("$GATEWAY/design/${listing.id}").openConnection() as HttpURLConnection
         conn.requestMethod = "GET"
         conn.connectTimeout = 15_000
         conn.readTimeout = 20_000
         conn.setRequestProperty("User-Agent", USER_AGENT)
         conn.setRequestProperty("Accept", "application/json")
+        if (token.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $token")
         val d =
             try {
                 val code = conn.responseCode
@@ -2093,6 +2192,7 @@ private object MakerworldApi {
             }
         }
         if (images.isEmpty()) d.optString("coverUrl", "").takeIf { it.startsWith("http") }?.let { images.add(it) }
+        val parametric = parseMakerworldParametric(listing.id, d)
         return ModelDetail(
             listing =
                 listing.copy(
@@ -2100,6 +2200,7 @@ private object MakerworldApi {
                         d.optJSONObject("designCreator")?.optString("name", "")?.takeIf { it.isNotBlank() }
                             ?: listing.author,
                     downloads = d.optInt("downloadCount", listing.downloads ?: 0),
+                    customizable = listing.customizable || parametric != null,
                 ),
             description = stripHtml(d.optString("summary", "")),
             images = images,
@@ -2107,6 +2208,7 @@ private object MakerworldApi {
             published = d.optString("createTime", "").take(10).takeIf { it.isNotBlank() },
             files = files,
             commentsTotal = d.optInt("commentCount", -1).takeIf { it >= 0 },
+            parametric = parametric,
         )
     }
 
@@ -2185,6 +2287,12 @@ private object MakerworldApi {
      * Signs in to the Bambu cloud gateway (AES-encrypted password, like Bambu Studio).
      * Returns the access token (valid ~90 days).
      */
+    data class BambuSession(
+        val accessToken: String,
+        val refreshToken: String = "",
+        val uid: String = "",
+    )
+
     class BambuVerificationRequired(
         message: String,
     ) : IOException(message)
@@ -2192,7 +2300,7 @@ private object MakerworldApi {
     fun bambuLogin(
         email: String,
         password: String,
-    ): String {
+    ): BambuSession {
         // The gateway accepts several password encodings depending on region/version;
         // try the documented ones in order and report the last error if all fail.
         var lastError = IOException("Bambu sign-in failed.")
@@ -2220,9 +2328,9 @@ private object MakerworldApi {
     fun bambuLoginWithCode(
         email: String,
         code: String,
-    ): String = bambuLoginOnce(JSONObject().put("account", email).put("code", code))
+    ): BambuSession = bambuLoginOnce(JSONObject().put("account", email).put("code", code))
 
-    private fun bambuLoginOnce(body: JSONObject): String {
+    private fun bambuLoginOnce(body: JSONObject): BambuSession {
         val conn = URL("https://api.bambulab.com/v1/user-service/user/login").openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.connectTimeout = 15_000
@@ -2250,7 +2358,13 @@ private object MakerworldApi {
             } catch (e: org.json.JSONException) {
                 throw IOException("Bambu sign-in returned an unexpected response.")
             }
-        json.optString("accessToken", "").takeIf { it.isNotBlank() }?.let { return it }
+        json.optString("accessToken", "").takeIf { it.isNotBlank() }?.let { access ->
+            return BambuSession(
+                accessToken = access,
+                refreshToken = json.optString("refreshToken", ""),
+                uid = json.optString("uidStr", "").ifBlank { json.optString("uid", "") },
+            )
+        }
         val loginType = json.optString("loginType", "")
         if (loginType == "verifyCode") {
             throw BambuVerificationRequired("A sign-in code was emailed to your address.")
@@ -2341,4 +2455,81 @@ private object MakerworldApi {
         } catch (e: Exception) {
             s
         }
+}
+
+internal fun parseMakerworldParametric(
+    designId: String,
+    d: JSONObject,
+): ParametricInfo? {
+    val isParametric =
+        d.optBoolean("customizedByMakerLab", false) ||
+            d.optString("categoryByMakerLab", "").contains("Parametric", ignoreCase = true)
+    if (!isParametric) return null
+
+    val sourceFiles = mutableListOf<SourceFile>()
+    d.optJSONObject("designExtension")?.optJSONArray("model_files")?.let { arr ->
+        for (i in 0 until arr.length()) {
+            val f = arr.getJSONObject(i)
+            val type = f.optString("modelType", "")
+            val unikey = f.optString("unikey", "")
+            if ((type == "scad" || type == "f3d") && unikey.isNotBlank()) {
+                sourceFiles.add(
+                    SourceFile(
+                        modelName = f.optString("modelName", ""),
+                        modelFileName = f.optString("modelFileName", ""),
+                        unikey = unikey,
+                        modelType = type,
+                        modelUrl = f.optString("modelUrl", ""),
+                        isProtected = f.optBoolean("protected", false),
+                        dirName = f.optString("dirName", ""),
+                    ),
+                )
+            }
+        }
+    }
+    if (sourceFiles.isEmpty()) return null
+
+    // Prefer OpenSCAD files first when a design ships mixed types.
+    val ordered = sourceFiles.sortedBy { if (it.modelType == "scad") 0 else 1 }
+    val first = ordered.first()
+    val site = "https://makerworld.com"
+    val protectedParam = if (first.isProtected) "&protected=true" else ""
+    return ParametricInfo(
+        designId = designId,
+        unikey = first.unikey,
+        modelType = first.modelType,
+        modelName = first.modelName,
+        modelUrl = first.modelUrl,
+        customizerUrl =
+            "$site/en/makerlab/parametricModelMaker?designId=$designId" +
+                "&modelName=" + URLEncoder.encode(first.modelName, "UTF-8") +
+                if (first.isProtected) "&protected=true" else "&unikey=${first.unikey}",
+        mobileUrl =
+            "$site/en/makerlab-app/parametricModelMaker/edit?designId=$designId" +
+                "&unikey=${first.unikey}&local=en&source=model_page$protectedParam",
+        isProtected = first.isProtected,
+        dirName = first.dirName,
+        modelFileName = first.modelFileName,
+        sourceFiles = ordered,
+    )
+}
+
+internal fun modelProviderIdFor(
+    url: String,
+    fallbackSource: String? = null,
+): String {
+    val lower = url.lowercase()
+    return when {
+        lower.startsWith("makerworld://") || lower.contains("makerworld.com") || lower.contains("bambulab") || lower.contains("bblmw.com") ->
+            ModelSource.MAKERWORLD.id
+        lower.startsWith("printables://") || lower.contains("printables.com") ->
+            ModelSource.PRINTABLES.id
+        lower.startsWith("nexprint://") || lower.contains("nexprint") ->
+            ModelSource.NEXPRINT.id
+        lower.contains("thingiverse") ->
+            ModelSource.THINGIVERSE.id
+        !fallbackSource.isNullOrBlank() ->
+            fallbackSource.lowercase()
+        else -> "unknown"
+    }
 }

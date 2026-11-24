@@ -169,7 +169,10 @@ class ElegooCloudClient(
                     )
                 if (!isSuccess(json)) {
                     return@withContext CloudResult.Err(
-                        json.optString("msg", "The cloud does not know this PIN code (code ${json.optInt("code")})"),
+                        friendlyPairingError(
+                            json.optString("msg", ""),
+                            "The cloud does not know this PIN code (code ${json.optInt("code")})",
+                        ),
                     )
                 }
                 val detail = PairingCode.fromApi(json, PairingValues(pincode = pincode))
@@ -177,6 +180,8 @@ class ElegooCloudClient(
                     return@withContext CloudResult.Err("The cloud knows this PIN but not its printer")
                 }
                 CloudResult.Ok(detail)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 CloudResult.Err(e.message ?: "PIN code lookup failed")
             }
@@ -200,10 +205,15 @@ class ElegooCloudClient(
                     )
                 if (!isSuccess(json)) {
                     return@withContext CloudResult.Err(
-                        json.optString("msg", "Pairing failed (code ${json.optInt("code")})"),
+                        friendlyPairingError(
+                            json.optString("msg", ""),
+                            "Pairing failed (code ${json.optInt("code")})",
+                        ),
                     )
                 }
                 CloudResult.Ok(PairingCode.fromApi(json, values))
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 CloudResult.Err(e.message ?: "PIN code check failed")
             }
@@ -235,14 +245,35 @@ class ElegooCloudClient(
                     )
                 if (!isSuccess(json)) {
                     return@withContext CloudResult.Err(
-                        json.optString("msg", "pairing failed (code ${json.optInt("code")})"),
+                        friendlyPairingError(
+                            json.optString("msg", ""),
+                            "Pairing failed (code ${json.optInt("code")})",
+                        ),
                     )
                 }
                 CloudResult.Ok(printerFrom(json, values))
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 CloudResult.Err(e.message ?: "pairing failed")
             }
         }
+
+    internal fun friendlyPairingError(
+        rawMsg: String,
+        fallback: String,
+    ): String {
+        val trimmed = rawMsg.trim()
+        if (trimmed.isEmpty()) return fallback
+        val lower = trimmed.lowercase()
+        return when {
+            trimmed.contains("pincode长度必须为6") || (lower.contains("pincode") && trimmed.contains("6")) ->
+                "Enter the 6-character PIN shown on your printer"
+            lower.contains("pincode invalid") ->
+                "Invalid or expired PIN code. Check the code on your printer's screen."
+            else -> trimmed
+        }
+    }
 
     data class MqttConfig(
         val host: String,
@@ -645,9 +676,16 @@ class ElegooCloudClient(
         withContext(Dispatchers.IO) {
             if (!auth.tokenUsable()) auth.refreshTokens()
             try {
-                val json = getRaw(gateway + deviceApi + "/device/list/agora-token?source=slicer", authed = true)
+                var json = getRaw(gateway + deviceApi + "/device/list/agora-token?source=slicer", authed = true)
+                if (!isSuccess(json) && auth.refreshTokens()) {
+                    json = getRaw(gateway + deviceApi + "/device/list/agora-token?source=slicer", authed = true)
+                }
                 if (!isSuccess(json)) {
-                    return@withContext CloudResult.Err(json.optString("message", "agora token failed"))
+                    val msg =
+                        json.optString("msg", "").ifBlank {
+                            json.optString("message", "").ifBlank { "agora token failed" }
+                        }
+                    return@withContext CloudResult.Err(msg)
                 }
                 val data =
                     json.optJSONObject("data")
@@ -666,6 +704,8 @@ class ElegooCloudClient(
                 val rtcToken = token.optString("rtcToken", "").takeIf { it.isNotBlank() }
                 val rtcUserId = token.optInt("rtcUserId", 0).takeIf { it != 0 }
                 CloudResult.Ok(AgoraCredential(userId, rtmUserId, rtmToken, rtcToken, rtcUserId))
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 CloudResult.Err(e.message ?: "agora token failed")
             }

@@ -123,7 +123,8 @@ object ThreeMFParser {
      * `<component>`, with the matrices multiplied along the way — into [positions]/[indices].
      */
     private fun instantiate(
-        cache: Map<String, ModelFile>,
+        zip: ZipFile,
+        cache: MutableMap<String, ModelFile>,
         modelPath: String,
         objectId: Int,
         transform: FloatArray?,
@@ -132,7 +133,7 @@ object ThreeMFParser {
         indices: IntList,
     ) {
         if (depth > 32) return
-        val obj = cache[modelPath]?.objects?.get(objectId) ?: return
+        val obj = modelAt(zip, cache, modelPath)?.objects?.get(objectId) ?: return
 
         val base = positions.size / 3
         val verts = obj.verts
@@ -168,7 +169,7 @@ object ThreeMFParser {
         }
         for (comp in obj.comps) {
             val nextPath = if (!comp.path.isNullOrBlank()) resolvePath(modelPath, comp.path) else modelPath
-            instantiate(cache, nextPath, comp.objectId, combine(transform, comp.transform), depth + 1, positions, indices)
+            instantiate(zip, cache, nextPath, comp.objectId, combine(transform, comp.transform), depth + 1, positions, indices)
         }
     }
 
@@ -178,16 +179,20 @@ object ThreeMFParser {
      * (Bambu Studio keeps the mesh in `3D/Objects/object_N.model`), otherwise "Part N".
      */
     private fun partName(
-        cache: Map<String, ModelFile>,
+        zip: ZipFile,
+        cache: MutableMap<String, ModelFile>,
         spec: PartSpec,
         index: Int,
     ): String {
         val fallback = "Part ${index + 1}"
         val stack = ArrayDeque<Pair<String, Int>>()
+        val visited = HashSet<Pair<String, Int>>()
         stack.addLast(spec.modelPath to spec.objectId)
         while (stack.isNotEmpty()) {
-            val (path, oid) = stack.removeFirst()
-            val obj = cache[path]?.objects?.get(oid) ?: continue
+            val key = stack.removeFirst()
+            if (!visited.add(key)) continue
+            val (path, oid) = key
+            val obj = modelAt(zip, cache, path)?.objects?.get(oid) ?: continue
             val name = obj.name?.trim()
             if (!name.isNullOrEmpty()) return name
             // A shell object with exactly one component is a reference; follow it.
@@ -212,8 +217,10 @@ object ThreeMFParser {
         val items = rootModel.buildItems.filter { it.printable }.ifEmpty { rootModel.buildItems }
         for ((i, item) in items.withIndex()) {
             val path = if (!item.path.isNullOrBlank()) resolvePath(rootPath, item.path) else rootPath
-            val spec = PartSpec(path, item.objectId, item.transform, partName(cache, PartSpec(path, item.objectId, item.transform, ""), i))
-            if (path in cache) specs.add(spec)
+            if (modelAt(zip, cache, path) != null) {
+                val spec = PartSpec(path, item.objectId, item.transform, partName(zip, cache, PartSpec(path, item.objectId, item.transform, ""), i))
+                specs.add(spec)
+            }
         }
         if (specs.isEmpty()) {
             // No usable build section: fall back to the objects the root declares, then to
@@ -233,7 +240,7 @@ object ThreeMFParser {
                     .sorted()
             val toInstantiate = roots.ifEmpty { rootModel.objects.keys.sorted() }
             for ((i, oid) in toInstantiate.withIndex()) {
-                specs.add(PartSpec(rootPath, oid, null, partName(cache, PartSpec(rootPath, oid, null, ""), i)))
+                specs.add(PartSpec(rootPath, oid, null, partName(zip, cache, PartSpec(rootPath, oid, null, ""), i)))
             }
             if (specs.isEmpty()) {
                 zip
@@ -256,6 +263,7 @@ object ThreeMFParser {
 
     /** Per-part geometry plus the bounding box the placement was authored with. */
     private class RawPart(
+        val name: String,
         val positions: FloatList,
         val indices: IntList,
         val minX: Float,
@@ -267,6 +275,7 @@ object ThreeMFParser {
     )
 
     private fun rawPart(
+        name: String,
         positions: FloatList,
         indices: IntList,
     ): RawPart {
@@ -287,7 +296,7 @@ object ThreeMFParser {
             if (y > maxY) maxY = y
             if (z > maxZ) maxZ = z
         }
-        return RawPart(positions, indices, minX, minY, minZ, maxX, maxY, maxZ)
+        return RawPart(name, positions, indices, minX, minY, minZ, maxX, maxY, maxZ)
     }
 
     fun parse(file: File): MeshData {
@@ -311,8 +320,8 @@ object ThreeMFParser {
                 specs.mapNotNull { spec ->
                     val pos = FloatList()
                     val idx = IntList()
-                    instantiate(cache, spec.modelPath, spec.objectId, spec.transform, 0, pos, idx)
-                    if (pos.isEmpty()) null else rawPart(pos, idx)
+                    instantiate(zip, cache, spec.modelPath, spec.objectId, spec.transform, 0, pos, idx)
+                    if (pos.isEmpty()) null else rawPart(spec.name, pos, idx)
                 }
             if (rawParts.isEmpty()) throw RuntimeException("3MF contains no vertices in ${file.name}")
 
@@ -329,7 +338,7 @@ object ThreeMFParser {
             var gMaxY = -Float.MAX_VALUE
             var gMaxZ = -Float.MAX_VALUE
 
-            for ((i, raw) in rawParts.withIndex()) {
+            for (raw in rawParts) {
                 val posArr = raw.positions.toTrimmedArray()
                 val idxArr = raw.indices.toTrimmedArray()
                 val tris = idxArr.size / 3
@@ -370,7 +379,7 @@ object ThreeMFParser {
                 for (k in ix.indices) indices.add(vertexOffset + ix[k])
                 parts.add(
                     MeshPart(
-                        name = rawParts[i].let { specs[i].name },
+                        name = raw.name,
                         vertexOffset = vertexOffset,
                         vertexCount = p.size / 3,
                         indexOffset = indexOffset,

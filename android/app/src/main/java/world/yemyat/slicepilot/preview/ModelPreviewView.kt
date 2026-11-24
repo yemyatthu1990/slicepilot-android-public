@@ -20,6 +20,8 @@ class ModelPreviewView(
     private val camera = OrbitCamera()
 
     private var baseMesh: MeshData? = null
+    private var baseVertices: FloatArray? = null
+    private var modelFilamentColors: List<FloatArray>? = null
     private var transform = ModelTransform()
 
     // Per-piece poses for baseMesh. Null keeps the old behaviour (the whole mesh drawn with
@@ -136,6 +138,8 @@ class ModelPreviewView(
         destroyed = true
         stopAutoRotate()
         baseMesh = null
+        baseVertices = null
+        modelFilamentColors = null
         scene.clearGeometry()
     }
 
@@ -143,7 +147,10 @@ class ModelPreviewView(
         if (destroyed) return
         scene.clearGeometry()
         baseMesh = null
-        scene.model = MeshGeometry(PreviewGeometry.interleave(mesh.positions, mesh.normals), mesh.indices)
+        modelFilamentColors = null
+        val verts = PreviewGeometry.interleave(mesh.positions, mesh.normals)
+        baseVertices = verts
+        scene.model = MeshGeometry(verts, mesh.indices)
         scene.modelColor = PreviewGeometry.DEFAULT_MODEL_COLOR
         camera.frame(mesh.centerX, mesh.centerY, mesh.centerZ, mesh.maxRadius)
         baseMesh = mesh
@@ -161,6 +168,7 @@ class ModelPreviewView(
         if (destroyed) return
         scene.clearGeometry()
         baseMesh = mesh
+        modelFilamentColors = null
         transform = ModelTransform()
         pivotX = mesh.centerX
         pivotY = mesh.centerY
@@ -173,7 +181,9 @@ class ModelPreviewView(
         plateCenterY = bedHalfY
         plateHalfX = bedHalfX
         plateHalfY = bedHalfY
-        scene.model = MeshGeometry(PreviewGeometry.interleave(mesh.positions, mesh.normals), mesh.indices)
+        val verts = PreviewGeometry.interleave(mesh.positions, mesh.normals)
+        baseVertices = verts
+        scene.model = MeshGeometry(verts, mesh.indices)
         scene.modelColor = PreviewGeometry.parseColor(modelColorHex) ?: PreviewGeometry.DEFAULT_MODEL_COLOR
         scene.plate = PreviewGeometry.plate(bedHalfX, bedHalfY, -0.5f, bedHalfX, bedHalfY)
         scene.plateColor = PreviewGeometry.parseColor(plateColorHex) ?: PreviewGeometry.DEFAULT_PLATE_COLOR
@@ -259,7 +269,10 @@ class ModelPreviewView(
             posesForMesh(mesh)
                 ?.let { PartPlacement.printedHeightMm(mesh.parts, it, partsSkipped) / 2f }
                 ?: this.transform.extents(halfX, halfY, halfZ)[2]
-        scene.model = MeshGeometry(PreviewGeometry.interleave(mesh.positions, mesh.normals), mesh.indices)
+        modelFilamentColors = null
+        val verts = PreviewGeometry.interleave(mesh.positions, mesh.normals)
+        baseVertices = verts
+        scene.model = MeshGeometry(verts, mesh.indices)
         scene.modelColor = PreviewGeometry.REVEAL_COLOR
         scene.transform = this.transform.worldMatrix(pivotX, pivotY, pivotZ, bedHalfX, bedHalfY, dropZ, halfX, halfY, halfZ)
         rebuildPartDraws()
@@ -299,6 +312,17 @@ class ModelPreviewView(
     fun setModelColor(modelColorHex: String?) {
         scene.modelColor = PreviewGeometry.parseColor(modelColorHex) ?: PreviewGeometry.DEFAULT_MODEL_COLOR
         requestRender()
+    }
+
+    /**
+     * Colours the active model mesh per filament: [colors] holds one RGB triple per model
+     * filament (0-based index = 1-based extruder - 1). Works for both single-part and
+     * multi-part posed meshes; null restores flat [setModelColor] shading.
+     */
+    fun setModelFilamentColors(colors: List<FloatArray>?) {
+        if (destroyed) return
+        modelFilamentColors = colors?.takeIf { it.isNotEmpty() }
+        rebuildPartDraws()
     }
 
     fun setPlateColor(plateColorHex: String?) {
@@ -398,6 +422,8 @@ class ModelPreviewView(
 
     fun clearModel() {
         baseMesh = null
+        baseVertices = null
+        modelFilamentColors = null
         transform = ModelTransform()
         scene.clearGeometry()
         requestRender()
@@ -430,44 +456,153 @@ class ModelPreviewView(
     }
 
     /**
-     * Fill PreviewScene.partDraws from the pieces of baseMesh and their poses: printed pieces
-     * get a draw for their slice of the shared index buffer with their own matrix, skipped
-     * pieces get none. Anything the mesh has no pose for falls back to the whole-mesh draw.
+     * Fill PreviewScene.partDraws (and PreviewScene.modelGroups for single-part multi-colour
+     * models) from baseMesh, its poses, and any active multi-colour filament palette.
      */
     private fun rebuildPartDraws() {
         val mesh = baseMesh ?: return
-        val poses = posesForMesh(mesh) ?: return
-        scene.partDraws =
-            buildList {
+        val verts = baseVertices ?: return
+        val palette = modelFilamentColors
+        val ext = mesh.triExtruders
+        val k = palette?.size ?: 0
+        val useMultiColor = k > 0 && ext != null && ext.size * 3 == mesh.indices.size
+        val poses = posesForMesh(mesh)
+
+        if (poses != null) {
+            scene.modelGroups = null
+            if (useMultiColor && palette != null && ext != null) {
+                val ordered = IntArray(mesh.indices.size)
+                val draws = ArrayList<ModelPartDraw>(mesh.parts.size * 2)
+                val counts = IntArray(k)
+                val starts = IntArray(k + 1)
+                val cursor = IntArray(k)
                 mesh.parts.forEachIndexed { index, part ->
-                    if (index in partsSkipped) return@forEachIndexed
+                    val off = part.indexOffset
+                    val cnt = part.indexCount
+                    if (index in partsSkipped || cnt <= 0) {
+                        if (cnt > 0) System.arraycopy(mesh.indices, off, ordered, off, cnt)
+                        return@forEachIndexed
+                    }
+                    counts.fill(0)
+                    val triStart = off / 3
+                    val triCount = cnt / 3
+                    for (t in triStart until triStart + triCount) {
+                        val f = (ext[t] - 1).coerceIn(0, k - 1)
+                        counts[f]++
+                    }
+                    starts[0] = off
+                    for (i in 0 until k) {
+                        starts[i + 1] = starts[i] + counts[i] * 3
+                        cursor[i] = starts[i]
+                    }
+                    for (t in triStart until triStart + triCount) {
+                        val f = (ext[t] - 1).coerceIn(0, k - 1)
+                        val o = cursor[f]
+                        ordered[o] = mesh.indices[t * 3]
+                        ordered[o + 1] = mesh.indices[t * 3 + 1]
+                        ordered[o + 2] = mesh.indices[t * 3 + 2]
+                        cursor[f] = o + 3
+                    }
                     val pose = poses[index]
-                    add(
-                        ModelPartDraw(
-                            indexOffset = part.indexOffset,
-                            indexCount = part.indexCount,
-                            matrix =
-                                pose.worldMatrix(
-                                    part.centerX,
-                                    part.centerY,
-                                    (part.minZ + part.maxZ) / 2f,
-                                    plateCenterX,
-                                    plateCenterY,
-                                    dropZ,
-                                    part.halfX,
-                                    part.halfY,
-                                    part.halfZ,
-                                ),
-                            color =
-                                if (index == selectedPart) {
-                                    PreviewGeometry.SELECTED_PART_COLOR
-                                } else {
-                                    null
-                                },
-                        ),
-                    )
+                    val matrix =
+                        pose.worldMatrix(
+                            part.centerX,
+                            part.centerY,
+                            (part.minZ + part.maxZ) / 2f,
+                            plateCenterX,
+                            plateCenterY,
+                            dropZ,
+                            part.halfX,
+                            part.halfY,
+                            part.halfZ,
+                        )
+                    for (f in 0 until k) {
+                        if (counts[f] <= 0) continue
+                        draws.add(
+                            ModelPartDraw(
+                                indexOffset = starts[f],
+                                indexCount = counts[f] * 3,
+                                matrix = matrix,
+                                color =
+                                    if (index == selectedPart) {
+                                        PreviewGeometry.SELECTED_PART_COLOR
+                                    } else {
+                                        palette[f]
+                                    },
+                            ),
+                        )
+                    }
                 }
+                scene.model = MeshGeometry(verts, ordered)
+                scene.partDraws = draws
+            } else {
+                if (scene.model?.indices !== mesh.indices) {
+                    scene.model = MeshGeometry(verts, mesh.indices)
+                }
+                scene.partDraws =
+                    buildList {
+                        mesh.parts.forEachIndexed { index, part ->
+                            if (index in partsSkipped) return@forEachIndexed
+                            val pose = poses[index]
+                            add(
+                                ModelPartDraw(
+                                    indexOffset = part.indexOffset,
+                                    indexCount = part.indexCount,
+                                    matrix =
+                                        pose.worldMatrix(
+                                            part.centerX,
+                                            part.centerY,
+                                            (part.minZ + part.maxZ) / 2f,
+                                            plateCenterX,
+                                            plateCenterY,
+                                            dropZ,
+                                            part.halfX,
+                                            part.halfY,
+                                            part.halfZ,
+                                        ),
+                                    color =
+                                        if (index == selectedPart) {
+                                            PreviewGeometry.SELECTED_PART_COLOR
+                                        } else {
+                                            null
+                                        },
+                                ),
+                            )
+                        }
+                    }
             }
+            requestRender()
+            return
+        }
+
+        // Single-part model (no per-part poses): group triangles by filament when multi-colour.
+        scene.partDraws = emptyList()
+        if (useMultiColor && palette != null && ext != null) {
+            val counts = IntArray(k)
+            for (e in ext) counts[(e - 1).coerceIn(0, k - 1)]++
+            val starts = IntArray(k + 1)
+            for (i in 0 until k) starts[i + 1] = starts[i] + counts[i] * 3
+            val cursor = starts.copyOf(k)
+            val ordered = IntArray(mesh.indices.size)
+            for (t in ext.indices) {
+                val f = (ext[t] - 1).coerceIn(0, k - 1)
+                val o = cursor[f]
+                ordered[o] = mesh.indices[t * 3]
+                ordered[o + 1] = mesh.indices[t * 3 + 1]
+                ordered[o + 2] = mesh.indices[t * 3 + 2]
+                cursor[f] = o + 3
+            }
+            scene.model = MeshGeometry(verts, ordered)
+            scene.modelGroups =
+                (0 until k)
+                    .filter { counts[it] > 0 }
+                    .map { MeshDrawGroup(starts[it], counts[it] * 3, palette[it]) }
+        } else {
+            if (scene.model?.indices !== mesh.indices) {
+                scene.model = MeshGeometry(verts, mesh.indices)
+            }
+            scene.modelGroups = null
+        }
         requestRender()
     }
 

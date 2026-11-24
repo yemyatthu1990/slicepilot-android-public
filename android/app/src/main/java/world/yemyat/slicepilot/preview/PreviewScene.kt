@@ -45,10 +45,19 @@ class CameraState(
     }
 }
 
+class MeshDrawGroup(
+    val offset: Int,
+    val count: Int,
+    val color: FloatArray,
+)
+
 class PreviewScene {
     @Volatile var model: MeshGeometry? = null
 
     @Volatile var modelColor: FloatArray = PreviewGeometry.DEFAULT_MODEL_COLOR
+
+    /** Per-filament draw ranges for a single-part multi-colour mesh; null draws flat. */
+    @Volatile var modelGroups: List<MeshDrawGroup>? = null
 
     /**
      * The model drawn piece by piece: each entry is a range of [model]'s index buffer and the
@@ -81,6 +90,7 @@ class PreviewScene {
 
     fun clearGeometry() {
         model = null
+        modelGroups = null
         partDraws = emptyList()
         plate = null
         gcode = null

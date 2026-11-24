@@ -23,6 +23,8 @@ class PairingCodeTest {
         assertEquals(pin, PairingCode.normalizePincode(" $pin "))
         assertNull("prose is not a PIN", PairingCode.normalizePincode("please pair"))
         assertNull("a serial is not a PIN", PairingCode.normalizePincode(serial))
+        assertNull("short PINs are rejected before calling cloud", PairingCode.normalizePincode("12345"))
+        assertNull("long PINs are rejected before calling cloud", PairingCode.normalizePincode("1234567"))
     }
 
     @Test

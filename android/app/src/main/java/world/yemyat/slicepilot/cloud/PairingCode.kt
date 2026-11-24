@@ -60,10 +60,11 @@ object PairingCode {
     /** Anything that could be one of the three values: code-safe text and nothing else. */
     private val TOKEN = Regex("^[A-Za-z0-9_-]{4,64}$")
 
-    /** What a PIN looks like when typed: short, uppercase, no dashes. */
+    /** What a PIN looks like when typed: Elegoo cloud requires an exact 6-character alphanumeric PIN. */
+    internal const val PIN_LENGTH = 6
     private const val MAX_PIN_LENGTH = 8
 
-    private val PIN_SHAPE = Regex("^[A-Z0-9]{4,$MAX_PIN_LENGTH}$")
+    private val PIN_SHAPE = Regex("^[A-Z0-9]{$PIN_LENGTH}$")
 
     /** The PIN inside a keyed payload (`pincode=…`, `PinCode: …`, a JSON body). */
     fun pincodeFrom(raw: String): String? = pick(raw, PIN_KEYS)

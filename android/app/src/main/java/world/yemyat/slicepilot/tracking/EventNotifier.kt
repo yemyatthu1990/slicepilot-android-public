@@ -26,6 +26,20 @@ object EventNotifier {
         repository.trackEvent(name, properties)
     }
 
+    /** Logs a GA4-standard `screen_view` event for single-activity Compose transitions. */
+    fun trackScreen(
+        screenName: String,
+        screenClass: String = screenName,
+    ) {
+        repository.trackEvent(
+            "screen_view",
+            mapOf(
+                "screen_name" to screenName,
+                "screen_class" to screenClass,
+            ),
+        )
+    }
+
     fun trackError(
         message: String,
         throwable: Throwable? = null,

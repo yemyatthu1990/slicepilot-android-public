@@ -50,11 +50,16 @@ fun SliceScreen(vm: AppViewModel) {
     val nozzle by vm.selectedNozzle.collectAsState()
     var showAdvanced by remember { mutableStateOf(false) }
 
+    val multiAssignments = remember(config.printer) { vm.activeMultiColourAssignments() }
     val materialLabel =
-        remember(material) {
-            material?.let { key ->
-                vm.printSetupMaterials().firstOrNull { it.key == key }?.label
-            } ?: "—"
+        remember(material, multiAssignments) {
+            if (multiAssignments.size > 1) {
+                "Multi-colour (${multiAssignments.count { it.used }.coerceAtLeast(multiAssignments.size)} AMS spools)"
+            } else {
+                material?.let { key ->
+                    vm.printSetupMaterials().firstOrNull { it.key == key }?.label
+                } ?: "—"
+            }
         }
 
     Scaffold(

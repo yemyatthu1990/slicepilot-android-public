@@ -117,6 +117,107 @@ class ThreeMFParserTest {
     }
 
     @Test
+    fun testParseProductionExtensionExternalComponentModel() {
+        // Bambu Studio / MakerWorld 3MF layout: root 3D/3dmodel.model only holds a shell object
+        // whose <component p:path="/3D/Objects/object_1.model" objectid="1"/> points to the mesh.
+        val objectXml =
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+              <resources>
+                <object id="1" name="FluffyCow" type="model">
+                  <mesh>
+                    <vertices>
+                      <vertex x="0" y="0" z="0"/><vertex x="10" y="0" z="0"/>
+                      <vertex x="10" y="20" z="0"/><vertex x="0" y="20" z="0"/>
+                      <vertex x="0" y="0" z="30"/><vertex x="10" y="0" z="30"/>
+                      <vertex x="10" y="20" z="30"/><vertex x="0" y="20" z="30"/>
+                    </vertices>
+                    <triangles>
+                      <triangle v1="0" v2="2" v3="1"/><triangle v1="0" v2="3" v3="2"/>
+                      <triangle v1="4" v2="5" v3="6"/><triangle v1="4" v2="6" v3="7"/>
+                      <triangle v1="0" v2="1" v3="5"/><triangle v1="0" v2="5" v3="4"/>
+                      <triangle v1="1" v2="2" v3="6"/><triangle v1="1" v2="6" v3="5"/>
+                      <triangle v1="2" v2="3" v3="7"/><triangle v1="2" v2="7" v3="6"/>
+                      <triangle v1="3" v2="0" v3="4"/><triangle v1="3" v2="4" v3="7"/>
+                    </triangles>
+                  </mesh>
+                </object>
+              </resources>
+            </model>
+            """.trimIndent()
+        val rootXml =
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <model unit="millimeter"
+                   xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
+                   xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06">
+              <resources>
+                <object id="2" type="model">
+                  <components>
+                    <component p:path="/3D/Objects/object_1.model" objectid="1" transform="1 0 0 0 1 0 0 0 1 2 3 4"/>
+                  </components>
+                </object>
+              </resources>
+              <build>
+                <item objectid="2"/>
+              </build>
+            </model>
+            """.trimIndent()
+        val file = temp3mf("prod_ext_comp")
+        ZipOutputStream(file.outputStream()).use { zip ->
+            zip.putNextEntry(ZipEntry("3D/3dmodel.model"))
+            zip.write(rootXml.toByteArray(Charsets.UTF_8))
+            zip.closeEntry()
+            zip.putNextEntry(ZipEntry("3D/Objects/object_1.model"))
+            zip.write(objectXml.toByteArray(Charsets.UTF_8))
+            zip.closeEntry()
+        }
+
+        val mesh = ModelParser.parse(file)
+        assertEquals(2f, mesh.minX, 1e-4f)
+        assertEquals(12f, mesh.maxX, 1e-4f)
+        assertEquals(3f, mesh.minY, 1e-4f)
+        assertEquals(23f, mesh.maxY, 1e-4f)
+        assertEquals(4f, mesh.minZ, 1e-4f)
+        assertEquals(34f, mesh.maxZ, 1e-4f)
+        assertEquals(1, mesh.parts.size)
+        assertEquals("FluffyCow", mesh.parts[0].name)
+    }
+
+    @Test
+    fun testParseEmptyBuildItemDoesNotMisalignPartNames() {
+        val rootXml =
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+              <resources>
+                <object id="1" name="EmptyShell" type="model"/>
+                <object id="2" name="RealCube" type="model">
+                  <mesh>
+                    <vertices>
+                      <vertex x="0" y="0" z="0"/><vertex x="10" y="0" z="0"/><vertex x="0" y="10" z="0"/>
+                    </vertices>
+                    <triangles><triangle v1="0" v2="1" v3="2"/></triangles>
+                  </mesh>
+                </object>
+              </resources>
+              <build>
+                <item objectid="1"/>
+                <item objectid="2"/>
+              </build>
+            </model>
+            """.trimIndent()
+        val file = temp3mf("empty_first")
+        ZipOutputStream(file.outputStream()).use { zip ->
+            zip.putNextEntry(ZipEntry("3D/3dmodel.model"))
+            zip.write(rootXml.toByteArray(Charsets.UTF_8))
+            zip.closeEntry()
+        }
+
+        val mesh = ModelParser.parse(file)
+        assertEquals(1, mesh.parts.size)
+        assertEquals("RealCube", mesh.parts[0].name)
+    }
+
+    @Test
     fun testTransformCombine() {
         // Translation by (10, 20, 30)
         val t1 = floatArrayOf(

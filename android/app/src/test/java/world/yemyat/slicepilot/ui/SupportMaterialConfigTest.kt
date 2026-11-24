@@ -1,6 +1,7 @@
 package world.yemyat.slicepilot.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -64,12 +65,12 @@ class SupportMaterialConfigTest {
         val iface = buildSupportFilamentOverrides(interfaceOnly = true)
         assertTrue(iface.contains("support_filament=0"))
         assertTrue(iface.contains("support_interface_filament=2"))
-        assertTrue(iface.contains("wipe_tower=1"))
-        assertTrue(iface.contains("purge_in_prime_tower=1"))
+        assertTrue(iface.contains("enable_prime_tower=1"))
+        assertFalse(iface.contains("purge_in_prime_tower=1"))
 
         val full = buildSupportFilamentOverrides(interfaceOnly = false)
         assertTrue(full.contains("support_filament=2"))
         assertTrue(full.contains("support_interface_filament=2"))
-        assertTrue(full.contains("wipe_tower=1"))
+        assertTrue(full.contains("enable_prime_tower=1"))
     }
 }

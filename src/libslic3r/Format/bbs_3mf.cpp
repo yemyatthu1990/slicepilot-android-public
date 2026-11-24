@@ -205,6 +205,8 @@ const std::string PRINTER_THUMBNAIL_MIDDLE_FILE = "/Auxiliaries/.thumbnails/thum
 const std::string _3MF_COVER_FILE = "/Auxiliaries/.thumbnails/thumbnail_3mf.png";
 //const std::string PRINT_CONFIG_FILE = "Metadata/Slic3r_PE.config";
 //const std::string MODEL_CONFIG_FILE = "Metadata/Slic3r_PE_model.config";
+static const std::string SLIC3R_PE_CONFIG_FILE = "Metadata/Slic3r_PE.config";
+static const std::string SLIC3R_PE_MODEL_CONFIG_FILE = "Metadata/Slic3r_PE_model.config";
 const std::string BBS_PRINT_CONFIG_FILE = "Metadata/print_profile.config";
 const std::string BBS_PROJECT_CONFIG_FILE = "Metadata/project_settings.config";
 const std::string BBS_MODEL_CONFIG_FILE = "Metadata/model_settings.config";
@@ -1580,6 +1582,15 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                     ConfigSubstitutionContext config_substitutions(ForwardCompatibilitySubstitutionRule::Disable);
                     _extract_project_config_from_archive(archive, stat, config, config_substitutions, model);
                 }
+                else if (boost::algorithm::iequals(name, SLIC3R_PE_CONFIG_FILE)) {
+                    // PrusaSlicer format (MakerWorld "General" profiles): plate config as "; key = value" lines.
+                    ConfigSubstitutionContext config_substitutions(ForwardCompatibilitySubstitutionRule::Disable);
+                    _extract_print_config_from_archive(archive, stat, config, config_substitutions, "");
+                }
+                else if (boost::algorithm::iequals(name, SLIC3R_PE_MODEL_CONFIG_FILE)) {
+                    // PrusaSlicer object metadata (per-object / per-part "extruder" mapping).
+                    _extract_xml_from_archive(archive, stat, _handle_start_config_xml_element, _handle_end_config_xml_element);
+                }
                 else if (boost::algorithm::iequals(name, BBS_MODEL_CONFIG_FILE)) {
                     // extract slic3r model config file
                     if (!_extract_xml_from_archive(archive, stat, _handle_start_config_xml_element, _handle_end_config_xml_element)) {
@@ -1932,6 +1943,14 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 if (!dont_load_config && boost::algorithm::iequals(name, BBS_PROJECT_CONFIG_FILE)) {
                     // extract slic3r print config file
                     _extract_project_config_from_archive(archive, stat, config, config_substitutions, model);
+                }
+                else if (!dont_load_config && boost::algorithm::iequals(name, SLIC3R_PE_CONFIG_FILE)) {
+                    // PrusaSlicer format plate config ("; key = value" dump)
+                    _extract_print_config_from_archive(archive, stat, config, config_substitutions, filename);
+                }
+                else if (boost::algorithm::iequals(name, SLIC3R_PE_MODEL_CONFIG_FILE)) {
+                    // PrusaSlicer object metadata (per-object / per-part "extruder" mapping)
+                    _extract_xml_from_archive(archive, stat, _handle_start_config_xml_element, _handle_end_config_xml_element);
                 }
                 else if (boost::algorithm::iequals(name, CUT_INFORMATION_FILE)) {
                     // extract object cut info

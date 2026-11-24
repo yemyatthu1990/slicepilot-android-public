@@ -83,7 +83,17 @@ fun PrintSetupScreen(vm: AppViewModel) {
     val config by vm.config.collectAsState()
     val printer by vm.selectedPrinterState.collectAsState()
     val filaments by vm.filaments.collectAsState()
+    val modelFilamentInfo by vm.modelFilamentInfo.collectAsState()
+    val multiColourEnabled by vm.multiColourEnabled.collectAsState()
+    val amsSlotOverrides by vm.amsSlotOverrides.collectAsState()
     val materials = remember(printer, filaments, config.printer) { vm.printSetupMaterials() }
+    val amsCapable = remember(printer, filaments, config.printer) { vm.amsCapablePrinter() }
+    val reportedTrays = remember(printer, filaments) { vm.reportedPrinterTrays() }
+    val multiAssignments =
+        remember(modelFilamentInfo, multiColourEnabled, amsSlotOverrides, printer, filaments, config.printer) {
+            vm.activeMultiColourAssignments()
+        }
+    val multiColourActive = multiAssignments.size > 1
     val model = vm.modelPath?.let { java.io.File(it).name }
     // Which machine to slice for and which slicer preset to use: the two rows Home's
     // "Configure print" sheet owned before that sheet folded into this page.
@@ -169,6 +179,17 @@ fun PrintSetupScreen(vm: AppViewModel) {
                 // whole-model transform below.
                 if (it.parts.size > 1) vm.arrangeParts(volume.first, volume.second)
                 previewController.setPartPoses(vm.partPoses.value, vm.partsSkipped.value, vm.selectedPart.value)
+                val initialMulti = vm.activeMultiColourAssignments()
+                if (initialMulti.size > 1) {
+                    previewController.setModelFilamentColors(
+                        initialMulti.map { a ->
+                            world.yemyat.slicepilot.preview.PreviewGeometry.parseColor(a.spoolColorHex)
+                                ?: world.yemyat.slicepilot.preview.PreviewGeometry.DEFAULT_MODEL_COLOR
+                        },
+                    )
+                } else {
+                    previewController.setModelFilamentColors(null)
+                }
                 val t = vm.modelTransform.value
                 previewController.setModelTransform(
                     floatArrayOf(
@@ -201,6 +222,20 @@ fun PrintSetupScreen(vm: AppViewModel) {
     LaunchedEffect(poses, skipped, selectedPart) {
         if (mesh != null) previewController.setPartPoses(poses, skipped, selectedPart)
     }
+    LaunchedEffect(mesh, multiAssignments) {
+        if (mesh != null) {
+            if (multiAssignments.size > 1) {
+                previewController.setModelFilamentColors(
+                    multiAssignments.map { a ->
+                        world.yemyat.slicepilot.preview.PreviewGeometry.parseColor(a.spoolColorHex)
+                            ?: world.yemyat.slicepilot.preview.PreviewGeometry.DEFAULT_MODEL_COLOR
+                    },
+                )
+            } else {
+                previewController.setModelFilamentColors(null)
+            }
+        }
+    }
     LaunchedEffect(materialColor) { if (mesh != null) previewController.setModelColor(materialColor) }
     LaunchedEffect(plateColor) { if (mesh != null) previewController.setPlateColor(plateColor) }
 
@@ -214,7 +249,7 @@ fun PrintSetupScreen(vm: AppViewModel) {
             modelError != null -> "That file couldn't be opened"
             mesh == null && modelLoading -> "Still reading the model\u2026"
             printer == null -> "Pick the printer to send this to"
-            material == null -> "Pick the material to print with"
+            !multiColourActive && material == null -> "Pick the material to print with"
             parts.size > 1 && skipped.size >= parts.size -> "Select at least one part to print"
             !fits -> "Model is larger than the build volume"
             else -> null
@@ -389,40 +424,70 @@ fun PrintSetupScreen(vm: AppViewModel) {
             // them, and print setup's header already names the machine up top.
             BrandCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Space.md)) {
-                    DropdownRow(
-                        label = "Material",
-                        options = materials.map { MenuOption(it.label, it, filamentColor(it.colorHex)) },
-                        selected = materials.firstOrNull { opt -> opt.key == material },
-                        onSelect = { vm.setSetupMaterial(it.key) },
-                    )
-
-                    // When the printer reports its spools, the Material dropdown already lists them
-                    // per tray; only pick a bare slot manually when it reported nothing.
-                    if (printer?.isLocal == true && vm.lanSpools().isEmpty()) {
+                    val isMultiColourModel = modelFilamentInfo?.isMultiColour == true
+                    if (isMultiColourModel && amsCapable) {
                         Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
-                            BrandSectionLabel("Printer spool")
-                            Row(horizontalArrangement = Arrangement.spacedBy(Space.xs)) {
-                                (0..3).forEach { trayId ->
-                                    FilterChip(
-                                        selected = (config.filamentTrayId ?: 0) == trayId,
-                                        onClick = { vm.setPrintSlot(0, trayId) },
-                                        label = { Text("Slot ${trayId + 1}", maxLines = 1) },
+                            BrandSectionLabel("Colour mode")
+                            SegmentedControl(
+                                options = listOf("Multi-colour (AMS)", "Single colour"),
+                                selectedIndex = if (multiColourEnabled) 0 else 1,
+                                onSelect = { vm.setMultiColourEnabled(it == 0) },
+                            )
+                        }
+                    } else if (isMultiColourModel && !amsCapable) {
+                        WarningBanner(
+                            "Single-colour printer",
+                            "This 3MF uses ${modelFilamentInfo?.usedFilaments?.size ?: 2} colours, " +
+                                "but this printer has no AMS/Canvas \u2014 it will slice in one colour.",
+                        )
+                    }
+
+                    if (multiColourActive) {
+                        AmsFilamentMapSection(
+                            assignments = multiAssignments,
+                            reportedTrays = reportedTrays,
+                            hasCustomMapping = amsSlotOverrides.isNotEmpty(),
+                            isLocalWithoutTrays = printer?.isLocal == true && reportedTrays.isEmpty(),
+                            onSelectSlot = { idx, slot -> vm.setAmsSlotForModelFilament(idx, slot) },
+                            onAutoMatch = { vm.autoMatchAmsSlots() },
+                            onEnterAccessCode = { vm.requestAccessCodeEntry() },
+                        )
+                    } else {
+                        DropdownRow(
+                            label = "Material",
+                            options = materials.map { MenuOption(it.label, it, filamentColor(it.colorHex)) },
+                            selected = materials.firstOrNull { opt -> opt.key == material },
+                            onSelect = { vm.setSetupMaterial(it.key) },
+                        )
+
+                        // When the printer reports its spools, the Material dropdown already lists them
+                        // per tray; only pick a bare slot manually when it reported nothing.
+                        if (printer?.isLocal == true && vm.lanSpools().isEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
+                                BrandSectionLabel("Printer spool")
+                                Row(horizontalArrangement = Arrangement.spacedBy(Space.xs)) {
+                                    (0..3).forEach { trayId ->
+                                        FilterChip(
+                                            selected = (config.filamentTrayId ?: 0) == trayId,
+                                            onClick = { vm.setPrintSlot(0, trayId) },
+                                            label = { Text("Slot ${trayId + 1}", maxLines = 1) },
+                                        )
+                                    }
+                                }
+                                Text(
+                                    "The printer didn't report its loaded filament \u2014 pick the slot it should load from.",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                TextButton(
+                                    onClick = { vm.requestAccessCodeEntry() },
+                                    contentPadding = PaddingValues(0.dp),
+                                ) {
+                                    Text(
+                                        "Enter the printer's access code to load its filament",
+                                        fontSize = 13.sp,
                                     )
                                 }
-                            }
-                            Text(
-                                "The printer didn't report its loaded filament \u2014 pick the slot it should load from.",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            TextButton(
-                                onClick = { vm.requestAccessCodeEntry() },
-                                contentPadding = PaddingValues(0.dp),
-                            ) {
-                                Text(
-                                    "Enter the printer's access code to load its filament",
-                                    fontSize = 13.sp,
-                                )
                             }
                         }
                     }
@@ -863,6 +928,197 @@ private fun PartsSheet(
 }
 
 @Composable
+private fun AmsFilamentMapSection(
+    assignments: List<ResolvedFilamentAssignment>,
+    reportedTrays: List<world.yemyat.slicepilot.cloud.LoadedTray>,
+    hasCustomMapping: Boolean,
+    isLocalWithoutTrays: Boolean,
+    onSelectSlot: (Int, FilamentSlot) -> Unit,
+    onAutoMatch: () -> Unit,
+    onEnterAccessCode: () -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val slots = remember(reportedTrays) { MultiColourMapping.availableSlots(reportedTrays) }
+    val trayBySlot = remember(reportedTrays) { reportedTrays.associateBy { FilamentSlot(it.canvasId, it.trayId) } }
+    val multiCanvas = remember(slots) { slots.map { it.canvasId }.distinct().size > 1 }
+    val visibleRows = remember(assignments) { assignments.filter { it.used }.ifEmpty { assignments } }
+
+    Column(verticalArrangement = Arrangement.spacedBy(Space.sm)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            BrandSectionLabel("AMS filament map")
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "\u00b7 ${visibleRows.size} colours",
+                style = MaterialTheme.typography.bodySmall,
+                color = scheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            if (hasCustomMapping && reportedTrays.isNotEmpty()) {
+                TextButton(
+                    onClick = onAutoMatch,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                ) {
+                    Text("Auto-match", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+
+        if (visibleRows.size > slots.size) {
+            Text(
+                "This model uses ${visibleRows.size} colours, while ${slots.size} AMS slots are available \u2014 " +
+                    "extra colours share a slot.",
+                fontSize = 12.sp,
+                color = scheme.onSurfaceVariant,
+            )
+        }
+
+        visibleRows.forEach { assignment ->
+            var menuOpen by remember(assignment.modelIndex) { mutableStateOf(false) }
+            val modelDot = filamentColor(assignment.modelColorHex) ?: scheme.primary
+            val spoolDot = filamentColor(assignment.spoolColorHex) ?: modelDot
+            val slotTag = MultiColourMapping.formatSlotTag(assignment.slot, multiCanvas)
+            val tray = trayBySlot[assignment.slot]
+            val slotSummary =
+                if (tray != null) {
+                    "$slotTag \u00b7 ${tray.type.ifBlank { tray.name.ifBlank { "Spool" } }}"
+                } else {
+                    "Slot ${assignment.slot.trayId + 1} \u00b7 ${assignment.spoolType}"
+                }
+
+            Row(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(Radius.sm))
+                        .background(scheme.surfaceVariant.copy(alpha = 0.45f))
+                        .border(1.dp, LanternGold.copy(alpha = 0.16f), RoundedCornerShape(Radius.sm))
+                        .clickable { menuOpen = true }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Box(
+                    Modifier
+                        .size(18.dp)
+                        .clip(CircleShape)
+                        .background(modelDot)
+                        .border(1.dp, scheme.outline.copy(alpha = 0.35f), CircleShape),
+                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Colour ${assignment.modelIndex + 1}",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = scheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        assignment.modelType,
+                        fontSize = 11.sp,
+                        color = scheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = scheme.onSurfaceVariant,
+                )
+                Box {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = scheme.surface,
+                        border = BorderStroke(1.dp, LanternGold.copy(alpha = 0.25f)),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(12.dp)
+                                    .clip(CircleShape)
+                                    .background(spoolDot)
+                                    .border(1.dp, scheme.outline.copy(alpha = 0.35f), CircleShape),
+                            )
+                            Text(
+                                slotSummary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = scheme.onSurface,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                    DropdownMenu(
+                        expanded = menuOpen,
+                        onDismissRequest = { menuOpen = false },
+                    ) {
+                        slots.forEach { candidate ->
+                            val ct = trayBySlot[candidate]
+                            val tag = MultiColourMapping.formatSlotTag(candidate, multiCanvas)
+                            val cDot = filamentColor(ct?.colorHex)
+                            val label =
+                                if (ct != null) {
+                                    "$tag \u00b7 ${ct.type.ifBlank { ct.name.ifBlank { "Spool" } }}"
+                                } else {
+                                    "Slot ${candidate.trayId + 1}"
+                                }
+                            DropdownMenuItem(
+                                text = {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        if (cDot != null) {
+                                            Box(
+                                                Modifier
+                                                    .size(14.dp)
+                                                    .clip(CircleShape)
+                                                    .background(cDot)
+                                                    .border(1.dp, scheme.outline.copy(alpha = 0.35f), CircleShape),
+                                            )
+                                        }
+                                        Text(
+                                            label,
+                                            fontWeight = if (candidate == assignment.slot) FontWeight.Bold else FontWeight.Normal,
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    menuOpen = false
+                                    onSelectSlot(assignment.modelIndex, candidate)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (isLocalWithoutTrays) {
+            Text(
+                "The printer didn't report its loaded AMS spools \u2014 mapping to Slots 1\u20134 directly.",
+                fontSize = 12.sp,
+                color = scheme.onSurfaceVariant,
+            )
+            TextButton(
+                onClick = onEnterAccessCode,
+                contentPadding = PaddingValues(0.dp),
+            ) {
+                Text("Enter the printer's access code to load its spools", fontSize = 13.sp)
+            }
+        }
+    }
+}
+
+@Composable
 private fun WarningBanner(
     title: String,
     detail: String,
@@ -956,9 +1212,8 @@ fun extruderCountForProfile(
                     continue
                 }
             val obj = org.json.JSONObject(text)
-            // Canvas ("C") CC1 profile: one nozzle, multiple materials via
-            // mid-print Canvas swaps → model + support filament are selectable.
-            if (obj.optInt("single_extruder_multi_material", 0) == 1) return 2
+            // Single-nozzle Canvas / AMS printers (CC2, CC1 0.4C) address up to 4 spools.
+            if (obj.optInt("single_extruder_multi_material", 0) == 1 || obj.optInt("support_mms", 0) == 1) return 4
             val nd = obj.optJSONArray("nozzle_diameter")
             if (nd != null && nd.length() > 0) return nd.length()
         }

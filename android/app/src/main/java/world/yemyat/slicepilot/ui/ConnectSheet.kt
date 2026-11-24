@@ -837,7 +837,7 @@ fun AccessCodeDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    "Enter the access code shown on $printerName's screen.",
+                    "Enter the access code shown on $printerName's screen (Settings → Network → LAN Only mode).",
                     fontSize = 14.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

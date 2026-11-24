@@ -41,10 +41,9 @@ object ThumbnailRenderer {
         val configs = arrayOfNulls<android.opengl.EGLConfig>(1)
         val numConfigs = IntArray(1)
         if (!EGL14.eglChooseConfig(display, configAttrs, 0, configs, 0, 1, numConfigs, 0) || numConfigs[0] <= 0) {
-            EGL14.eglTerminate(display)
             return null
         }
-        val config = configs[0] ?: run { EGL14.eglTerminate(display); return null }
+        val config = configs[0] ?: return null
 
         val contextAttrs = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 3, EGL14.EGL_NONE)
         val context = EGL14.eglCreateContext(display, config, EGL14.EGL_NO_CONTEXT, contextAttrs, 0)
@@ -53,13 +52,11 @@ object ThumbnailRenderer {
         if (context == EGL14.EGL_NO_CONTEXT || surface == EGL14.EGL_NO_SURFACE) {
             if (context != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(display, context)
             if (surface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, surface)
-            EGL14.eglTerminate(display)
             return null
         }
         if (!EGL14.eglMakeCurrent(display, surface, surface, context)) {
             EGL14.eglDestroySurface(display, surface)
             EGL14.eglDestroyContext(display, context)
-            EGL14.eglTerminate(display)
             return null
         }
 
@@ -115,7 +112,8 @@ object ThumbnailRenderer {
             EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
             EGL14.eglDestroySurface(display, surface)
             EGL14.eglDestroyContext(display, context)
-            EGL14.eglTerminate(display)
+            // Never call eglTerminate(EGL_DEFAULT_DISPLAY): the default display is process-wide
+            // and shared with active GLSurfaceViews (LiveSliceView / ModelPreviewView) and HWUI.
         }
     }
 }

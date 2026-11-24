@@ -7,7 +7,11 @@ import kotlin.math.sqrt
 
 enum class GcodePart { PERIMETER, INFILL, TOP_SHELL, BOTTOM_SHELL, SUPPORT, SUPPORT_INTERFACE, TRAVEL, OTHER }
 
-class PartGeometry(val part: GcodePart, val vertices: FloatArray)
+class PartGeometry(
+    val part: GcodePart,
+    val vertices: FloatArray,
+    val tool: Int = 0,
+)
 
 class GcodeLayer(
     val index: Int,
@@ -20,6 +24,11 @@ class GcodePreview(
     val minX: Float, val minY: Float,
     val maxX: Float, val maxY: Float,
     val maxZ: Float,
+    /**
+     * Per-tool filament colours (`#RRGGBB`, index = tool index T0..TN) parsed from
+     * `; filament_colour = ...` in the G-code header/footer.
+     */
+    val filamentColors: List<String> = emptyList(),
 ) {
     val centerX get() = (minX + maxX) / 2f
     val centerY get() = (minY + maxY) / 2f
@@ -80,18 +89,32 @@ object GcodePreviewParser {
                 when {
                     line.startsWith("LAYER_COUNT:") -> layers = line.substringAfter(':').trim().toIntOrNull()
                     line.startsWith("estimated printing time") -> est = parseTimeLabel(line.substringAfter('=').trim())
-                    line.startsWith("filament used [mm]") -> mm = line.substringAfter('=').trim().toFloatOrNull()
-                    line.startsWith("total filament used [g]") -> grams = line.substringAfter('=').trim().toFloatOrNull()
-                    line.startsWith("filament used [g]") && grams == null -> grams = line.substringAfter('=').trim().toFloatOrNull()
+                    line.startsWith("filament used [mm]") -> mm = parseFloatSum(line.substringAfter('=').trim())
+                    line.startsWith("total filament used [g]") -> grams = parseFloatSum(line.substringAfter('=').trim())
+                    line.startsWith("filament used [g]") && grams == null -> grams = parseFloatSum(line.substringAfter('=').trim())
                     line.startsWith("filament_type") -> ftype = line.substringAfter('=').trim()
                     line.startsWith("filament_colour") -> fcolor = line.substringAfter('=').trim().ifBlank { null }
-                    line.startsWith("nozzle_diameter") -> nozzle = line.substringAfter('=').trim().toFloatOrNull()
+                    line.startsWith("nozzle_diameter") -> nozzle = line.substringAfter('=').trim().substringBefore(',').substringBefore(';').trim().toFloatOrNull()
                 }
                 if (est != null && mm != null && grams != null && layers != null && ftype != null && fcolor != null && nozzle != null) break
             }
         }
         return GcodeStats(est, mm, grams, layers, ftype, fcolor, nozzle)
     }
+
+    private fun parseFloatSum(raw: String): Float? {
+        val vals =
+            raw
+                .split(',', ';', '|')
+                .mapNotNull { it.trim().toFloatOrNull() }
+        return if (vals.isNotEmpty()) vals.sum() else null
+    }
+
+    internal fun parseColorList(raw: String): List<String> =
+        raw
+            .split(';', '|', ',')
+            .map { it.trim().trim('"') }
+            .filter { it.isNotEmpty() }
 
     private fun parseTimeLabel(s: String): Long? {
         var total = 0L
@@ -114,11 +137,13 @@ object GcodePreviewParser {
 
     fun parse(file: File, defaultWidth: Float = 0.45f, progress: ((Float) -> Unit)? = null): GcodePreview {
         val total = if (file.exists()) file.length().coerceAtLeast(1) else 1
-        val layerVerts = HashMap<GcodePart, FloatBuf>()
+        val layerVerts = HashMap<Pair<GcodePart, Int>, FloatBuf>()
         val layers = ArrayList<GcodeLayer>()
         var x = 0f; var y = 0f; var z = 0f; var e = 0f
         var width = defaultWidth
         var part = GcodePart.PERIMETER
+        var tool = 0
+        var filamentColors = emptyList<String>()
         var layerIndex = 0
         var thickness = 0.2f
         var relativeExtrusion = false
@@ -139,11 +164,11 @@ object GcodePreviewParser {
             if (!hasData) return
 
             val parts = ArrayList<PartGeometry>(layerVerts.size)
-            for ((gcodePart, verts) in layerVerts) {
+            for ((key, verts) in layerVerts) {
                 if (verts.size == 0) continue
                 val arr = verts.takeArray()
                 totalFloats += arr.size
-                parts.add(PartGeometry(gcodePart, arr))
+                parts.add(PartGeometry(key.first, arr, key.second))
             }
             if (parts.isNotEmpty()) {
                 layers.add(GcodeLayer(layerIndex, z, parts))
@@ -156,10 +181,16 @@ object GcodePreviewParser {
                 read += raw.length + 1
                 if (raw.isEmpty()) continue
                 if (raw[0] == ';') {
+                    val trimmed = raw.trimStart(';', ' ')
                     val upper = raw.uppercase()
+                    val trimmedUpper = trimmed.uppercase()
                     if (thickness == 0.2f && "LAYER_HEIGHT" in upper && "=" in raw) {
                         val v = raw.substringAfter('=').trim().toFloatOrNull()
                         if (v != null && v > 0f && v < 1f) thickness = v
+                    }
+                    if ((trimmedUpper.startsWith("FILAMENT_COLOUR") || trimmedUpper.startsWith("FILAMENT_COLOR")) && "=" in trimmed) {
+                        val parsed = parseColorList(trimmed.substringAfter('='))
+                        if (parsed.isNotEmpty()) filamentColors = parsed
                     }
                     when {
                         "LAYER_CHANGE" in upper || upper.startsWith(";LAYER ") || upper.startsWith(";LAYER_COUNT") -> {
@@ -183,6 +214,10 @@ object GcodePreviewParser {
                 val cmd = raw.substringBefore(';').trim()
                 if (cmd.isEmpty()) continue
                 val op = cmd.substringBefore(' ').uppercase()
+                if (op.length > 1 && op[0] == 'T' && op.substring(1).all { it.isDigit() }) {
+                    tool = op.substring(1).toInt()
+                    continue
+                }
                 if (op == "M82") { relativeExtrusion = false; continue }
                 if (op == "M83") { relativeExtrusion = true; continue }
                 if (op == "G92") {
@@ -223,7 +258,7 @@ object GcodePreviewParser {
                 if (op == "G1" && extruding && keepPart) {
                     val dx = nx - x; val dy = ny - y
                     val len = sqrt(dx * dx + dy * dy)
-                    val verts = layerVerts.getOrPut(part) { FloatBuf() }
+                    val verts = layerVerts.getOrPut(part to tool) { FloatBuf() }
                     if (len > 1e-4f && verts.size / 18 < MAX_SEGMENTS_PER_LAYER) {
                         val ux = dx / len; val uy = dy / len
                         val px = -uy * width * 0.5f; val py = ux * width * 0.5f
@@ -265,7 +300,7 @@ object GcodePreviewParser {
         }
         flushLayer()
         if (minX > maxX) { minX = 0f; maxX = 1f; minY = 0f; maxY = 1f }
-        return GcodePreview(layers, minX, minY, maxX, maxY, maxZ)
+        return GcodePreview(layers, minX, minY, maxX, maxY, maxZ, filamentColors)
     }
 
     private class FloatBuf(private val initialCapacity: Int = 4096) {
@@ -310,12 +345,44 @@ object GcodePreviewParser {
         }
     }
 
-    fun colorFor(part: GcodePart): FloatArray = when (part) {
-        GcodePart.PERIMETER -> floatArrayOf(0.16f, 0.45f, 0.85f)
-        GcodePart.INFILL -> floatArrayOf(0.85f, 0.55f, 0.20f)
-        GcodePart.TOP_SHELL -> floatArrayOf(0.20f, 0.65f, 0.45f)
-        GcodePart.BOTTOM_SHELL -> floatArrayOf(0.55f, 0.35f, 0.75f)
-        GcodePart.SUPPORT, GcodePart.SUPPORT_INTERFACE -> floatArrayOf(0.55f, 0.58f, 0.62f)
-        else -> floatArrayOf(0.75f, 0.75f, 0.78f)
+    fun colorFor(
+        part: GcodePart,
+        tool: Int = 0,
+        filamentColors: List<String> = emptyList(),
+    ): FloatArray =
+        when (part) {
+            GcodePart.SUPPORT -> floatArrayOf(0.18f, 0.72f, 0.35f)
+            GcodePart.SUPPORT_INTERFACE -> floatArrayOf(0.95f, 0.55f, 0.15f)
+            GcodePart.TRAVEL -> floatArrayOf(0.75f, 0.75f, 0.78f)
+            else -> parseColorHex(filamentColors.getOrNull(tool)) ?: palette(part)
+        }
+
+    private fun palette(part: GcodePart): FloatArray =
+        when (part) {
+            GcodePart.PERIMETER -> floatArrayOf(0.16f, 0.45f, 0.85f)
+            GcodePart.INFILL -> floatArrayOf(0.85f, 0.55f, 0.20f)
+            GcodePart.TOP_SHELL -> floatArrayOf(0.20f, 0.65f, 0.45f)
+            GcodePart.BOTTOM_SHELL -> floatArrayOf(0.55f, 0.35f, 0.75f)
+            GcodePart.SUPPORT, GcodePart.SUPPORT_INTERFACE -> floatArrayOf(0.55f, 0.58f, 0.62f)
+            else -> floatArrayOf(0.75f, 0.75f, 0.78f)
+        }
+
+    fun parseColorHex(hex: String?): FloatArray? {
+        val value = hex?.trim()?.removePrefix("#") ?: return null
+        val rgb =
+            when (value.length) {
+                6 -> value
+                8 -> value.substring(2)
+                else -> return null
+            }
+        return try {
+            floatArrayOf(
+                Integer.parseInt(rgb.substring(0, 2), 16) / 255f,
+                Integer.parseInt(rgb.substring(2, 4), 16) / 255f,
+                Integer.parseInt(rgb.substring(4, 6), 16) / 255f,
+            )
+        } catch (_: NumberFormatException) {
+            null
+        }
     }
 }
