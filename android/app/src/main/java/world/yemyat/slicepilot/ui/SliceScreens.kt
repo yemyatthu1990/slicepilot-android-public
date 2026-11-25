@@ -246,7 +246,7 @@ fun SlicePreviewScreen(
     onSaveGcode: () -> Unit,
     onPrint: () -> Unit,
 ) {
-    var layerCount by remember { mutableFloatStateOf(preview.layers.size.toFloat()) }
+    var layerCount by remember(preview) { mutableFloatStateOf(preview.layers.size.toFloat()) }
     var fullscreen by remember { mutableStateOf(false) }
     val stats by vm.gcodeStats.collectAsState()
     val total = preview.layers.size

@@ -63,6 +63,11 @@ DESKTOP-CLASS ON-DEVICE SLICING ENGINE
 
 SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint or Elegoo. All trademarks belong to their respective owners.
 
+## What's new (1.10.3)
+• Fixed G-code preview rendering models flat after slicing: added true 3D directional shading with crisp contrast across top surfaces, curved walls, and layer cutaways
+• Improved G-code parser for all layer-change and feature markers, dynamic layer heights/line widths, G2/G3 arc toolpaths, relative positioning, and centered framing without the start-gcode prime line
+• Fixed layer slider state when opening a newly sliced preview
+
 ## What's new (1.10.2)
 <!-- Production rollout (437 chars) covers 1.10.0–1.10.2 since production jumped from 1.9.13:
      • Multi-colour 3MF & AMS/Canvas support on Centauri Carbon 2: colour 3D preview, automatic spool matching, compact waste-chute prime tower strictly inside the build plate, and G-code preview

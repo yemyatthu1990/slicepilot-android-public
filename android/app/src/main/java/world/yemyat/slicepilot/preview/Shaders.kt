@@ -28,19 +28,26 @@ uniform vec2 uPlateMax;
 uniform float uPlateEdge;
 out vec4 fragColor;
 void main() {
+    vec3 fn = cross(dFdx(vWorldPos), dFdy(vWorldPos));
     if (vWorldPos.z > uRevealZ) {
         discard;
     }
-    vec3 n = normalize(vNormal);
-    if (!gl_FrontFacing) {
-        n = -n;
+    vec3 n;
+    if (dot(vNormal, vNormal) > 0.0001) {
+        n = normalize(vNormal);
+        if (!gl_FrontFacing) {
+            n = -n;
+        }
+    } else {
+        float len2 = dot(fn, fn);
+        n = len2 > 1e-12 ? fn * inversesqrt(len2) : vec3(0.0, 0.0, 1.0);
     }
-    vec3 keyDir = normalize(vec3(0.30, 0.40, 1.00));
-    vec3 fillDir = normalize(vec3(-0.40, -0.50, 0.45));
+    vec3 keyDir = normalize(vec3(0.55, 0.20, 0.85));
+    vec3 fillDir = normalize(vec3(-0.45, -0.55, 0.40));
     float key = max(dot(n, keyDir), 0.0);
     float fill = max(dot(n, fillDir), 0.0);
-    float hemi = 0.42 + 0.18 * (0.5 * n.z + 0.5);
-    vec3 lit = uColor * (hemi + key * 0.75 + fill * 0.30);
+    float hemi = 0.38 + 0.20 * (0.5 * n.z + 0.5);
+    vec3 lit = uColor * (hemi + key * 0.62 + fill * 0.25);
     float band = smoothstep(uRevealZ - 1.2, uRevealZ, vWorldPos.z);
     lit = mix(lit, vec3(1.0, 0.85, 0.32), band * 0.6);
     if (uPlateEdge > 0.0) {

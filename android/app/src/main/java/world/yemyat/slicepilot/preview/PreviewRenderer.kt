@@ -299,7 +299,10 @@ class PreviewRenderer(
         GLES30.glEnableVertexAttribArray(0)
         GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, POSITION_STRIDE_BYTES, 0)
         GLES30.glDisableVertexAttribArray(1)
-        GLES30.glVertexAttrib3f(1, 0f, 0f, 1f)
+        // Zero normal signals the fragment shader to derive the geometric face normal
+        // via dFdx/dFdy(vWorldPos), giving position-only G-code ribbons full 3D shading
+        // without doubling VBO memory.
+        GLES30.glVertexAttrib3f(1, 0f, 0f, 0f)
     }
 
     private fun setColor(color: FloatArray) {
