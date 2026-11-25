@@ -63,6 +63,10 @@ DESKTOP-CLASS ON-DEVICE SLICING ENGINE
 
 SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint or Elegoo. All trademarks belong to their respective owners.
 
+## What's new (1.10.4)
+• Fixed G-code preview cutting off the upper half of large, high-detail models (like 500+ layer sculpted figurines): eliminated an odd-layer parser deadlock and added adaptive LOD with outer-wall preservation and segment coalescing so 100% of model height always renders smoothly within memory limits
+• Includes v1.10.3's full 3D directional G-code shading, arc toolpath support, and dynamic layer-height rendering
+
 ## What's new (1.10.3)
 • Fixed G-code preview rendering models flat after slicing: added true 3D directional shading with crisp contrast across top surfaces, curved walls, and layer cutaways
 • Improved G-code parser for all layer-change and feature markers, dynamic layer heights/line widths, G2/G3 arc toolpaths, relative positioning, and centered framing without the start-gcode prime line

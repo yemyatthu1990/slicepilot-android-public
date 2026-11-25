@@ -71,11 +71,12 @@ class GcodeStats(
 object GcodePreviewParser {
     private const val MAX_SEGMENTS_PER_LAYER = 60000
 
-    // Soft (~24 MB) and hard (~48 MB) caps on preview geometry kept for all layers.
-    // Past the soft budget the parser drops infill/support, then keeps only perimeters,
-    // then every other layer's perimeters, and stops adding vertices past the hard cap
-    // so massive prints can never OOM during post-slice parsing.
-    private const val MAX_TOTAL_FLOATS = 6L * 1024 * 1024
+    // Target (~32 MB) and hard (~48 MB) caps on preview geometry across all layers.
+    // Large G-code files adapt their level of detail (dropping hidden infill / inner walls,
+    // coalescing sub-millimetre sculpted segments, and only striding layers on extreme files)
+    // proportionally to file size and parse rate so 100% of the model's height always renders
+    // without OOMing or cutting off the upper half.
+    private const val TARGET_FLOATS = 8L * 1024 * 1024
     private const val MAX_HARD_FLOATS = 12L * 1024 * 1024
 
     fun parseStats(file: File): GcodeStats {
@@ -155,9 +156,12 @@ object GcodePreviewParser {
         var layerZ = 0f
         var width = defaultWidth
         var part = GcodePart.PERIMETER
+        var isOuterWall = true
         var tool = 0
         var filamentColors = emptyList<String>()
         var layerIndex = 0
+        var rawLayerIndex = 0
+        var sawExtrusionInLayer = false
         var thickness = 0.2f
         var relativePositioning = false
         var relativeExtrusion = false
@@ -168,37 +172,55 @@ object GcodePreviewParser {
         var maxZ = 0f
         var read = 0L
         var totalFloats = 0L
+        var bufferedFloats = 0L
 
-        fun clearBufferedLayer() {
-            for (buf in layerVerts.values) {
-                if (buf.size > 0) buf.takeArray()
-            }
-        }
+        // Estimate initial LOD from file size (~32 bytes per G1 extrusion line -> 54 floats).
+        val estFloats = total * 54L / 32L
+        var lodLevel = initialLodLevel(estFloats)
+        val warmupBytes = max(512L * 1024L, total / 12L)
+        val lodCheckStep = max(256L * 1024L, total / 16L)
+        var nextLodCheckByte = warmupBytes
 
-        fun flushLayer() {
-            var hasData = false
-            for (buf in layerVerts.values) {
-                if (buf.size > 0) {
-                    hasData = true
-                    break
-                }
-            }
-            if (!hasData) return
+        // Polyline coalescing state for LOD >= 1 (merges tiny sculpted segments along a wall).
+        var hasAnchor = false
+        var anchorX = 0f; var anchorY = 0f; var anchorZ = 0f
+        var anchorAccumLen = 0f
 
-            val parts = ArrayList<PartGeometry>(layerVerts.size)
-            for ((key, verts) in layerVerts) {
-                if (verts.size == 0) continue
-                val arr = verts.takeArray()
-                totalFloats += arr.size
-                parts.add(PartGeometry(key.first, arr, key.second))
+        fun currentMinSegLen(): Float =
+            when (lodLevel) {
+                0 -> 0f
+                1 -> 0.35f
+                2 -> 0.6f
+                3 -> 1.0f
+                4 -> 1.6f
+                else -> 2.5f
             }
-            if (parts.isNotEmpty()) {
-                layers.add(GcodeLayer(layerIndex, layerZ, parts))
-                layerIndex++
+
+        fun currentLayerStride(): Int =
+            when {
+                lodLevel <= 3 -> 1
+                lodLevel == 4 -> 2
+                else -> 4
             }
-        }
+
+        fun keepCurrentFeature(): Boolean =
+            when (lodLevel) {
+                0 -> true
+                1 -> part != GcodePart.INFILL
+                2 -> (part == GcodePart.PERIMETER && isOuterWall) ||
+                    part == GcodePart.TOP_SHELL || part == GcodePart.BOTTOM_SHELL ||
+                    part == GcodePart.SUPPORT || part == GcodePart.SUPPORT_INTERFACE ||
+                    part == GcodePart.OTHER
+                3 -> (part == GcodePart.PERIMETER && isOuterWall) ||
+                    part == GcodePart.TOP_SHELL || part == GcodePart.BOTTOM_SHELL ||
+                    part == GcodePart.SUPPORT_INTERFACE || part == GcodePart.OTHER ||
+                    (part == GcodePart.SUPPORT && rawLayerIndex % 2 == 0)
+                else -> (part == GcodePart.PERIMETER && isOuterWall) ||
+                    part == GcodePart.TOP_SHELL || part == GcodePart.BOTTOM_SHELL
+            }
 
         fun emitSegment(x0: Float, y0: Float, z0: Float, x1: Float, y1: Float, z1: Float) {
+            if (totalFloats + bufferedFloats + 54L > MAX_HARD_FLOATS) return
             val dx = x1 - x0; val dy = y1 - y0
             val len = sqrt(dx * dx + dy * dy)
             if (len <= 1e-4f) return
@@ -207,8 +229,9 @@ object GcodePreviewParser {
             if (verts.size / 54 >= MAX_SEGMENTS_PER_LAYER) return
             val ux = dx / len; val uy = dy / len
             val px = -uy * width * 0.5f; val py = ux * width * 0.5f
-            val zb0 = z0 - thickness
-            val zb1 = z1 - thickness
+            val wallHeight = thickness * currentLayerStride()
+            val zb0 = z0 - wallHeight
+            val zb1 = z1 - wallHeight
             // top face (normal +z)
             verts.add(x0 + px); verts.add(y0 + py); verts.add(z0)
             verts.add(x0 - px); verts.add(y0 - py); verts.add(z0)
@@ -233,9 +256,76 @@ object GcodePreviewParser {
             verts.add(x0 - px); verts.add(y0 - py); verts.add(zb0)
             verts.add(x1 - px); verts.add(y1 - py); verts.add(zb1)
 
+            bufferedFloats += 54L
             minX = min(minX, min(x0, x1) - width); maxX = max(maxX, max(x0, x1) + width)
             minY = min(minY, min(y0, y1) - width); maxY = max(maxY, max(y0, y1) + width)
             maxZ = max(maxZ, max(z0, z1))
+        }
+
+        fun flushAnchor() {
+            if (!hasAnchor) return
+            val segZ0 = if (abs(z - anchorZ) <= thickness * 2f) anchorZ else z
+            emitSegment(anchorX, anchorY, segZ0, x, y, z)
+            hasAnchor = false
+            anchorAccumLen = 0f
+        }
+
+        fun clearBufferedLayer() {
+            hasAnchor = false
+            anchorAccumLen = 0f
+            for (buf in layerVerts.values) {
+                if (buf.size > 0) buf.takeArray()
+            }
+            bufferedFloats = 0L
+            sawExtrusionInLayer = false
+        }
+
+        fun flushLayer() {
+            flushAnchor()
+            val hadExtrusion = sawExtrusionInLayer
+            sawExtrusionInLayer = false
+            var hasData = false
+            for (buf in layerVerts.values) {
+                if (buf.size > 0) {
+                    hasData = true
+                    break
+                }
+            }
+            if (hasData) {
+                val parts = ArrayList<PartGeometry>(layerVerts.size)
+                for ((key, verts) in layerVerts) {
+                    if (verts.size == 0) continue
+                    val arr = verts.takeArray()
+                    totalFloats += arr.size
+                    parts.add(PartGeometry(key.first, arr, key.second))
+                }
+                bufferedFloats = 0L
+                if (parts.isNotEmpty()) {
+                    layers.add(GcodeLayer(layerIndex, layerZ, parts))
+                    layerIndex++
+                }
+            }
+            if (hadExtrusion) {
+                rawLayerIndex++
+                if (totalFloats >= MAX_HARD_FLOATS * 92L / 100L && lodLevel < 5) {
+                    lodLevel = 5
+                } else if (totalFloats >= MAX_HARD_FLOATS * 80L / 100L && lodLevel < 4) {
+                    lodLevel = 4
+                } else if (read >= nextLodCheckByte && totalFloats > 0L && read > 0L) {
+                    val projected = totalFloats.toDouble() * total.toDouble() / read.toDouble()
+                    val allowBump =
+                        when {
+                            lodLevel < 3 -> projected > TARGET_FLOATS * 1.25
+                            lodLevel == 3 -> totalFloats > TARGET_FLOATS * 55L / 100L && projected > TARGET_FLOATS * 1.35
+                            lodLevel == 4 -> totalFloats > TARGET_FLOATS * 85L / 100L && projected > MAX_HARD_FLOATS * 0.95
+                            else -> false
+                        }
+                    if (allowBump) {
+                        lodLevel++
+                    }
+                    nextLodCheckByte = read + lodCheckStep
+                }
+            }
         }
 
         fun emitArc(
@@ -269,7 +359,8 @@ object GcodePreviewParser {
                     s
                 }
             val arcLen = abs(sweep) * r
-            val steps = ceil(max(abs(sweep) / (PI / 12.0), arcLen / 0.5)).toInt().coerceIn(2, 64)
+            val chordTarget = max(0.5, currentMinSegLen().toDouble())
+            val steps = ceil(max(abs(sweep) / (PI / 12.0), arcLen / chordTarget)).toInt().coerceIn(2, 64)
             var px = x0; var py = y0; var pz = z0
             for (s in 1..steps) {
                 val t = s.toDouble() / steps
@@ -329,9 +420,11 @@ object GcodePreviewParser {
                             inCustomFeature = false
                         }
                         trimmedUpper.startsWith("TYPE:") || trimmedUpper.startsWith("FEATURE:") -> {
+                            flushAnchor()
                             val t = trimmed.substringAfter(':').trim().lowercase()
                             inCustomFeature = (t == "custom")
                             part = classifyFeature(t)
+                            isOuterWall = part == GcodePart.PERIMETER && "inner" !in t
                         }
                     }
                     continue
@@ -341,6 +434,7 @@ object GcodePreviewParser {
                 val tokens = cmd.split(' ', '\t')
                 val op = tokens[0].uppercase()
                 if (op.length > 1 && op[0] == 'T' && op.substring(1).all { it.isDigit() }) {
+                    flushAnchor()
                     tool = op.substring(1).toInt()
                     continue
                 }
@@ -349,6 +443,7 @@ object GcodePreviewParser {
                 if (op == "M82") { relativeExtrusion = false; continue }
                 if (op == "M83") { relativeExtrusion = true; continue }
                 if (op == "G92") {
+                    flushAnchor()
                     for (i in 1 until tokens.size) {
                         val tok = tokens[i]
                         if (tok.length < 2) continue
@@ -382,30 +477,45 @@ object GcodePreviewParser {
                     }
                 }
                 val extruding = hasE && if (relativeExtrusion) ne > 1e-6f else ne > e + 1e-6f
-                val overBudget = when {
-                    totalFloats < MAX_TOTAL_FLOATS -> 0
-                    totalFloats < MAX_TOTAL_FLOATS * 3 / 2 -> 1
-                    totalFloats < MAX_HARD_FLOATS -> 2
-                    else -> 3
-                }
-                val keepPart = when (overBudget) {
-                    0 -> true
-                    1 -> part == GcodePart.PERIMETER || part == GcodePart.TOP_SHELL ||
-                        part == GcodePart.BOTTOM_SHELL
-                    2 -> part == GcodePart.PERIMETER && layerIndex % 2 == 0
-                    else -> false
-                }
-                if (extruding && keepPart) {
-                    val segZ0 = if (abs(nz - z) <= thickness * 2f) z else nz
+                if (extruding) sawExtrusionInLayer = true
+                val stride = currentLayerStride()
+                val keepMove =
+                    extruding &&
+                        (totalFloats + bufferedFloats + 54L <= MAX_HARD_FLOATS) &&
+                        (rawLayerIndex % stride == 0) &&
+                        keepCurrentFeature()
+                if (keepMove) {
                     if (op == "G1") {
-                        emitSegment(x, y, segZ0, nx, ny, nz)
+                        val minLen = currentMinSegLen()
+                        if (minLen <= 0f) {
+                            val segZ0 = if (abs(nz - z) <= thickness * 2f) z else nz
+                            emitSegment(x, y, segZ0, nx, ny, nz)
+                        } else {
+                            if (!hasAnchor) {
+                                anchorX = x; anchorY = y; anchorZ = z
+                                anchorAccumLen = 0f
+                                hasAnchor = true
+                            }
+                            anchorAccumLen += sqrt((nx - x) * (nx - x) + (ny - y) * (ny - y))
+                            val dxA = nx - anchorX; val dyA = ny - anchorY
+                            if (dxA * dxA + dyA * dyA >= minLen * minLen || anchorAccumLen >= minLen * 1.5f) {
+                                val segZ0 = if (abs(nz - anchorZ) <= thickness * 2f) anchorZ else nz
+                                emitSegment(anchorX, anchorY, segZ0, nx, ny, nz)
+                                anchorX = nx; anchorY = ny; anchorZ = nz
+                                anchorAccumLen = 0f
+                            }
+                        }
                     } else if (isArc) {
+                        flushAnchor()
+                        val segZ0 = if (abs(nz - z) <= thickness * 2f) z else nz
                         if (hasIJ) {
                             emitArc(x, y, segZ0, nx, ny, nz, arcI, arcJ, clockwise = op == "G2")
                         } else {
                             emitSegment(x, y, segZ0, nx, ny, nz)
                         }
                     }
+                } else {
+                    flushAnchor()
                 }
                 x = nx; y = ny; z = nz
                 e = if (relativeExtrusion) 0f else ne
@@ -416,6 +526,15 @@ object GcodePreviewParser {
         if (minX > maxX) { minX = 0f; maxX = 1f; minY = 0f; maxY = 1f }
         return GcodePreview(layers, minX, minY, maxX, maxY, maxZ, filamentColors)
     }
+
+    internal fun initialLodLevel(estFloats: Long): Int =
+        when {
+            estFloats <= TARGET_FLOATS -> 0
+            estFloats <= TARGET_FLOATS * 2L -> 1
+            estFloats <= TARGET_FLOATS * 4L -> 2
+            estFloats <= TARGET_FLOATS * 10L -> 3
+            else -> 4
+        }
 
     private fun isLayerChangeComment(trimmedUpper: String): Boolean {
         if ("LAYER_CHANGE" in trimmedUpper || "CHANGE_LAYER" in trimmedUpper) return true

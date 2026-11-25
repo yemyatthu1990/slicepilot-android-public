@@ -138,4 +138,41 @@ class GcodePreviewParserTest {
             tmp.delete()
         }
     }
+
+    @Test
+    fun `keeps full height on dense multi-hundred-layer prints without odd-layer deadlock`() {
+        val tmp = File.createTempFile("huge_dense_test", ".gcode")
+        try {
+            // Generate a >12 MB high-detail G-code (500 layers, 0.2mm -> 100.0mm tall,
+            // with micro-segmented outer walls, inner walls, and dense infill) that
+            // previously deadlocked at odd layerIndex once totalFloats crossed 9M.
+            tmp.bufferedWriter().use { w ->
+                w.write("M83\nG90\n")
+                for (layer in 1..500) {
+                    val z = layer * 0.2f
+                    w.write("; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\nG1 Z%.2f\n".format(z))
+                    // Outer wall: 400 tiny 0.2mm micro-segments around a 40mm perimeter
+                    w.write("; FEATURE: Outer wall\nG1 X100.00 Y100.00\n")
+                    for (s in 1..100) w.write("G1 X%.2f Y100.00 E0.01\n".format(100f + s * 0.2f))
+                    for (s in 1..100) w.write("G1 X120.00 Y%.2f E0.01\n".format(100f + s * 0.2f))
+                    for (s in 1..100) w.write("G1 X%.2f Y120.00 E0.01\n".format(120f - s * 0.2f))
+                    for (s in 1..100) w.write("G1 X100.00 Y%.2f E0.01\n".format(120f - s * 0.2f))
+                    // Hidden inner wall + dense infill
+                    w.write("; FEATURE: Inner wall\nG1 X101.00 Y101.00\n")
+                    for (s in 1..100) w.write("G1 X%.2f Y101.00 E0.01\n".format(101f + s * 0.18f))
+                    w.write("; FEATURE: Sparse infill\nG1 X102.00 Y102.00\n")
+                    for (s in 1..200) w.write("G1 X%.2f Y%.2f E0.01\n".format(102f + (s % 2) * 16f, 102f + s * 0.08f))
+                }
+            }
+            assertTrue("Expected > 7 MB synthetic file, got ${tmp.length()}", tmp.length() > 7_000_000L)
+            val preview = GcodePreviewParser.parse(tmp)
+            // Must render all the way to the top of the 100mm model without chopping off!
+            assertTrue("Expected full height near 100mm, got ${preview.maxZ}", preview.maxZ >= 99.6f)
+            assertTrue("Expected >= 250 layers kept, got ${preview.layers.size}", preview.layers.size >= 250)
+            val totalFloats = preview.layers.sumOf { l -> l.parts.sumOf { it.vertices.size.toLong() } }
+            assertTrue("Must stay within 48 MB hard cap, got $totalFloats floats", totalFloats <= 12L * 1024 * 1024)
+        } finally {
+            tmp.delete()
+        }
+    }
 }
