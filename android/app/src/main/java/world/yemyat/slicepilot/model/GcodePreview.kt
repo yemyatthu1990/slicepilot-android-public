@@ -186,15 +186,21 @@ object GcodePreviewParser {
         var anchorX = 0f; var anchorY = 0f; var anchorZ = 0f
         var anchorAccumLen = 0f
 
-        fun currentMinSegLen(): Float =
-            when (lodLevel) {
-                0 -> 0f
-                1 -> 0.35f
-                2 -> 0.6f
-                3 -> 1.0f
-                4 -> 1.6f
-                else -> 2.5f
-            }
+        fun currentMinSegLen(): Float {
+            val base =
+                when (lodLevel) {
+                    0 -> 0f
+                    1 -> 0.35f
+                    2 -> 0.6f
+                    3 -> 1.0f
+                    4 -> 1.6f
+                    else -> 2.5f
+                }
+            // Tree/organic supports have many tiny circular arcs; slightly coarser
+            // coalescing at higher LOD keeps all supports visible without blowing the
+            // geometry budget.
+            return if (part == GcodePart.SUPPORT && lodLevel >= 3) base * 1.35f else base
+        }
 
         fun currentLayerStride(): Int =
             when {
@@ -203,21 +209,20 @@ object GcodePreviewParser {
                 else -> 4
             }
 
-        fun keepCurrentFeature(): Boolean =
-            when (lodLevel) {
+        fun keepCurrentFeature(): Boolean {
+            if (inCustomFeature && lodLevel >= 1) return false
+            return when (lodLevel) {
                 0 -> true
                 1 -> part != GcodePart.INFILL
-                2 -> (part == GcodePart.PERIMETER && isOuterWall) ||
+                // Always keep exterior-visible features — including supports, support
+                // interfaces, brims, and prime towers — at every LOD level so large
+                // models never lose their supports in the final G-code preview.
+                else -> (part == GcodePart.PERIMETER && isOuterWall) ||
                     part == GcodePart.TOP_SHELL || part == GcodePart.BOTTOM_SHELL ||
                     part == GcodePart.SUPPORT || part == GcodePart.SUPPORT_INTERFACE ||
                     part == GcodePart.OTHER
-                3 -> (part == GcodePart.PERIMETER && isOuterWall) ||
-                    part == GcodePart.TOP_SHELL || part == GcodePart.BOTTOM_SHELL ||
-                    part == GcodePart.SUPPORT_INTERFACE || part == GcodePart.OTHER ||
-                    (part == GcodePart.SUPPORT && rawLayerIndex % 2 == 0)
-                else -> (part == GcodePart.PERIMETER && isOuterWall) ||
-                    part == GcodePart.TOP_SHELL || part == GcodePart.BOTTOM_SHELL
             }
+        }
 
         fun emitSegment(x0: Float, y0: Float, z0: Float, x1: Float, y1: Float, z1: Float) {
             if (totalFloats + bufferedFloats + 54L > MAX_HARD_FLOATS) return

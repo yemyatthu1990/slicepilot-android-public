@@ -175,4 +175,54 @@ class GcodePreviewParserTest {
             tmp.delete()
         }
     }
+
+    @Test
+    fun `preserves supports, support interfaces, and brim even at high LOD on huge files`() {
+        val tmp = File.createTempFile("huge_supports_test", ".gcode")
+        try {
+            // Generate a >52 MB synthetic file (estFloats > TARGET_FLOATS * 10 -> starts at
+            // lodLevel = 4) with outer walls, infill, tree supports, support interfaces, and
+            // a layer-0 brim. Previously lodLevel >= 4 dropped SUPPORT, SUPPORT_INTERFACE,
+            // and OTHER completely.
+            tmp.bufferedWriter().use { w ->
+                w.write("M83\nG90\n")
+                for (layer in 1..400) {
+                    val z = layer * 0.2f
+                    w.write("; CHANGE_LAYER\n; LAYER_HEIGHT: 0.2\nG1 Z%.2f\n".format(z))
+                    if (layer == 1) {
+                        w.write("; FEATURE: Brim\nG1 X95.00 Y95.00\n")
+                        w.write("G1 X125.00 Y95.00 E1.0\nG1 X125.00 Y125.00 E1.0\nG1 X95.00 Y125.00 E1.0\nG1 X95.00 Y95.00 E1.0\n")
+                    }
+                    w.write("; FEATURE: Outer wall\nG1 X100.00 Y100.00\n")
+                    for (s in 1..50) w.write("G1 X%.2f Y100.00 E0.01\n".format(100f + s * 0.4f))
+                    for (s in 1..50) w.write("G1 X120.00 Y%.2f E0.01\n".format(100f + s * 0.4f))
+                    // Heavy infill to push file size past 50 MB (LOD >= 4)
+                    w.write("; FEATURE: Sparse infill\nG1 X102.00 Y102.00\n")
+                    for (s in 1..5200) {
+                        w.write("G1 X%.2f Y%.2f E0.01\n".format(102f + (s % 2) * 16f, 102f + (s % 160) * 0.1f))
+                    }
+                    // Tree support column alongside model
+                    w.write("; FEATURE: Support\nG1 X130.00 Y100.00\n")
+                    w.write("G1 X136.00 Y100.00 E0.2\nG1 X136.00 Y106.00 E0.2\nG1 X130.00 Y106.00 E0.2\nG1 X130.00 Y100.00 E0.2\n")
+                    if (layer in 390..394) {
+                        w.write("; FEATURE: Support interface\nG1 X130.00 Y100.00\n")
+                        w.write("G1 X136.00 Y100.00 E0.2\nG1 X136.00 Y106.00 E0.2\n")
+                    }
+                }
+            }
+            assertTrue("Expected initialLodLevel >= 4, file size=${tmp.length()}", GcodePreviewParser.initialLodLevel(tmp.length() * 54L / 32L) >= 4)
+            val preview = GcodePreviewParser.parse(tmp)
+            assertTrue("Expected full height near 80mm, got ${preview.maxZ}", preview.maxZ >= 79.4f)
+            val supportLayers = preview.layers.count { l -> l.parts.any { it.part == GcodePart.SUPPORT && it.vertices.isNotEmpty() } }
+            val interfaceLayers = preview.layers.count { l -> l.parts.any { it.part == GcodePart.SUPPORT_INTERFACE && it.vertices.isNotEmpty() } }
+            val brimPresent = preview.layers.first().parts.any { it.part == GcodePart.OTHER && it.vertices.isNotEmpty() }
+            assertTrue("Expected supports across all kept layers at LOD >= 4, got $supportLayers/${preview.layers.size}", supportLayers >= preview.layers.size - 1)
+            assertTrue("Expected support interfaces preserved at LOD >= 4, got $interfaceLayers", interfaceLayers >= 1)
+            assertTrue("Expected layer-0 brim preserved at LOD >= 4", brimPresent)
+            val totalFloats = preview.layers.sumOf { l -> l.parts.sumOf { it.vertices.size.toLong() } }
+            assertTrue("Must stay within 48 MB hard cap, got $totalFloats floats", totalFloats <= 12L * 1024 * 1024)
+        } finally {
+            tmp.delete()
+        }
+    }
 }

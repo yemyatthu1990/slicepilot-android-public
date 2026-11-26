@@ -1249,8 +1249,8 @@
       ],
       "verification": {
         "level": "store",
-        "ref": "play-prod-v1.10.4-51",
-        "at": "2026-11-25"
+        "ref": "play-prod-v1.10.5-52",
+        "at": "2026-11-26"
       },
       "edges": [
         [
@@ -2641,7 +2641,7 @@
       "id": "rel:v1.10.4",
       "kind": "release",
       "title": "v1.10.4 (51)",
-      "status": "live",
+      "status": "superseded",
       "summary": "Fixes half-model G-code preview cutoff on large high-detail models: eliminates the odd-layer parser deadlock and introduces file-size + parse-rate adaptive LOD (outer-wall preservation, polyline coalescing, independent rawLayerIndex, stride-scaled wall height) so 100% of model height always renders within the 48 MB cap. Uploaded to Play internal (edit 11948565749897563731, sha1 6c2b558e4074615d45a96a900ea1cdfecd862025) with ProGuard mapping + native symbols and promoted to Play production 100% (edit 14668254367111932231).",
       "updated": "2026-11-25",
       "refs": [
@@ -2649,9 +2649,7 @@
         "file:android/app/build.gradle.kts",
         "commit:bfba248"
       ],
-      "next": [
-        "Monitor Play vitals / Crashlytics on v1.10.4 production rollout"
-      ],
+      "next": [],
       "attrs": {
         "date": "2026-11-25",
         "version_code": 51,
@@ -2675,6 +2673,47 @@
         [
           "supersedes",
           "rel:v1.10.3"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.10.5",
+      "kind": "release",
+      "title": "v1.10.5 (52)",
+      "status": "live",
+      "summary": "Preserves supports, support interfaces, brim, and prime tower in G-code preview across all adaptive LOD levels (0..5) and eliminates odd-layer support gaps at LOD 3, with 1.35x support segment coalescing to stay within the 48 MB cap. Uploaded to Play internal (edit 18397921120296925531, sha1 7202af9a95c0dfcd11cc8847cc42327532b70757) with ProGuard mapping + native symbols and promoted to Play production 100% (edit 05737116327998787386).",
+      "updated": "2026-11-26",
+      "refs": [
+        "file:store_listing/metadata.md",
+        "file:android/app/build.gradle.kts",
+        "commit:5986254"
+      ],
+      "next": [
+        "Monitor Play vitals / Crashlytics on v1.10.5 production rollout"
+      ],
+      "attrs": {
+        "date": "2026-11-26",
+        "version_code": 52,
+        "play_edits": "internal 18397921120296925531; production 05737116327998787386",
+        "sha1": "7202af9a95c0dfcd11cc8847cc42327532b70757",
+        "notes": "3 bullets, 367 chars"
+      },
+      "edges": [
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "affects",
+          "mod:android-app"
+        ],
+        [
+          "supersedes",
+          "rel:v1.10.4"
         ]
       ]
     },
