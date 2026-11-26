@@ -93,6 +93,7 @@ import java.net.URL
 fun ModelFindFeed(
     browser: ModelBrowser,
     onSeeMore: (ModelSource) -> Unit,
+    layoutSpec: FeedLayoutSpec = feedLayoutSpecFor(400),
 ) {
     val st by browser.state.collectAsState()
     // Listings the user kept ("My models") — cards show a filled star badge.
@@ -110,75 +111,62 @@ fun ModelFindFeed(
     // Empty search bar shows each site's popular models.
     LaunchedEffect(Unit) { browser.loadHome() }
 
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        OutlinedTextField(
-            value = st.query,
-            onValueChange = { browser.setQuery(it) },
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("Search all sites…") },
-            singleLine = true,
-            shape = RoundedCornerShape(Radius.sm),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions =
-                KeyboardActions(
+    val filterSources =
+        remember(browser.thingiverseToken) {
+            ModelSource.entries.filter {
+                it != ModelSource.THINGIVERSE || browser.thingiverseToken.isNotBlank()
+            }
+        }
+
+    Column(verticalArrangement = Arrangement.spacedBy(if (layoutSpec.widthClass == WindowWidthClass.Compact) 12.dp else 16.dp)) {
+        if (layoutSpec.inlineSearchAndChips) {
+            // Expanded tablet / desktop toolbar: ergonomic-width search field paired inline
+            // with source filter chips so more model cards appear above the fold.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                FeedSearchField(
+                    query = st.query,
+                    onQueryChange = { browser.setQuery(it) },
                     onSearch = {
                         focusManager.clearFocus()
                         browser.search()
                     },
-                ),
-            leadingIcon = { Icon(Icons.Filled.Search, null) },
-            trailingIcon = {
-                if (st.query.isNotBlank()) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(
-                            onClick = {
-                                browser.setQuery("")
-                                focusManager.clearFocus()
-                            },
-                        ) {
-                            Icon(Icons.Filled.Close, contentDescription = "Clear search")
-                        }
-                        IconButton(
-                            onClick = {
-                                focusManager.clearFocus()
-                                browser.search()
-                            },
-                        ) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.ArrowForward,
-                                contentDescription = "Search",
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                    }
-                }
-            },
-        )
-
-        val filterSources =
-            remember(browser.thingiverseToken) {
-                ModelSource.entries.filter {
-                    it != ModelSource.THINGIVERSE || browser.thingiverseToken.isNotBlank()
-                }
-            }
-        Row(
-            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            FilterChip(
-                selected = selectedSourceId == null,
-                onClick = { selectedSourceId = null },
-                label = { Text("All") },
-            )
-            filterSources.forEach { src ->
-                FilterChip(
-                    selected = selectedSourceId == src.id,
-                    onClick = {
-                        selectedSourceId = if (selectedSourceId == src.id) null else src.id
+                    onClear = {
+                        browser.setQuery("")
+                        focusManager.clearFocus()
                     },
-                    label = { Text(src.label) },
+                    modifier = Modifier.width(380.dp),
+                )
+                SourceFilterChipsRow(
+                    filterSources = filterSources,
+                    selectedSourceId = selectedSourceId,
+                    onSelect = { selectedSourceId = it },
+                    modifier = Modifier.weight(1f),
                 )
             }
+        } else {
+            FeedSearchField(
+                query = st.query,
+                onQueryChange = { browser.setQuery(it) },
+                onSearch = {
+                    focusManager.clearFocus()
+                    browser.search()
+                },
+                onClear = {
+                    browser.setQuery("")
+                    focusManager.clearFocus()
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            SourceFilterChipsRow(
+                filterSources = filterSources,
+                selectedSourceId = selectedSourceId,
+                onSelect = { selectedSourceId = it },
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
 
         if (browser.thingiverseToken.isBlank()) {
@@ -232,7 +220,14 @@ fun ModelFindFeed(
                     SourceSectionBlock(
                         section = section,
                         popular = st.isHomeFeed,
-                        previewLimit = if (selectedSourceId != null) 8 else 4,
+                        columns = layoutSpec.columns,
+                        cardSpacing = layoutSpec.cardSpacing,
+                        previewLimit =
+                            if (selectedSourceId != null) {
+                                layoutSpec.previewLimitSingle
+                            } else {
+                                layoutSpec.previewLimitAll
+                            },
                         favoritedListings = favListings,
                         onOpen = { browser.openDetail(it) },
                         onSeeMore = { onSeeMore(section.source) },
@@ -242,6 +237,69 @@ fun ModelFindFeed(
                     FeedStillLoading(loadingSections.map { it.source.label })
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun FeedSearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onSearch: () -> Unit,
+    onClear: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        modifier = modifier,
+        placeholder = { Text("Search all sites…") },
+        singleLine = true,
+        shape = RoundedCornerShape(Radius.sm),
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { onSearch() }),
+        leadingIcon = { Icon(Icons.Filled.Search, null) },
+        trailingIcon = {
+            if (query.isNotBlank()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onClear) {
+                        Icon(Icons.Filled.Close, contentDescription = "Clear search")
+                    }
+                    IconButton(onClick = onSearch) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowForward,
+                            contentDescription = "Search",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
+        },
+    )
+}
+
+@Composable
+private fun SourceFilterChipsRow(
+    filterSources: List<ModelSource>,
+    selectedSourceId: String?,
+    onSelect: (String?) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        FilterChip(
+            selected = selectedSourceId == null,
+            onClick = { onSelect(null) },
+            label = { Text("All") },
+        )
+        filterSources.forEach { src ->
+            FilterChip(
+                selected = selectedSourceId == src.id,
+                onClick = { onSelect(if (selectedSourceId == src.id) null else src.id) },
+                label = { Text(src.label) },
+            )
         }
     }
 }
@@ -410,11 +468,13 @@ private fun SourceSectionBlock(
     favoritedListings: Set<String> = emptySet(),
     section: SourceSection,
     popular: Boolean,
+    columns: Int = 2,
+    cardSpacing: androidx.compose.ui.unit.Dp = 12.dp,
     previewLimit: Int = 4,
     onOpen: (ModelListing) -> Unit,
     onSeeMore: () -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(Space.sm)) {
+    Column(verticalArrangement = Arrangement.spacedBy(cardSpacing)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             BrandSectionLabel(
                 if (popular) "Popular on ${section.source.label}" else section.source.label,
@@ -426,8 +486,8 @@ private fun SourceSectionBlock(
         }
         // A source still fetching is simply absent: the feed owns the one loading animation
         // (see ModelFindFeed), so a half-arrived search never shows a spinner per site.
-        section.results.take(previewLimit).chunked(2).forEach { rowItems ->
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        section.results.take(previewLimit).chunked(columns).forEach { rowItems ->
+            Row(horizontalArrangement = Arrangement.spacedBy(cardSpacing)) {
                 rowItems.forEach { item ->
                     ModelCard(
                         item,
@@ -435,7 +495,7 @@ private fun SourceSectionBlock(
                         favorited = "${item.source}|${item.id}" in favoritedListings,
                     ) { onOpen(item) }
                 }
-                if (rowItems.size == 1) Spacer(Modifier.weight(1f))
+                repeat(columns - rowItems.size) { Spacer(Modifier.weight(1f)) }
             }
         }
     }
@@ -479,37 +539,48 @@ fun SourceListOverlay(
             )
         },
     ) { padding ->
-        LazyVerticalGrid(
-            state = gridState,
-            columns = GridCells.Fixed(2),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            contentPadding = PaddingValues(Space.md),
-            modifier =
-                Modifier
-                    .padding(padding)
-                    .fillMaxSize(),
+        BoxWithConstraints(
+            modifier = Modifier.padding(padding).fillMaxSize(),
+            contentAlignment = Alignment.TopCenter,
         ) {
-            items(section.results, key = { it.id }) { item ->
-                ModelCard(
-                    item,
-                    favorited = "${item.source}|${item.id}" in favoritedListings,
-                ) { onOpen(item) }
-            }
-            if (section.loadingMore) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    Row(
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth().padding(20.dp),
-                    ) {
-                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(Space.sm))
-                        Text(
-                            "Loading more…",
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+            val spec = feedLayoutSpecFor(maxWidth)
+            LazyVerticalGrid(
+                state = gridState,
+                columns = GridCells.Fixed(spec.columns),
+                horizontalArrangement = Arrangement.spacedBy(spec.cardSpacing),
+                verticalArrangement = Arrangement.spacedBy(spec.cardSpacing),
+                contentPadding =
+                    PaddingValues(
+                        horizontal = spec.horizontalPadding,
+                        vertical = Space.md,
+                    ),
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .widthIn(max = spec.maxContentWidth)
+                        .navigationBarsPadding(),
+            ) {
+                items(section.results, key = { it.id }) { item ->
+                    ModelCard(
+                        item,
+                        favorited = "${item.source}|${item.id}" in favoritedListings,
+                    ) { onOpen(item) }
+                }
+                if (section.loadingMore) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Row(
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().padding(20.dp),
+                        ) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(Space.sm))
+                            Text(
+                                "Loading more…",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
@@ -568,7 +639,7 @@ internal fun ModelCard(
     ) {
         Column {
             Box {
-                RemoteThumbnail(item.thumbnailUrl, Modifier.fillMaxWidth().height(120.dp))
+                RemoteThumbnail(item.thumbnailUrl, Modifier.fillMaxWidth().aspectRatio(4f / 3f))
                 if (item.customizable) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -743,125 +814,87 @@ private fun ModelDetailScreen(
         }
     }
     val anyFavorited = remember(detail.files, favoritedKeys) { detail.files.any { fileKey(it) in favoritedKeys } }
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        listing.name,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    )
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+    val actionBar: @Composable (Modifier) -> Unit = { barModifier ->
+        Row(
+            modifier = barModifier,
+            horizontalArrangement = Arrangement.spacedBy(Space.sm),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            BrandIconButton(
+                icon = if (anyFavorited) Icons.Filled.Star else Icons.Outlined.StarBorder,
+                contentDescription = if (anyFavorited) "Saved in Files" else "Save to Files",
+                onClick = {
+                    if (signedIn && detail.files.size == 1 && !downloading && favoritingFile == null) {
+                        val sole = detail.files.first()
+                        val key = fileKey(sole)
+                        if (key in favoritedKeys) onUnfavorite(key) else onFavorite(sole)
+                    } else {
+                        startDownloadFlow()
                     }
                 },
+                size = ButtonSize.Large,
+                role = if (anyFavorited) ButtonRole.Tonal else ButtonRole.Secondary,
             )
-        },
-        // Pinned action bar matching Print setup, so the primary CTA never covers the description.
-        bottomBar = {
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 3.dp,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Row(
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .navigationBarsPadding()
-                            .padding(horizontal = Space.lg, vertical = Space.sm),
-                    horizontalArrangement = Arrangement.spacedBy(Space.sm),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    BrandIconButton(
-                        icon = if (anyFavorited) Icons.Filled.Star else Icons.Outlined.StarBorder,
-                        contentDescription = if (anyFavorited) "Saved in Files" else "Save to Files",
-                        onClick = {
-                            if (signedIn && detail.files.size == 1 && !downloading && favoritingFile == null) {
-                                val sole = detail.files.first()
-                                val key = fileKey(sole)
-                                if (key in favoritedKeys) onUnfavorite(key) else onFavorite(sole)
+            if (detail.parametric != null) {
+                if (detail.files.isNotEmpty() || downloading) {
+                    BrandButton(
+                        text = if (downloading) "$progress%" else "Files",
+                        onClick = { startDownloadFlow() },
+                        role = ButtonRole.Secondary,
+                        icon = {
+                            if (downloading) {
+                                CircularProgressIndicator(
+                                    progress = { progress / 100f },
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                )
                             } else {
-                                startDownloadFlow()
+                                Icon(Icons.Filled.Download, null, Modifier.size(18.dp))
                             }
                         },
-                        size = ButtonSize.Large,
-                        role = if (anyFavorited) ButtonRole.Tonal else ButtonRole.Secondary,
+                        modifier = Modifier.widthIn(min = 104.dp),
+                        height = ButtonSize.Large,
                     )
-                    if (detail.parametric != null) {
-                        if (detail.files.isNotEmpty() || downloading) {
-                            BrandButton(
-                                text = if (downloading) "$progress%" else "Files",
-                                onClick = { startDownloadFlow() },
-                                role = ButtonRole.Secondary,
-                                icon = {
-                                    if (downloading) {
-                                        CircularProgressIndicator(
-                                            progress = { progress / 100f },
-                                            modifier = Modifier.size(18.dp),
-                                            strokeWidth = 2.dp,
-                                        )
-                                    } else {
-                                        Icon(Icons.Filled.Download, null, Modifier.size(18.dp))
-                                    }
-                                },
-                                modifier = Modifier.widthIn(min = 104.dp),
-                                height = ButtonSize.Large,
-                            )
-                        }
-                        BrandButton(
-                            text = "Customize",
-                            onClick = { startCustomizeFlow() },
-                            icon = { Icon(Icons.Filled.Tune, null, Modifier.size(20.dp)) },
-                            modifier = Modifier.weight(1f),
-                            height = ButtonSize.Large,
-                        )
-                    } else {
-                        BrandButton(
-                            text = if (downloading) "Downloading $progress%" else "Download & slice",
-                            onClick = { startDownloadFlow() },
-                            icon = {
-                                if (downloading) {
-                                    CircularProgressIndicator(
-                                        progress = { progress / 100f },
-                                        modifier = Modifier.size(20.dp),
-                                        strokeWidth = 2.dp,
-                                        color = MaterialTheme.colorScheme.onPrimary,
-                                    )
-                                } else {
-                                    Icon(Icons.Filled.Download, null)
-                                }
-                            },
-                            modifier = Modifier.weight(1f),
-                            height = ButtonSize.Large,
-                        )
-                    }
                 }
+                BrandButton(
+                    text = "Customize",
+                    onClick = { startCustomizeFlow() },
+                    icon = { Icon(Icons.Filled.Tune, null, Modifier.size(20.dp)) },
+                    modifier = Modifier.weight(1f),
+                    height = ButtonSize.Large,
+                )
+            } else {
+                BrandButton(
+                    text = if (downloading) "Downloading $progress%" else "Download & slice",
+                    onClick = { startDownloadFlow() },
+                    icon = {
+                        if (downloading) {
+                            CircularProgressIndicator(
+                                progress = { progress / 100f },
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                            )
+                        } else {
+                            Icon(Icons.Filled.Download, null)
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                    height = ButtonSize.Large,
+                )
             }
-        },
-    ) { padding ->
-        Column(
-            Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Spacer(Modifier.height(4.dp))
-            if (detail.images.isNotEmpty()) {
-                val scope = rememberCoroutineScope()
-                val pagerState = rememberPagerState { detail.images.size }
+        }
+    }
+
+    val mediaGallery: @Composable (Boolean, androidx.compose.ui.unit.Dp) -> Unit = { useAspectRatio, galleryHeight ->
+        if (detail.images.isNotEmpty()) {
+            val scope = rememberCoroutineScope()
+            val pagerState = rememberPagerState { detail.images.size }
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 HorizontalPager(
                     state = pagerState,
                     modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .height(260.dp)
+                        (if (useAspectRatio) Modifier.fillMaxWidth().aspectRatio(4f / 3f) else Modifier.fillMaxWidth().height(galleryHeight))
                             .clip(RoundedCornerShape(Radius.md)),
                 ) { page ->
                     RemoteThumbnail(detail.images[page], Modifier.fillMaxSize(), maxDimPx = 1200)
@@ -890,105 +923,225 @@ private fun ModelDetailScreen(
                     }
                 }
             }
-            Text(listing.name, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                listing.author?.let {
-                    Text("by $it", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                listing.downloads?.let {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Icon(
-                            Icons.Outlined.Download,
-                            contentDescription = "Downloads",
-                            modifier = Modifier.size(15.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(it.toString(), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-                detail.likes?.let {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Icon(
-                            Icons.Outlined.FavoriteBorder,
-                            contentDescription = "Likes",
-                            modifier = Modifier.size(15.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(it.toString(), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
+        }
+    }
+
+    val detailInfoContent: @Composable () -> Unit = {
+        Text(listing.name, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            listing.author?.let {
+                Text("by $it", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            detail.published?.let {
-                Text("Published $it", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            detail.parametric?.let { param ->
-                BrandCard(
-                    modifier = Modifier.fillMaxWidth().clickable { startCustomizeFlow() },
-                    contentPadding = Space.md,
+            listing.downloads?.let {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(Space.sm),
+                    Icon(
+                        Icons.Outlined.Download,
+                        contentDescription = "Downloads",
+                        modifier = Modifier.size(15.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(it.toString(), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            detail.likes?.let {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(
+                        Icons.Outlined.FavoriteBorder,
+                        contentDescription = "Likes",
+                        modifier = Modifier.size(15.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(it.toString(), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        detail.published?.let {
+            Text("Published $it", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        detail.parametric?.let { param ->
+            BrandCard(
+                modifier = Modifier.fillMaxWidth().clickable { startCustomizeFlow() },
+                contentPadding = Space.md,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Space.sm),
+                ) {
+                    Box(
+                        modifier =
+                            Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Filled.Tune,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            "Customizable model",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            if (param.sourceFiles.size > 1) {
+                                "Personalize text, size, or options across ${param.sourceFiles.size} templates before slicing."
+                            } else {
+                                "Personalize text, font, or dimensions before slicing. Default files are still available under Files."
+                            },
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+        if (detail.description.isNotBlank()) {
+            DescriptionCard(detail)
+        }
+        if (detail.commentsTotal != null) {
+            CommentsSection(
+                detail,
+                loadingFirstPage = commentsLoading,
+                loadingMore = commentsLoadingMore,
+                exhausted = commentsExhausted,
+                moreError = commentsMoreError,
+                onLoadMore = onLoadMoreComments,
+            )
+        }
+    }
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val widthClass = windowWidthClassFor(maxWidth)
+        val isExpanded = shouldUseTwoPane(maxWidth)
+        val spec = feedLayoutSpecFor(maxWidth)
+
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Text(
+                            listing.name,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                        }
+                    },
+                )
+            },
+            // Pinned action bar matching Print setup on Compact/Medium; on Expanded the bar lives
+            // at the bottom of the right details pane so it stays paired with the model info.
+            bottomBar = {
+                if (!isExpanded) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 3.dp,
+                        modifier = Modifier.fillMaxWidth(),
                     ) {
                         Box(
-                            modifier =
-                                Modifier
-                                    .size(36.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                            modifier = Modifier.fillMaxWidth(),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Icon(
-                                Icons.Filled.Tune,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                "Customizable model",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                if (param.sourceFiles.size > 1) {
-                                    "Personalize text, size, or options across ${param.sourceFiles.size} templates before slicing."
-                                } else {
-                                    "Personalize text, font, or dimensions before slicing. Default files are still available under Files."
-                                },
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            actionBar(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .widthIn(max = MediumSingleColumnMaxWidth)
+                                    .navigationBarsPadding()
+                                    .padding(horizontal = Space.lg, vertical = Space.sm),
                             )
                         }
                     }
                 }
+            },
+        ) { padding ->
+            if (isExpanded) {
+                Box(
+                    modifier =
+                        Modifier
+                            .padding(padding)
+                            .fillMaxSize()
+                            .navigationBarsPadding(),
+                    contentAlignment = Alignment.TopCenter,
+                ) {
+                    Row(
+                        modifier =
+                            Modifier
+                                .fillMaxSize()
+                                .widthIn(max = spec.maxContentWidth)
+                                .padding(horizontal = spec.horizontalPadding, vertical = Space.md),
+                        horizontalArrangement = Arrangement.spacedBy(Space.lg),
+                    ) {
+                        if (detail.images.isNotEmpty()) {
+                            Column(
+                                modifier =
+                                    Modifier
+                                        .weight(1.05f)
+                                        .fillMaxHeight()
+                                        .verticalScroll(rememberScrollState()),
+                            ) {
+                                mediaGallery(true, 360.dp)
+                                Spacer(Modifier.height(Space.md))
+                            }
+                        }
+                        Column(
+                            modifier = Modifier.weight(0.95f).fillMaxHeight(),
+                            verticalArrangement = Arrangement.spacedBy(Space.md),
+                        ) {
+                            Column(
+                                modifier =
+                                    Modifier
+                                        .weight(1f)
+                                        .fillMaxWidth()
+                                        .verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                detailInfoContent()
+                                Spacer(Modifier.height(Space.md))
+                            }
+                            actionBar(Modifier.fillMaxWidth())
+                        }
+                    }
+                }
+            } else {
+                val galleryHeight = if (widthClass == WindowWidthClass.Medium) 340.dp else 260.dp
+                Box(
+                    modifier = Modifier.padding(padding).fillMaxSize(),
+                    contentAlignment = Alignment.TopCenter,
+                ) {
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .widthIn(max = MediumSingleColumnMaxWidth)
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = spec.horizontalPadding),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Spacer(Modifier.height(4.dp))
+                        mediaGallery(false, galleryHeight)
+                        detailInfoContent()
+                        Spacer(Modifier.height(Space.md))
+                    }
+                }
             }
-            if (detail.description.isNotBlank()) {
-                DescriptionCard(detail)
-            }
-
-            if (detail.commentsTotal != null) {
-                CommentsSection(
-                    detail,
-                    loadingFirstPage = commentsLoading,
-                    loadingMore = commentsLoadingMore,
-                    exhausted = commentsExhausted,
-                    moreError = commentsMoreError,
-                    onLoadMore = onLoadMoreComments,
-                )
-            }
-
-            Spacer(Modifier.height(Space.md))
         }
     }
 

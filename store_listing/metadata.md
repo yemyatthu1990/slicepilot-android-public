@@ -1,5 +1,7 @@
 # Play Store listing
 
+**v1.11.1 (54) went to production at 100 % on 2026-11-26** (production + en-US listing + 5 `2560×1440` tablet slides on `tenInchScreenshots` & `sevenInchScreenshots`: Play edit `01741459619850170829`; internal upload edit `15395737918513865419`, bundle sha1 `c2e6692e46e4d4662cb4fb11481802f2505f556e`, ProGuard mapping + native symbols uploaded; Material 3 adaptive tablet layouts across Home, Browse, Printer, Files, Print Setup, and Model Detail).
+**en-US Play Store listing updated on 2026-11-26** (Play edit `03106610955606778026`; short description 72 chars + full description 2919 chars adding OpenCentauri COSMOS, Klipper/Moonraker, and mid-print Skip Part SEO).
 **v1.11.0 (53) went to production at 100 % on 2026-11-26** (Play edit `12290804424531887166`, bundle sha1 `b4af80e7cb7f326e45e445484f51ba60c9869209`, ProGuard mapping + native symbols uploaded; OpenCentauri COSMOS / Klipper Moonraker LAN support, mid-print Skip Part with 2D build plate map, camera playback diagnostics, and Wi-Fi scanning spinner fix).
 Published 2026-11-24 from Play edit `18093862744728633418` (en-US listing + 7 `phone_v1.10.2` promotional screenshots + `1024×500` feature graphic + v1.10.2 production 100%).
 **v1.10.2 (49) went to production at 100 % on 2026-11-24** (Play edit `18093862744728633418`; internal upload edit `17281019097205255164`, bundle sha1 `3cd877681e1b6197278f4945b1fae46bc88ce2a3`, ProGuard mapping + native symbols uploaded).
@@ -19,16 +21,25 @@ Earlier: **v1.9.5 (38) went to production at 100 % on 2026-11-14** (Play edit `0
 production had been v1.8.3 (32) since 2026-10-21.
 The first draft of this copy, edit `01915840855682935073`, expired before it could be submitted:
 Play edits live about an hour, so an edit is built and committed in one sitting, not parked.
-Screenshots: `store_listing/screenshots/phone_v1.10.2/` (7 promotional 1080×1920 phone slides built from live v1.10.2 Pixel 4a captures + `1024×500` `store_listing/feature_graphic.png`; demo video at `store_listing/videos/customize_multicolour_demo.mp4`; earlier sets live in `phone_v1.9.0/`, `phone_new/`, and `phone/`).
+Screenshots: `store_listing/screenshots/phone_v1.10.2/` (7 promotional 1080×1920 phone slides built from live v1.10.2 Pixel 4a captures), `store_listing/screenshots/tablet_v1.11.1/` (5 promotional 2560×1440 16:9 tablet slides uploaded to both 7-inch and 10-inch tablet slots), plus `1024×500` `store_listing/feature_graphic.png`; demo video at `store_listing/videos/customize_multicolour_demo.mp4`; earlier sets live in `phone_v1.9.0/`, `phone_new/`, and `phone/`.
 
 ## App name
 SlicePilot
 
 ## Short description
-Customize, slice & multi-colour print 3D models right from your phone
+Customize, slice & print to Centauri Carbon, COSMOS & Klipper on Android
 
 ## Full description
-SlicePilot brings a full desktop-class 3D slicer, MakerWorld parametric customizer, and multi-colour AMS/Canvas printing straight to your Android phone.
+SlicePilot brings a full desktop-class 3D slicer, MakerWorld parametric customizer, multi-colour AMS/Canvas printing, and OpenCentauri COSMOS / Klipper (Moonraker) control straight to your Android phone and tablet.
+
+OPENCENTAURI COSMOS & KLIPPER (MOONRAKER) + SKIP PART
+Control Centauri Carbon 1 & 2 printers running OpenCentauri COSMOS firmware — or any Klipper / Moonraker printer on your local Wi-Fi:
+- Auto-discover Moonraker via mDNS or connect by IP/hostname (port 80 on COSMOS, port 7125 on standard Klipper, with optional API key)
+- Mid-print Skip Part (Klipper exclude_object): SlicePilot automatically embeds object tags when slicing on-device and gives you a live 2D build plate map to cancel a failed or detached part without stopping the rest of the print
+- Upload and start G-code in one tap, monitor real-time progress, stream uStreamer MJPEG live camera video, and control nozzle/bed temps, fans, and case LED
+
+CLOUD & LOCAL LAN PRINTING FOR CENTAURI CARBON 1 & 2
+Connect to your stock Elegoo Centauri Carbon 1 or Centauri Carbon 2 over Elegoo Cloud or local Wi-Fi: monitor live print progress, watch the live printer camera, control temperatures and fans, and send sliced G-code straight from your phone.
 
 CUSTOMIZE PARAMETRIC MODELS IN-APP
 Personalize MakerWorld parametric models — like custom name keychains, signs, and tags — without leaving the app:
@@ -41,7 +52,7 @@ MULTI-COLOUR 3MF & AMS / CANVAS SUPPORT
 - Colour 3D model preview for multi-colour 3MF projects
 - Automatic spool matching against the filaments loaded in your Centauri Carbon 2 Canvas
 - Smart, compact prime tower placement verified inside your build plate
-- Layer-by-layer G-code preview with print time, filament weight, and length estimates
+- 3D-shaded layer-by-layer G-code preview with print time, filament weight, and length estimates
 
 DOWNLOAD MODELS FROM 4 COMMUNITIES
 Search and browse four 3D model communities right on your phone:
@@ -51,18 +62,20 @@ Search and browse four 3D model communities right on your phone:
 - Nexprint
 See what's popular today, filter customizable models, inspect photos and comments, and download straight into the slicer.
 
-CLOUD & LOCAL LAN PRINTING FOR CENTAURI CARBON 2
-Connect to your Centauri Carbon 2 over the cloud or local Wi-Fi: monitor live print progress, watch the live printer camera, control temperatures and fans, and send sliced G-code straight from your phone.
-
 DESKTOP-CLASS ON-DEVICE SLICING ENGINE
-- Full slicing engine running natively on your device
+- Full slicing engine running natively on your device — no PC required
 - Fast native 3MF/STL parser with multi-part placement controls
 - Supports (including multi-material support interfaces), brim/skirt/raft, seam, speed, and quality settings
 - Background slicing with progress notifications
 - Warm light and sleek dark themes
 - Open STL/3MF files directly from your Files app
 
-SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint or Elegoo. All trademarks belong to their respective owners.
+SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint, OpenCentauri, or Elegoo. All trademarks belong to their respective owners.
+
+## What's new (1.11.1)
+• Adaptive tablet layouts following Material 3 guidelines: leading NavigationRail with pinned Local model button, 3- and 4-column model feeds with 4:3 cards, and inline search & filters on wide screens
+• Two-pane tablet workspaces for Print setup (3D build plate beside settings & Slice), Printer dashboard (live camera beside status & controls), and Model detail (gallery beside info & comments)
+• 2-column Files shelves, adaptive Photos grid, and fixed dark-mode navigation label contrast
 
 ## What's new (1.11.0)
 • Added OpenCentauri COSMOS & Klipper (Moonraker) LAN support: auto-discover via mDNS or connect by IP/hostname (port 80 or 7125, optional API key) to upload, monitor, control temps/fans/light, and stream MJPEG camera

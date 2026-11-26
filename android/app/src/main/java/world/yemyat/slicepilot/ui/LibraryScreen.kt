@@ -8,16 +8,25 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -88,49 +97,93 @@ fun LibraryScreen(
     val gcodes by vm.gcodeHistory.entries.collectAsState()
     val photos by vm.photos.collectAsState()
 
-    Column(
-        modifier =
-            Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .padding(horizontal = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.TopCenter,
     ) {
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "Files",
-            fontSize = 26.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground,
-        )
+        val spec = feedLayoutSpecFor(maxWidth)
+        val listColumns = libraryListColumnsFor(maxWidth)
+        val isCompact = spec.widthClass == WindowWidthClass.Compact
+        val isExpanded = spec.widthClass == WindowWidthClass.Expanded
+        val shelfCounts =
+            mapOf(
+                LibraryTab.MODELS to entries.size,
+                LibraryTab.GCODE to gcodes.size,
+                LibraryTab.PHOTOS to photos.size,
+            )
 
-        SegmentedShelf(
-            selected = tab,
-            onSelect = { vm.selectLibraryTab(it) },
-            counts =
-                mapOf(
-                    LibraryTab.MODELS to entries.size,
-                    LibraryTab.GCODE to gcodes.size,
-                    LibraryTab.PHOTOS to photos.size,
-                ),
-        )
-
-        when (tab) {
-            LibraryTab.MODELS -> {
-                SavedModels(
-                    vm = vm,
-                    favorites = favorites,
-                    entries = entries,
-                    onFindModels = onFindModels,
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .widthIn(max = spec.maxContentWidth)
+                    .statusBarsPadding()
+                    .let { if (spec.useNavigationRail) it.navigationBarsPadding() else it }
+                    .padding(horizontal = spec.horizontalPadding),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Spacer(Modifier.height(if (isCompact) 6.dp else 14.dp))
+            if (isExpanded) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(24.dp),
+                ) {
+                    Text(
+                        "Files",
+                        fontSize = 26.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Box(Modifier.width(440.dp)) {
+                        SegmentedShelf(
+                            selected = tab,
+                            onSelect = { vm.selectLibraryTab(it) },
+                            counts = shelfCounts,
+                        )
+                    }
+                }
+            } else {
+                Text(
+                    "Files",
+                    fontSize = 26.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground,
                 )
+                Box(Modifier.fillMaxWidth().widthIn(max = 520.dp)) {
+                    SegmentedShelf(
+                        selected = tab,
+                        onSelect = { vm.selectLibraryTab(it) },
+                        counts = shelfCounts,
+                    )
+                }
             }
 
-            LibraryTab.GCODE -> {
-                SlicedGcode(vm = vm, onFindModels = onFindModels)
-            }
+            when (tab) {
+                LibraryTab.MODELS -> {
+                    SavedModels(
+                        vm = vm,
+                        favorites = favorites,
+                        entries = entries,
+                        columns = listColumns,
+                        compact = isCompact,
+                        onFindModels = onFindModels,
+                    )
+                }
 
-            LibraryTab.PHOTOS -> {
-                CameraPhotos(vm = vm)
+                LibraryTab.GCODE -> {
+                    SlicedGcode(
+                        vm = vm,
+                        columns = listColumns,
+                        compact = isCompact,
+                        onFindModels = onFindModels,
+                    )
+                }
+
+                LibraryTab.PHOTOS -> {
+                    CameraPhotos(vm = vm, compact = isCompact)
+                }
             }
         }
     }
@@ -160,6 +213,8 @@ private fun SavedModels(
     vm: AppViewModel,
     favorites: FavoritesStore,
     entries: List<FavoriteModel>,
+    columns: Int = 1,
+    compact: Boolean = true,
     onFindModels: () -> Unit,
 ) {
     var confirmRemove by remember { mutableStateOf<FavoriteModel?>(null) }
@@ -188,7 +243,24 @@ private fun SavedModels(
             title = "Nothing kept yet",
             body = "Star a model's download button in the feed to save it here.",
             action = "Find models" to onFindModels,
+            compact = compact,
         )
+    } else if (columns > 1) {
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(columns),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(bottom = 24.dp),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            gridItems(entries, key = { it.id }) { entry ->
+                ModelRow(
+                    entry = entry,
+                    onOpen = { vm.requestLoadModel(entry.path) },
+                    onRemove = { confirmRemove = entry },
+                )
+            }
+        }
     } else {
         LazyColumn(
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -307,6 +379,8 @@ private fun FileRow(
 @Composable
 private fun SlicedGcode(
     vm: AppViewModel,
+    columns: Int = 1,
+    compact: Boolean = true,
     onFindModels: () -> Unit,
 ) {
     val history by vm.gcodeHistory.entries.collectAsState()
@@ -341,7 +415,24 @@ private fun SlicedGcode(
             title = "Nothing sliced yet",
             body = "Slice a model and its g-code is filed here until it prints.",
             action = "Find models" to onFindModels,
+            compact = compact,
         )
+    } else if (columns > 1) {
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(columns),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(bottom = 24.dp),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            gridItems(history, key = { it.id }) { entry ->
+                GcodeRow(
+                    entry = entry,
+                    onOpen = { vm.openGcodeFromHistory(entry) },
+                    onDelete = { confirmDelete = entry },
+                )
+            }
+        }
     } else {
         LazyColumn(
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -444,7 +535,10 @@ private fun FileTile(
 
 /** The "Photos" shelf: the camera grid, or the reason it is empty. */
 @Composable
-private fun CameraPhotos(vm: AppViewModel) {
+private fun CameraPhotos(
+    vm: AppViewModel,
+    compact: Boolean = true,
+) {
     val photos by vm.photos.collectAsState()
 
     if (photos.isEmpty()) {
@@ -453,6 +547,7 @@ private fun CameraPhotos(vm: AppViewModel) {
             title = "No photos yet",
             body = "Take one with the shutter on the printer camera.",
             action = null,
+            compact = compact,
         )
     } else {
         // The grid itself (and the full-size viewer it opens) lives with the print
@@ -468,47 +563,68 @@ private fun EmptyShelf(
     title: String,
     body: String,
     action: Pair<String, () -> Unit>?,
+    compact: Boolean = true,
 ) {
-    BrandCard(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+    Box(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(top = if (compact) 0.dp else 28.dp),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        BrandCard(
+            modifier =
+                if (compact) {
+                    Modifier.fillMaxWidth()
+                } else {
+                    Modifier.fillMaxWidth().widthIn(max = 480.dp)
+                },
         ) {
-            Box(
-                modifier =
-                    Modifier
-                        .size(56.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
-                contentAlignment = Alignment.Center,
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Icon(
-                    icon,
-                    null,
-                    modifier = Modifier.size(26.dp),
-                    tint = MaterialTheme.colorScheme.primary,
+                Box(
+                    modifier =
+                        Modifier
+                            .size(56.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        icon,
+                        null,
+                        modifier = Modifier.size(26.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                Text(
+                    title,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
-            }
-            Text(
-                title,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                body,
-                fontSize = 13.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
-            action?.let { (label, onClick) ->
-                BrandButton(
-                    text = label,
-                    onClick = onClick,
-                    modifier = Modifier.fillMaxWidth(),
-                    height = ButtonSize.Medium,
+                Text(
+                    body,
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
                 )
+                action?.let { (label, onClick) ->
+                    BrandButton(
+                        text = label,
+                        onClick = onClick,
+                        modifier =
+                            if (compact) {
+                                Modifier.fillMaxWidth()
+                            } else {
+                                Modifier.widthIn(min = 200.dp, max = 280.dp)
+                            },
+                        height = ButtonSize.Medium,
+                    )
+                }
             }
         }
     }

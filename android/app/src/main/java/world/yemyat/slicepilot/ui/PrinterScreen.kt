@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -122,78 +124,172 @@ fun PrinterScreen(
             }
         }
 
-    Column(
-        modifier =
-            Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.TopCenter,
     ) {
-        Spacer(Modifier.height(6.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Printer", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
-            Spacer(Modifier.weight(1f))
-            // The way into the connect sheet, and so the only way to Disconnect or pick a
-            // different printer. It used to live only inside the "Other printers" block,
-            // which needs a second printer to exist — with one connected there was no route
-            // back out of it at all.
-            if (printer != null) {
-                TextButton(onClick = onOpenConnect) { Text("Manage") }
-            }
-        }
+        val spec = feedLayoutSpecFor(maxWidth)
+        val useTwoPane = shouldUseTwoPane(maxWidth)
+        val contentMaxWidth =
+            if (useTwoPane) spec.maxContentWidth else MediumSingleColumnMaxWidth
 
-        if (printer == null) {
-            DiscoverySection(vm = vm, printers = availablePrinters, onOpenConnect = onOpenConnect)
-        } else {
-            PrinterHero(
-                vm = vm,
-                name = printer.name,
-                model = printer.model,
-                isLocal = printer.isLocal,
-                online = printer.online,
-                status = status,
-                filament = filament,
-            )
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .let { if (spec.useNavigationRail) it.navigationBarsPadding() else it }
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = spec.horizontalPadding),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth().widthIn(max = contentMaxWidth),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+            ) {
+                Spacer(Modifier.height(if (spec.widthClass == WindowWidthClass.Compact) 6.dp else 14.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Printer",
+                        fontSize = 26.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    // The way into the connect sheet, and so the only way to Disconnect or pick a
+                    // different printer. It used to live only inside the "Other printers" block,
+                    // which needs a second printer to exist — with one connected there was no route
+                    // back out of it at all.
+                    if (printer != null) {
+                        TextButton(onClick = onOpenConnect) { Text("Manage") }
+                    }
+                }
 
-            LiveCameraCard(vm = vm, demoMode = demoMode)
-
-            SetupCard(
-                nozzleSizes = nozzleSizes,
-                selectedNozzle = selectedNozzle,
-                onControls = { controlsOpen = true },
-                onNozzle = { vm.selectNozzle(it) },
-            )
-
-            // Everything else you own, one tap to switch — replaces the old dropdown.
-            if (availablePrinters.size > 1) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    BrandSectionLabel("Other printers")
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        availablePrinters.forEach { p ->
-                            FilterChip(
-                                selected = p.id == printer.id,
-                                onClick = { vm.selectPrinter(p) },
-                                label = {
-                                    Text(
-                                        p.name.ifBlank { p.model }.ifBlank { p.id },
-                                        maxLines = 1,
-                                        modifier = Modifier.widthIn(max = 220.dp),
-                                    )
-                                },
+                if (printer == null) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.TopCenter,
+                    ) {
+                        Box(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .widthIn(max = if (spec.widthClass == WindowWidthClass.Compact) contentMaxWidth else 600.dp),
+                        ) {
+                            DiscoverySection(
+                                vm = vm,
+                                printers = availablePrinters,
+                                onOpenConnect = onOpenConnect,
+                                compact = spec.widthClass == WindowWidthClass.Compact,
                             )
                         }
                     }
+                } else if (useTwoPane) {
+                    // Material 3 Supporting Pane dashboard on Expanded widths: live camera stays
+                    // prominent on the left while telemetry, job controls, and nozzle settings sit
+                    // alongside it on the right so everything is visible without scrolling.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(24.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1.15f),
+                            verticalArrangement = Arrangement.spacedBy(18.dp),
+                        ) {
+                            LiveCameraCard(vm = vm, demoMode = demoMode)
+                            if (availablePrinters.size > 1) {
+                                OtherPrintersRow(
+                                    printers = availablePrinters,
+                                    selectedId = printer.id,
+                                    onSelect = { vm.selectPrinter(it) },
+                                )
+                            }
+                        }
+                        Column(
+                            modifier = Modifier.weight(0.85f),
+                            verticalArrangement = Arrangement.spacedBy(18.dp),
+                        ) {
+                            PrinterHero(
+                                vm = vm,
+                                name = printer.name,
+                                model = printer.model,
+                                isLocal = printer.isLocal,
+                                online = printer.online,
+                                status = status,
+                                filament = filament,
+                            )
+                            SetupCard(
+                                nozzleSizes = nozzleSizes,
+                                selectedNozzle = selectedNozzle,
+                                onControls = { controlsOpen = true },
+                                onNozzle = { vm.selectNozzle(it) },
+                            )
+                        }
+                    }
+                } else {
+                    PrinterHero(
+                        vm = vm,
+                        name = printer.name,
+                        model = printer.model,
+                        isLocal = printer.isLocal,
+                        online = printer.online,
+                        status = status,
+                        filament = filament,
+                    )
+
+                    LiveCameraCard(vm = vm, demoMode = demoMode)
+
+                    SetupCard(
+                        nozzleSizes = nozzleSizes,
+                        selectedNozzle = selectedNozzle,
+                        onControls = { controlsOpen = true },
+                        onNozzle = { vm.selectNozzle(it) },
+                    )
+
+                    if (availablePrinters.size > 1) {
+                        OtherPrintersRow(
+                            printers = availablePrinters,
+                            selectedId = printer.id,
+                            onSelect = { vm.selectPrinter(it) },
+                        )
+                    }
                 }
+
+                Spacer(Modifier.height(24.dp))
             }
         }
-
-        Spacer(Modifier.height(24.dp))
     }
 
     if (controlsOpen) {
         PrinterControlsSheet(vm = vm, onDismiss = { controlsOpen = false })
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun OtherPrintersRow(
+    printers: List<ConnectedPrinter>,
+    selectedId: String,
+    onSelect: (ConnectedPrinter) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        BrandSectionLabel("Other printers")
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            printers.forEach { p ->
+                FilterChip(
+                    selected = p.id == selectedId,
+                    onClick = { onSelect(p) },
+                    label = {
+                        Text(
+                            p.name.ifBlank { p.model }.ifBlank { p.id },
+                            maxLines = 1,
+                            modifier = Modifier.widthIn(max = 220.dp),
+                        )
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -568,6 +664,7 @@ private fun DiscoverySection(
     vm: AppViewModel,
     printers: List<ConnectedPrinter>,
     onOpenConnect: () -> Unit,
+    compact: Boolean = true,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         if (printers.isEmpty()) {
@@ -589,7 +686,12 @@ private fun DiscoverySection(
                     BrandButton(
                         text = "Connect to printer",
                         onClick = onOpenConnect,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier =
+                            if (compact) {
+                                Modifier.fillMaxWidth()
+                            } else {
+                                Modifier.widthIn(min = 240.dp, max = 320.dp)
+                            },
                         height = 54.dp,
                     )
                 }

@@ -53,6 +53,7 @@ fun HomeScreen(
     onOpenConnect: () -> Unit,
     onSeeMore: (ModelSource) -> Unit,
     browser: ModelBrowser,
+    showLocalModelFab: Boolean = true,
 ) {
     val modelLoading by vm.modelLoading.collectAsState()
     val modelError by vm.modelError.collectAsState()
@@ -74,17 +75,30 @@ fun HomeScreen(
         derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < 80 }
     }
 
-    Box(Modifier.fillMaxSize()) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val layoutSpec = feedLayoutSpecFor(maxWidth)
+        val contentWidth = Modifier.fillMaxWidth().widthIn(max = layoutSpec.maxContentWidth)
+        val topPadding = if (layoutSpec.widthClass == WindowWidthClass.Compact) 8.dp else 16.dp
+        val bottomPadding = if (showLocalModelFab) 104.dp else 32.dp
+        val listModifier =
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .let { if (!showLocalModelFab) it.navigationBarsPadding() else it }
+
         LazyColumn(
             state = listState,
             // Home draws under the status bar unless it pads for it itself — the
             // root Scaffold has contentWindowInsets = 0 (see MainActivity).
-            modifier =
-                Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding(),
+            modifier = listModifier,
+            horizontalAlignment = Alignment.CenterHorizontally,
             contentPadding =
-                PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 104.dp),
+                PaddingValues(
+                    start = layoutSpec.horizontalPadding,
+                    end = layoutSpec.horizontalPadding,
+                    top = topPadding,
+                    bottom = bottomPadding,
+                ),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             // Print in progress (started by this app, e.g. before a swipe-away):
@@ -92,8 +106,10 @@ fun HomeScreen(
             // status like the download bar. Tap opens the print monitor.
             if (printLive) {
                 item {
-                    printStatus?.let { st ->
-                        PrintInProgressBanner(status = st, onClick = { vm.openPrintMonitor() })
+                    Box(contentWidth) {
+                        printStatus?.let { st ->
+                            PrintInProgressBanner(status = st, onClick = { vm.openPrintMonitor() })
+                        }
                     }
                 }
             }
@@ -101,6 +117,7 @@ fun HomeScreen(
             // Header: wordmark + ambient printer status pill + theme toggle.
             item {
                 Row(
+                    modifier = contentWidth,
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -108,6 +125,8 @@ fun HomeScreen(
                     Spacer(Modifier.weight(1f))
                     PrinterStatusPill(
                         printer = selectedPrinter,
+                        maxLabelWidth =
+                            if (layoutSpec.widthClass == WindowWidthClass.Compact) 128.dp else 220.dp,
                         onClick = onOpenConnect,
                     )
                     val dark = LocalIsDarkTheme.current
@@ -124,6 +143,7 @@ fun HomeScreen(
                 item {
                     val ctx = LocalContext.current
                     BigCard(
+                        modifier = contentWidth,
                         icon = {
                             Icon(
                                 Icons.Filled.Warning,
@@ -156,8 +176,7 @@ fun HomeScreen(
                 item {
                     val loadStart = remember { android.os.SystemClock.elapsedRealtime() }
                     Box(
-                        Modifier
-                            .fillMaxWidth()
+                        contentWidth
                             .height(160.dp)
                             .clip(RoundedCornerShape(24.dp))
                             .background(MaterialTheme.colorScheme.surfaceVariant),
@@ -199,28 +218,30 @@ fun HomeScreen(
                 // opens that flow, replaces the file, or ends it — which is also what backing out
                 // of print setup does, asked first (AppViewModel.leavePrintSetup).
                 item {
-                    LoadedModelRow(
-                        modelPath = modelPath.orEmpty(),
-                        onOpen = {
-                            if (printLive) vm.openPrintMonitor() else vm.openPrintSetup()
-                        },
-                        onReplace = onPickLocalFile,
-                        // The app's own demo cube is not the user's file to throw away, and a
-                        // running print needs it.
-                        onDiscard =
-                            if (printLive || vm.printJobHoldsModel() || demoMode) {
-                                null
-                            } else {
-                                { vm.discardModel() }
+                    Box(contentWidth) {
+                        LoadedModelRow(
+                            modelPath = modelPath.orEmpty(),
+                            onOpen = {
+                                if (printLive) vm.openPrintMonitor() else vm.openPrintSetup()
                             },
-                    )
+                            onReplace = onPickLocalFile,
+                            // The app's own demo cube is not the user's file to throw away, and a
+                            // running print needs it.
+                            onDiscard =
+                                if (printLive || vm.printJobHoldsModel() || demoMode) {
+                                    null
+                                } else {
+                                    { vm.discardModel() }
+                                },
+                        )
+                    }
                 }
 
                 // Loaded but no printer: connecting is the next step.
                 if (!printerReady) {
                     item {
                         BigCard(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = contentWidth,
                             icon = {
                                 Icon(
                                     Icons.Filled.CloudOff,
@@ -243,7 +264,7 @@ fun HomeScreen(
                     Surface(
                         shape = RoundedCornerShape(20.dp),
                         color = MaterialTheme.colorScheme.errorContainer,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = contentWidth,
                     ) {
                         Row(
                             modifier = Modifier.padding(16.dp),
@@ -271,27 +292,33 @@ fun HomeScreen(
 
             // The Find tab's feed, inline: search + one block per source.
             item {
-                ModelFindFeed(
-                    browser = browser,
-                    onSeeMore = onSeeMore,
-                )
+                Box(contentWidth) {
+                    ModelFindFeed(
+                        browser = browser,
+                        onSeeMore = onSeeMore,
+                        layoutSpec = layoutSpec,
+                    )
+                }
             }
         }
 
-        // Collapses to icon-only while scrolling down so feed cards and "See more" stay clear.
-        ExtendedFloatingActionButton(
-            onClick = onPickLocalFile,
-            expanded = fabExpanded,
-            shape = RoundedCornerShape(18.dp),
-            containerColor = MaterialTheme.colorScheme.primary,
-            contentColor = MaterialTheme.colorScheme.onPrimary,
-            icon = { Icon(Icons.Filled.FolderOpen, "Local model") },
-            text = { Text("Local model", fontWeight = FontWeight.SemiBold) },
-            modifier =
-                Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 20.dp, bottom = 16.dp),
-        )
+        // On compact phones, float the "Local model" pill; on Medium/Expanded widths it lives
+        // in the NavigationRail header so it never covers feed cards.
+        if (showLocalModelFab) {
+            ExtendedFloatingActionButton(
+                onClick = onPickLocalFile,
+                expanded = fabExpanded,
+                shape = RoundedCornerShape(18.dp),
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                icon = { Icon(Icons.Filled.FolderOpen, "Local model") },
+                text = { Text("Local model", fontWeight = FontWeight.SemiBold) },
+                modifier =
+                    Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 20.dp, bottom = 16.dp),
+            )
+        }
     }
 }
 
@@ -302,6 +329,7 @@ fun HomeScreen(
 @Composable
 private fun PrinterStatusPill(
     printer: ConnectedPrinter?,
+    maxLabelWidth: androidx.compose.ui.unit.Dp = 128.dp,
     onClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(999.dp)
@@ -342,7 +370,7 @@ private fun PrinterStatusPill(
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.widthIn(max = 128.dp),
+                modifier = Modifier.widthIn(max = maxLabelWidth),
             )
         }
     }

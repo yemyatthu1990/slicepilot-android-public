@@ -28,6 +28,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -1395,18 +1396,21 @@ fun PhotosTab(
             )
         }
     } else {
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(2),
-            modifier = modifier.fillMaxSize(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            items(photos, key = { it.name }) { item ->
-                PhotoCard(
-                    vm = vm,
-                    photo = item,
-                    onClick = { opened = item },
-                )
+        BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+            val cols = photoGridColumnsFor(maxWidth)
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(cols),
+                modifier = Modifier.fillMaxSize(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                items(photos, key = { it.name }) { item ->
+                    PhotoCard(
+                        vm = vm,
+                        photo = item,
+                        onClick = { opened = item },
+                    )
+                }
             }
         }
     }

@@ -2768,13 +2768,51 @@
       "id": "rel:v1.11.0",
       "kind": "release",
       "title": "v1.11.0 (53)",
-      "status": "live",
+      "status": "superseded",
       "summary": "Production rollout (100%, Play edit 12290804424531887166, sha1 b4af80e7cb7f326e45e445484f51ba60c9869209): OpenCentauri COSMOS & Klipper/Moonraker LAN support, mid-print Skip Part (exclude_object with 2D build plate map), structured LAN camera playback diagnostics & Crashlytics grouping, Wi-Fi scanning spinner fix, and COSMOS/Klipper SEO for slicepilot.eu and GitHub.",
       "updated": "2026-11-26",
       "edges": [
         [
           "supersedes",
           "rel:v1.10.5"
+        ],
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "affects",
+          "mod:android-app"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.11.1",
+      "kind": "release",
+      "title": "v1.11.1 (54)",
+      "status": "live",
+      "summary": "Production rollout (100%, Play edit 01741459619850170829; internal upload edit 15395737918513865419, sha1 c2e6692e46e4d4662cb4fb11481802f2505f556e, ProGuard mapping + native symbols): Material 3 adaptive tablet layouts across Home, Browse, Printer, Files, Print Setup, and Model Detail, plus 5 promotional 2560x1440 tablet screenshots uploaded to both 7-inch and 10-inch Play Store listing slots.",
+      "updated": "2026-11-26",
+      "refs": [
+        "file:android/app/build.gradle.kts",
+        "file:store_listing/metadata.md"
+      ],
+      "next": [
+        "Monitor Play vitals / Crashlytics on v1.11.1 production rollout"
+      ],
+      "attrs": {
+        "date": "2026-11-26",
+        "version_code": 54,
+        "version_name": "1.11.1-android"
+      },
+      "edges": [
+        [
+          "supersedes",
+          "rel:v1.11.0"
         ],
         [
           "hosted_on",

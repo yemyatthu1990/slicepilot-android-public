@@ -21,6 +21,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.core.view.ViewCompat
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -394,42 +396,52 @@ class MainActivity : ComponentActivity() {
                 browse.detail == null &&
                 !browse.loadingDetail
 
-        Box(Modifier.fillMaxSize()) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val useRail = shouldUseNavigationRail(maxWidth)
             SpiritedBackground(
                 modifier = Modifier.fillMaxSize(),
                 darkTheme = darkTheme,
                 animate = animateBackground,
             )
-            androidx.compose.material3.Scaffold(
-                containerColor = Color.Transparent,
-                snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
-                // Each screen draws its own status-bar padding; taking the inset here
-                // too would stack a second status bar of space above every tab.
-                contentWindowInsets = WindowInsets(0),
-                bottomBar = { AppTabBar(vm) },
-            ) { frame ->
-                Box(Modifier.padding(frame).fillMaxSize()) {
-                    AnimatedContent(
-                        targetState = screen,
-                        transitionSpec = {
-                            if (initialState == Screen.CameraFull || targetState == Screen.CameraFull) {
-                                EnterTransition.None togetherWith ExitTransition.None
-                            } else {
-                                fadeIn(tween(180)) togetherWith fadeOut(tween(140))
-                            }
-                        },
-                        label = "screenTransition",
-                    ) { currentScreen ->
-                        when (currentScreen) {
-                            is Screen.Home -> {
-                                HomeScreen(
-                                    vm = vm,
-                                    onPickLocalFile = { modelPicker.launch(arrayOf("*/*")) },
-                                    onOpenConnect = { showConnect = true },
-                                    onSeeMore = { expandedSource = it },
-                                    browser = browser,
-                                )
-                            }
+            Row(Modifier.fillMaxSize()) {
+                if (useRail) {
+                    AppNavigationRail(
+                        vm = vm,
+                        onPickLocalFile = { modelPicker.launch(arrayOf("*/*")) },
+                    )
+                }
+                androidx.compose.material3.Scaffold(
+                    modifier = Modifier.weight(1f),
+                    containerColor = Color.Transparent,
+                    snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
+                    // Each screen draws its own status-bar padding; taking the inset here
+                    // too would stack a second status bar of space above every tab.
+                    contentWindowInsets = WindowInsets(0),
+                    bottomBar = { if (!useRail) AppTabBar(vm) },
+                ) { frame ->
+                    Box(Modifier.padding(frame).fillMaxSize()) {
+                        AnimatedContent(
+                            targetState = screen,
+                            transitionSpec = {
+                                if (initialState == Screen.CameraFull || targetState == Screen.CameraFull) {
+                                    EnterTransition.None togetherWith ExitTransition.None
+                                } else {
+                                    fadeIn(tween(180)) togetherWith fadeOut(tween(140))
+                                }
+                            },
+                            label = "screenTransition",
+                        ) { currentScreen ->
+                            when (currentScreen) {
+                                is Screen.Home -> {
+                                    HomeScreen(
+                                        vm = vm,
+                                        onPickLocalFile = { modelPicker.launch(arrayOf("*/*")) },
+                                        onOpenConnect = { showConnect = true },
+                                        onSeeMore = { expandedSource = it },
+                                        browser = browser,
+                                        showLocalModelFab = !useRail,
+                                    )
+                                }
 
                             is Screen.Printer -> {
                                 PrinterScreen(
@@ -503,6 +515,7 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+            }
             }
 
             // Full-screen pushed browse overlays belong to Home and sit above Scaffold so the

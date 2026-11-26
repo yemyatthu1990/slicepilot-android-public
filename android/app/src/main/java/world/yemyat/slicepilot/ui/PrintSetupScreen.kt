@@ -255,111 +255,67 @@ fun PrintSetupScreen(vm: AppViewModel) {
             else -> null
         }
 
-    Box(Modifier.fillMaxSize()) {
-        Scaffold(
-            topBar = {
-            TopAppBar(
-                title = { Text("Print setup", fontWeight = FontWeight.Bold) },
-                navigationIcon = {
-                    // The flow's exit, not just a navigation: leaving asks about the model
-                    // (see AppViewModel.leavePrintSetup) instead of leaving it stranded on Home.
-                    IconButton(onClick = { vm.leavePrintSetup() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
-                    }
-                },
-            )
-        },
-        bottomBar = {
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 3.dp,
-                modifier = Modifier.fillMaxWidth(),
+    val plateCard: @Composable (Boolean, androidx.compose.ui.unit.Dp) -> Unit = { fillHeight, previewHeight ->
+        // One card for the model: what it is, which printer it goes to, and what it looks like
+        // on the plate. The old page stacked a SummaryCard of exactly that text *above* a
+        // 300.dp preview, so the first screenful answered the same question twice.
+        BrandCard(modifier = if (fillHeight) Modifier.fillMaxSize() else Modifier.fillMaxWidth()) {
+            Column(
+                modifier = if (fillHeight) Modifier.fillMaxSize() else Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(Space.sm),
             ) {
-                Column(
-                    modifier =
-                        Modifier
-                            .navigationBarsPadding()
-                            .padding(horizontal = Space.lg, vertical = Space.sm),
-                    verticalArrangement = Arrangement.spacedBy(Space.xs),
-                ) {
-                    val reason = blockReason
-                    if (reason != null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
                         Text(
-                            reason,
-                            fontSize = 12.sp,
+                            model ?: "No model",
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            (
+                                printer?.let {
+                                    "${it.name} \u00b7 ${it.model}${if (it.isLocal) " (Local)" else ""}"
+                                } ?: "No printer selected"
+                            ) + " \u00b7 $selectedNozzle mm",
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 2.dp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    BrandButton(
-                        text = "Slice",
-                        onClick = { vm.sliceFromSetup() },
-                        enabled = reason == null,
-                        icon = { Icon(Icons.Filled.ContentCut, null, tint = Color.White) },
-                        modifier = Modifier.fillMaxWidth(),
-                        height = ButtonSize.Large,
-                    )
+                    if (mesh != null && !fullscreen) {
+                        BrandIconButton(
+                            icon = Icons.Filled.Fullscreen,
+                            contentDescription = "Open the preview full screen",
+                            onClick = { fullscreen = true },
+                        )
+                    }
                 }
-            }
-        },
-    ) { padding ->
-        Column(
-            modifier =
-                Modifier
-                    .padding(padding)
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = Space.lg, vertical = Space.md),
-            verticalArrangement = Arrangement.spacedBy(Space.lg),
-        ) {
-            // One card for the model: what it is, which printer it goes to, and what it looks like
-            // on the plate. The old page stacked a SummaryCard of exactly that text *above* a
-            // 300.dp preview, so the first screenful answered the same question twice.
-            BrandCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Space.sm)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                model ?: "No model",
-                                style = MaterialTheme.typography.titleMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                (
-                                    printer?.let {
-                                        "${it.name} \u00b7 ${it.model}${if (it.isLocal) " (Local)" else ""}"
-                                    } ?: "No printer selected"
-                                ) + " \u00b7 $selectedNozzle mm",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        if (mesh != null && !fullscreen) {
-                            BrandIconButton(
-                                icon = Icons.Filled.Fullscreen,
-                                contentDescription = "Open the preview full screen",
-                                onClick = { fullscreen = true },
-                            )
-                        }
-                    }
-                    val loadErr = modelError
-                    if (model == null) {
-                        Text(
-                            "No file selected yet \u2014 pick one from Home or the Files tab.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } else if (loadErr != null) {
-                        Text(
-                            "That file couldn't be opened \u00b7 ${loadErr.code} ${loadErr.message}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    } else if (mesh == null && modelLoading) {
-                        val progress = vm.modelLoadProgress.collectAsState().value
+                val loadErr = modelError
+                if (model == null) {
+                    Text(
+                        "No file selected yet \u2014 pick one from Home or the Files tab.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else if (loadErr != null) {
+                    Text(
+                        "That file couldn't be opened \u00b7 ${loadErr.code} ${loadErr.message}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                } else if (mesh == null && modelLoading) {
+                    val progress = vm.modelLoadProgress.collectAsState().value
+                    Box(
+                        modifier =
+                            if (fillHeight) {
+                                Modifier.fillMaxWidth().weight(1f)
+                            } else {
+                                Modifier.fillMaxWidth().height(previewHeight)
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(Space.sm),
@@ -375,191 +331,319 @@ fun PrintSetupScreen(vm: AppViewModel) {
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                    } else if (mesh != null && !fullscreen) {
-                        Box(
-                            modifier =
-                                Modifier
-                                    .fillMaxWidth()
-                                    .height(240.dp)
-                                    .clip(RoundedCornerShape(Radius.md))
-                                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                        ) {
-                            SharedAndroidView(
-                                view = previewController,
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                        }
                     }
-                    if (mesh != null && !fits) {
-                        WarningBanner(
-                            "Model is larger than the build volume",
-                            "Model ${box[0].toInt()}\u00d7${box[1].toInt()}\u00d7${box[2].toInt()} mm \u00b7 " +
-                                "Max ${volume.first.toInt()}\u00d7${volume.second.toInt()}\u00d7${volume.third.toInt()} mm",
-                        )
-                    }
-                    // Multi-part models stay paired with the 3D plate right above them: a compact
-                    // horizontal part selector + selected-part controls keep the plate visible as
-                    // you pick/skip parts, while "Manage" opens the full checklist sheet.
-                    val partNames = mesh?.parts?.map { it.name }.orEmpty()
-                    if (partNames.size > 1) {
-                        InlinePartsStrip(
-                            names = partNames,
-                            selectedIndex = selectedPart.coerceIn(0, partNames.lastIndex),
-                            skipped = skipped,
-                            onSelect = { vm.selectPart(it) },
-                            onTogglePrint = { idx -> vm.setPartPrinted(idx, idx in skipped) },
-                            onArrange = { vm.arrangeParts(volume.first, volume.second) },
-                            onPose = { fullscreen = true },
-                            onManage = { showPartsSheet = true },
+                } else if (mesh != null && !fullscreen) {
+                    Box(
+                        modifier =
+                            (if (fillHeight) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().height(previewHeight))
+                                .clip(RoundedCornerShape(Radius.md))
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                    ) {
+                        SharedAndroidView(
+                            view = previewController,
+                            modifier = Modifier.fillMaxSize(),
                         )
                     }
                 }
+                if (mesh != null && !fits) {
+                    WarningBanner(
+                        "Model is larger than the build volume",
+                        "Model ${box[0].toInt()}\u00d7${box[1].toInt()}\u00d7${box[2].toInt()} mm \u00b7 " +
+                            "Max ${volume.first.toInt()}\u00d7${volume.second.toInt()}\u00d7${volume.third.toInt()} mm",
+                    )
+                }
+                // Multi-part models stay paired with the 3D plate right above them: a compact
+                // horizontal part selector + selected-part controls keep the plate visible as
+                // you pick/skip parts, while "Manage" opens the full checklist sheet.
+                val partNames = mesh?.parts?.map { it.name }.orEmpty()
+                if (partNames.size > 1) {
+                    InlinePartsStrip(
+                        names = partNames,
+                        selectedIndex = selectedPart.coerceIn(0, partNames.lastIndex),
+                        skipped = skipped,
+                        onSelect = { vm.selectPart(it) },
+                        onTogglePrint = { idx -> vm.setPartPrinted(idx, idx in skipped) },
+                        onArrange = { vm.arrangeParts(volume.first, volume.second) },
+                        onPose = { fullscreen = true },
+                        onManage = { showPartsSheet = true },
+                    )
+                }
             }
+        }
+    }
 
-            // Everything configurable in one card, in the order the choices stack up: what to
-            // print with (material, plate, quality), then the machine and the slicer preset it
-            // will be cut with. Printer and Process used to sit at the top of this card, where
-            // their values were the least interesting answer to "what is this print" and the
-            // process name was cut off; they now close the page, next to the button that uses
-            // them, and print setup's header already names the machine up top.
-            BrandCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Space.md)) {
-                    val isMultiColourModel = modelFilamentInfo?.isMultiColour == true
-                    if (isMultiColourModel && amsCapable) {
-                        Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
-                            BrandSectionLabel("Colour mode")
-                            SegmentedControl(
-                                options = listOf("Multi-colour (AMS)", "Single colour"),
-                                selectedIndex = if (multiColourEnabled) 0 else 1,
-                                onSelect = { vm.setMultiColourEnabled(it == 0) },
-                            )
-                        }
-                    } else if (isMultiColourModel && !amsCapable) {
-                        WarningBanner(
-                            "Single-colour printer",
-                            "This 3MF uses ${modelFilamentInfo?.usedFilaments?.size ?: 2} colours, " +
-                                "but this printer has no AMS/Canvas \u2014 it will slice in one colour.",
+    val setupOptions: @Composable () -> Unit = {
+        // Everything configurable in one card, in the order the choices stack up: what to
+        // print with (material, plate, quality), then the machine and the slicer preset it
+        // will be cut with. Printer and Process used to sit at the top of this card, where
+        // their values were the least interesting answer to "what is this print" and the
+        // process name was cut off; they now close the page, next to the button that uses
+        // them, and print setup's header already names the machine up top.
+        BrandCard {
+            Column(verticalArrangement = Arrangement.spacedBy(Space.md)) {
+                val isMultiColourModel = modelFilamentInfo?.isMultiColour == true
+                if (isMultiColourModel && amsCapable) {
+                    Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
+                        BrandSectionLabel("Colour mode")
+                        SegmentedControl(
+                            options = listOf("Multi-colour (AMS)", "Single colour"),
+                            selectedIndex = if (multiColourEnabled) 0 else 1,
+                            onSelect = { vm.setMultiColourEnabled(it == 0) },
                         )
                     }
+                } else if (isMultiColourModel && !amsCapable) {
+                    WarningBanner(
+                        "Single-colour printer",
+                        "This 3MF uses ${modelFilamentInfo?.usedFilaments?.size ?: 2} colours, " +
+                            "but this printer has no AMS/Canvas \u2014 it will slice in one colour.",
+                    )
+                }
 
-                    val isMoonrakerPrinter =
-                        printer?.lanPrinter?.protocol == world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER
-                    if (multiColourActive) {
-                        AmsFilamentMapSection(
-                            assignments = multiAssignments,
-                            reportedTrays = reportedTrays,
-                            hasCustomMapping = amsSlotOverrides.isNotEmpty(),
-                            isLocalWithoutTrays = printer?.isLocal == true && !isMoonrakerPrinter && reportedTrays.isEmpty(),
-                            onSelectSlot = { idx, slot -> vm.setAmsSlotForModelFilament(idx, slot) },
-                            onAutoMatch = { vm.autoMatchAmsSlots() },
-                            onEnterAccessCode = { vm.requestAccessCodeEntry() },
-                        )
-                    } else {
-                        DropdownRow(
-                            label = "Material",
-                            options = materials.map { MenuOption(it.label, it, filamentColor(it.colorHex)) },
-                            selected = materials.firstOrNull { opt -> opt.key == material },
-                            onSelect = { vm.setSetupMaterial(it.key) },
-                        )
+                val isMoonrakerPrinter =
+                    printer?.lanPrinter?.protocol == world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER
+                if (multiColourActive) {
+                    AmsFilamentMapSection(
+                        assignments = multiAssignments,
+                        reportedTrays = reportedTrays,
+                        hasCustomMapping = amsSlotOverrides.isNotEmpty(),
+                        isLocalWithoutTrays = printer?.isLocal == true && !isMoonrakerPrinter && reportedTrays.isEmpty(),
+                        onSelectSlot = { idx, slot -> vm.setAmsSlotForModelFilament(idx, slot) },
+                        onAutoMatch = { vm.autoMatchAmsSlots() },
+                        onEnterAccessCode = { vm.requestAccessCodeEntry() },
+                    )
+                } else {
+                    DropdownRow(
+                        label = "Material",
+                        options = materials.map { MenuOption(it.label, it, filamentColor(it.colorHex)) },
+                        selected = materials.firstOrNull { opt -> opt.key == material },
+                        onSelect = { vm.setSetupMaterial(it.key) },
+                    )
 
-                        // When the printer reports its spools, the Material dropdown already lists them
-                        // per tray; only pick a bare slot manually when an Elegoo LAN printer reported nothing.
-                        if (printer?.isLocal == true && !isMoonrakerPrinter && vm.lanSpools().isEmpty()) {
-                            Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
-                                BrandSectionLabel("Printer spool")
-                                Row(horizontalArrangement = Arrangement.spacedBy(Space.xs)) {
-                                    (0..3).forEach { trayId ->
-                                        FilterChip(
-                                            selected = (config.filamentTrayId ?: 0) == trayId,
-                                            onClick = { vm.setPrintSlot(0, trayId) },
-                                            label = { Text("Slot ${trayId + 1}", maxLines = 1) },
-                                        )
-                                    }
-                                }
-                                Text(
-                                    "The printer didn't report its loaded filament \u2014 pick the slot it should load from.",
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                TextButton(
-                                    onClick = { vm.requestAccessCodeEntry() },
-                                    contentPadding = PaddingValues(0.dp),
-                                ) {
-                                    Text(
-                                        "Enter the printer's access code to load its filament",
-                                        fontSize = 13.sp,
+                    // When the printer reports its spools, the Material dropdown already lists them
+                    // per tray; only pick a bare slot manually when an Elegoo LAN printer reported nothing.
+                    if (printer?.isLocal == true && !isMoonrakerPrinter && vm.lanSpools().isEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
+                            BrandSectionLabel("Printer spool")
+                            Row(horizontalArrangement = Arrangement.spacedBy(Space.xs)) {
+                                (0..3).forEach { trayId ->
+                                    FilterChip(
+                                        selected = (config.filamentTrayId ?: 0) == trayId,
+                                        onClick = { vm.setPrintSlot(0, trayId) },
+                                        label = { Text("Slot ${trayId + 1}", maxLines = 1) },
                                     )
                                 }
                             }
+                            Text(
+                                "The printer didn't report its loaded filament \u2014 pick the slot it should load from.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            TextButton(
+                                onClick = { vm.requestAccessCodeEntry() },
+                                contentPadding = PaddingValues(0.dp),
+                            ) {
+                                Text(
+                                    "Enter the printer's access code to load its filament",
+                                    fontSize = 13.sp,
+                                )
+                            }
                         }
                     }
+                }
 
-                    val plates = listOf("Textured", "Smooth")
-                    Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
-                        BrandSectionLabel("Build plate")
-                        SegmentedControl(
-                            options = plates,
-                            selectedIndex = plates.indexOf(plate).coerceAtLeast(0),
-                            onSelect = { vm.setSetupPlate(plates[it]) },
-                        )
-                    }
+                val plates = listOf("Textured", "Smooth")
+                Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
+                    BrandSectionLabel("Build plate")
+                    SegmentedControl(
+                        options = plates,
+                        selectedIndex = plates.indexOf(plate).coerceAtLeast(0),
+                        onSelect = { vm.setSetupPlate(plates[it]) },
+                    )
+                }
 
-                    val qualities = listOf("Draft", "Standard", "Quality")
-                    Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
-                        BrandSectionLabel("Quality")
-                        SegmentedControl(
-                            options = qualities,
-                            selectedIndex = qualities.indexOf(quality).coerceAtLeast(0),
-                            onSelect = { vm.setSetupQuality(qualities[it]) },
-                        )
-                    }
+                val qualities = listOf("Draft", "Standard", "Quality")
+                Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
+                    BrandSectionLabel("Quality")
+                    SegmentedControl(
+                        options = qualities,
+                        selectedIndex = qualities.indexOf(quality).coerceAtLeast(0),
+                        onSelect = { vm.setSetupQuality(qualities[it]) },
+                    )
+                }
 
-                    // The last two choices name the machine and the slicer preset the slice will
-                    // use, which is exactly what "Next: Slice" is about to do.
-                    if (printerOptions.isNotEmpty()) {
-                        DropdownRow(
-                            label = "Printer",
-                            options = printerOptions.map { MenuOption(it, it) },
-                            selected = printerOptions.firstOrNull { it == config.printer },
-                            enabled = printer != null,
-                            onSelect = { vm.setSetupPrinter(it) },
-                        )
+                // The last two choices name the machine and the slicer preset the slice will
+                // use, which is exactly what "Next: Slice" is about to do.
+                if (printerOptions.isNotEmpty()) {
+                    DropdownRow(
+                        label = "Printer",
+                        options = printerOptions.map { MenuOption(it, it) },
+                        selected = printerOptions.firstOrNull { it == config.printer },
+                        enabled = printer != null,
+                        onSelect = { vm.setSetupPrinter(it) },
+                    )
+                }
+                if (processOptions.isNotEmpty()) {
+                    DropdownRow(
+                        label = "Process",
+                        options = processOptions.map { MenuOption(it, it) },
+                        selected = process,
+                        onSelect = { vm.setSetupProcess(it) },
+                    )
+                }
+            }
+        }
+
+        SwitchRow(
+            icon = Icons.Filled.Build,
+            title = "Supports",
+            subtitle =
+                if (config.supportEnabled) {
+                    "On · ${config.supportStyle.replaceFirstChar { it.uppercaseChar() }}" +
+                        if (config.supportOnPlateOnly) " · plate only" else ""
+                } else {
+                    "Off · enable for overhangs"
+                },
+            checked = config.supportEnabled,
+            onCheckedChange = { vm.setSupportEnabled(it) },
+        )
+
+        SettingsRow(
+            icon = Icons.Filled.Tune,
+            title = "Advanced settings",
+            subtitle = advancedSummary(config),
+            onClick = { showAdvanced = true },
+        )
+    }
+
+    val sliceActionBar: @Composable (Modifier) -> Unit = { barModifier ->
+        Column(
+            modifier = barModifier,
+            verticalArrangement = Arrangement.spacedBy(Space.xs),
+        ) {
+            val reason = blockReason
+            if (reason != null) {
+                Text(
+                    reason,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 2.dp),
+                )
+            }
+            BrandButton(
+                text = "Slice",
+                onClick = { vm.sliceFromSetup() },
+                enabled = reason == null,
+                icon = { Icon(Icons.Filled.ContentCut, null, tint = Color.White) },
+                modifier = Modifier.fillMaxWidth(),
+                height = ButtonSize.Large,
+            )
+        }
+    }
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val widthClass = windowWidthClassFor(maxWidth)
+        val isExpanded = shouldUseTwoPane(maxWidth)
+
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("Print setup", fontWeight = FontWeight.Bold) },
+                    navigationIcon = {
+                        // The flow's exit, not just a navigation: leaving asks about the model
+                        // (see AppViewModel.leavePrintSetup) instead of leaving it stranded on Home.
+                        IconButton(onClick = { vm.leavePrintSetup() }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                        }
+                    },
+                )
+            },
+            bottomBar = {
+                if (!isExpanded) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 3.dp,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Box(
+                            modifier = Modifier.fillMaxWidth(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            sliceActionBar(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .widthIn(max = MediumSingleColumnMaxWidth)
+                                    .navigationBarsPadding()
+                                    .padding(horizontal = Space.lg, vertical = Space.sm),
+                            )
+                        }
                     }
-                    if (processOptions.isNotEmpty()) {
-                        DropdownRow(
-                            label = "Process",
-                            options = processOptions.map { MenuOption(it, it) },
-                            selected = process,
-                            onSelect = { vm.setSetupProcess(it) },
-                        )
+                }
+            },
+        ) { padding ->
+            if (isExpanded) {
+                // Material 3 Supporting Pane slicer workspace: large interactive 3D build plate on
+                // the left paired with independently scrollable print settings and pinned Slice CTA
+                // on the right.
+                Box(
+                    modifier =
+                        Modifier
+                            .padding(padding)
+                            .fillMaxSize()
+                            .navigationBarsPadding(),
+                    contentAlignment = Alignment.TopCenter,
+                ) {
+                    Row(
+                        modifier =
+                            Modifier
+                                .fillMaxSize()
+                                .widthIn(max = 1280.dp)
+                                .padding(horizontal = Space.xl, vertical = Space.md),
+                        horizontalArrangement = Arrangement.spacedBy(Space.lg),
+                    ) {
+                        Box(modifier = Modifier.weight(1.25f).fillMaxHeight()) {
+                            plateCard(true, 420.dp)
+                        }
+                        Column(
+                            modifier = Modifier.width(420.dp).fillMaxHeight(),
+                            verticalArrangement = Arrangement.spacedBy(Space.md),
+                        ) {
+                            Column(
+                                modifier =
+                                    Modifier
+                                        .weight(1f)
+                                        .fillMaxWidth()
+                                        .verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(Space.md),
+                            ) {
+                                setupOptions()
+                                Spacer(Modifier.height(Space.xs))
+                            }
+                            sliceActionBar(Modifier.fillMaxWidth())
+                        }
+                    }
+                }
+            } else {
+                val previewHeight = if (widthClass == WindowWidthClass.Medium) 340.dp else 240.dp
+                Box(
+                    modifier = Modifier.padding(padding).fillMaxSize(),
+                    contentAlignment = Alignment.TopCenter,
+                ) {
+                    Column(
+                        modifier =
+                            Modifier
+                                .fillMaxSize()
+                                .widthIn(max = MediumSingleColumnMaxWidth)
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = Space.lg, vertical = Space.md),
+                        verticalArrangement = Arrangement.spacedBy(Space.lg),
+                    ) {
+                        plateCard(false, previewHeight)
+                        setupOptions()
+                        Spacer(Modifier.height(Space.xs))
                     }
                 }
             }
-
-            SwitchRow(
-                icon = Icons.Filled.Build,
-                title = "Supports",
-                subtitle =
-                    if (config.supportEnabled) {
-                        "On · ${config.supportStyle.replaceFirstChar { it.uppercaseChar() }}" +
-                            if (config.supportOnPlateOnly) " · plate only" else ""
-                    } else {
-                        "Off · enable for overhangs"
-                    },
-                checked = config.supportEnabled,
-                onCheckedChange = { vm.setSupportEnabled(it) },
-            )
-
-            SettingsRow(
-                icon = Icons.Filled.Tune,
-                title = "Advanced settings",
-                subtitle = advancedSummary(config),
-                onClick = { showAdvanced = true },
-            )
-
-            Spacer(Modifier.height(Space.xs))
         }
-    }
 
     if (showAdvanced) {
         AdvancedSettingsSheet(
