@@ -58,6 +58,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.LayersClear
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Light
@@ -492,6 +493,14 @@ fun DeviceStatusScreen(
     )
     var confirmPause by remember { mutableStateOf(false) }
     var confirmStop by remember { mutableStateOf(false) }
+    var skipSheetOpen by remember { mutableStateOf(false) }
+    if (skipSheetOpen && status != null && status.canExcludeObjects) {
+        SkipPartSheet(
+            status = status,
+            onExclude = { vm.excludePrintObject(it) },
+            onDismiss = { skipSheetOpen = false },
+        )
+    }
     if (confirmPause) {
         AlertDialog(
             onDismissRequest = { confirmPause = false },
@@ -818,6 +827,23 @@ fun DeviceStatusScreen(
                                     },
                                     modifier = Modifier.weight(1f),
                                     height = 48.dp,
+                                )
+                            }
+                            if (status.canExcludeObjects) {
+                                val activeCount = status.objects.count { it.name !in status.excludedObjects }
+                                BrandButton(
+                                    text = "Skip a part ($activeCount/${status.objects.size})",
+                                    onClick = { skipSheetOpen = true },
+                                    role = ButtonRole.Secondary,
+                                    icon = {
+                                        Icon(
+                                            Icons.Filled.LayersClear,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    height = 44.dp,
                                 )
                             }
                         }

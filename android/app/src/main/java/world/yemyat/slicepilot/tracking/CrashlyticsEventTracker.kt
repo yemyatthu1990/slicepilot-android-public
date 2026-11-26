@@ -45,6 +45,8 @@ class CrashlyticsEventTracker(context: Context) : EventTracker {
 
         internal class CameraStartFailedException(message: String) : Exception(message)
 
+        internal class CameraStreamFailedException(message: String) : Exception(message)
+
         internal class ModelDownloadFailedException(message: String) : Exception(message)
 
         internal class TrackedAppErrorException(message: String) : Exception(message)
@@ -57,8 +59,13 @@ class CrashlyticsEventTracker(context: Context) : EventTracker {
                 "print_control_failed" -> PrintControlFailedException(message)
                 "printer_pair_failed" -> PrinterPairFailedException(message)
                 "slice_failed" -> SliceFailedException(message)
-                "lan_cc1_start_print_failed", "lan_cc1_monitor_connect_failed" -> LanPrintFailedException(message)
+                "lan_cc1_start_print_failed",
+                "lan_cc1_monitor_connect_failed",
+                "lan_moonraker_monitor_connect_failed",
+                "lan_moonraker_ws_lost",
+                -> LanPrintFailedException(message)
                 "camera_start_failed" -> CameraStartFailedException(message)
+                "camera_stream_failed", "camera_stream_dropped" -> CameraStreamFailedException(message)
                 "model_download_failed" -> ModelDownloadFailedException(message)
                 else -> TrackedAppErrorException(message)
             }

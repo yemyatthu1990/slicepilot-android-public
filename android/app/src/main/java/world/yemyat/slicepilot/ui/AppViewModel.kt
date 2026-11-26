@@ -586,8 +586,11 @@ class AppViewModel(
     private val lanPrintMonitorCc1 =
         world.yemyat.slicepilot.cloud
             .LanPrintMonitorCC1()
+    private val lanPrintMonitorMoonraker =
+        world.yemyat.slicepilot.cloud
+            .LanPrintMonitorMoonraker()
 
-    /** The CC2 (MQTT) or CC1 (SDCP WebSocket) monitor for the current LAN session. */
+    /** The CC2 (MQTT), CC1 (SDCP WebSocket), or COSMOS/Moonraker monitor for the current LAN session. */
     private var activeLanMonitor: world.yemyat.slicepilot.cloud.PrintMonitor = lanPrintMonitor
     private val _printStatus = MutableStateFlow<world.yemyat.slicepilot.cloud.PrintStatus?>(null)
 
@@ -609,34 +612,40 @@ class AppViewModel(
         accessCode: String,
         autoResumeOnPause: Boolean = false,
     ) {
-        val ip = sp.ip ?: sp.lanPrinter?.ip ?: _selectedLanPrinter.value?.ip
-        val serial = sp.serial ?: sp.lanPrinter?.serial ?: _selectedLanPrinter.value?.serial
-        if (ip.isNullOrBlank() || serial.isNullOrBlank()) return
+        val lp = sp.lanPrinter ?: _selectedLanPrinter.value
+        val ip = sp.ip ?: lp?.ip
+        val serial = sp.serial ?: lp?.serial
+        val protocol = lp?.protocol ?: world.yemyat.slicepilot.cloud.PrinterProtocol.fromString(null, sp.model)
+        val port = lp?.port ?: protocol.defaultPort
+        if (ip.isNullOrBlank() || (serial.isNullOrBlank() && protocol != world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER)) return
+        val resolvedSerial = serial.orEmpty().ifBlank { "moonraker:$ip:$port" }
         EventNotifier.trackEvent(
             "print_monitor_started",
-            mapOf("printer" to sp.name, "ip" to ip),
+            mapOf("printer" to sp.name, "ip" to ip, "protocol" to protocol.name),
         )
         printMonitorJob?.cancel()
-        val monitor =
-            if (world.yemyat.slicepilot.cloud.LanPrintManager
-                    .isCc1Model(sp.model)
-            ) {
-                lanPrintMonitorCc1
-            } else {
-                lanPrintMonitor
+        val monitor: world.yemyat.slicepilot.cloud.PrintMonitor =
+            when (protocol) {
+                world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER -> {
+                    lanPrintMonitorMoonraker.configurePort(port)
+                    lanPrintMonitorMoonraker
+                }
+
+                world.yemyat.slicepilot.cloud.PrinterProtocol.CC1_SDCP -> lanPrintMonitorCc1
+                world.yemyat.slicepilot.cloud.PrinterProtocol.CC2_MQTT -> lanPrintMonitor
             }
         activeLanMonitor = monitor
         if (autoResumeOnPause) monitor.armAutoResume()
         printMonitorJob =
             viewModelScope.launch {
-                var ok = monitor.start(ip, serial, accessCode)
+                var ok = monitor.start(ip, resolvedSerial, accessCode)
                 // The CC2 MQTT broker keeps dead sessions (e.g. from a force-killed app)
                 // for tens of seconds and answers "too many clients" meanwhile — back off
                 // long enough (≈20 s total) for the broker to free the slots.
                 for (attempt in 0 until 4) {
                     if (ok || !isActive) break
                     delay(longArrayOf(1500, 3000, 5000, 8000)[attempt])
-                    ok = monitor.start(ip, serial, accessCode)
+                    ok = monitor.start(ip, resolvedSerial, accessCode)
                 }
                 // A cancelled start (user pressed back and reopened) must not clobber the
                 // status of the monitor that replaced it.
@@ -659,7 +668,7 @@ class AppViewModel(
                     launch {
                         lanPrintMonitorCc1.filament.collect { f ->
                             if (f != null && (f.present || f.trays.isNotEmpty())) {
-                                applyFilament(serial, ip, f)
+                                applyFilament(resolvedSerial, ip, f)
                             }
                         }
                     }
@@ -872,6 +881,21 @@ class AppViewModel(
         }
     }
 
+    fun excludePrintObject(name: String) {
+        if (name.isBlank()) return
+        EventNotifier.trackEvent(
+            "print_object_excluded",
+            mapOf("printer" to selectedPrinter?.name.orEmpty(), "object" to name),
+        )
+        if (_demoMode.value) {
+            _printStatus.update { cur ->
+                cur?.copy(excludedObjects = cur.excludedObjects + name)
+            }
+        } else if (selectedPrinter?.isLocal == true && activeLanMonitor.supportsExcludeObject) {
+            activeLanMonitor.excludeObject(name)
+        }
+    }
+
     /** Stop watching the print (the job itself keeps running on the printer). */
     private fun stopPrintMonitoring() {
         printMonitorActive = false
@@ -887,19 +911,25 @@ class AppViewModel(
         monitoredCloudSerial = null
         lanPrintMonitor.shutdown()
         lanPrintMonitorCc1.shutdown()
+        lanPrintMonitorMoonraker.shutdown()
         _printStatus.value = null
     }
 
     /** Persist enough to rebuild the monitor screen after the app process dies. */
     private fun persistPrintSession(sp: ConnectedPrinter) {
+        val lp = sp.lanPrinter ?: _selectedLanPrinter.value
+        val protocol = lp?.protocol ?: world.yemyat.slicepilot.cloud.PrinterProtocol.fromString(null, sp.model)
+        val port = lp?.port ?: protocol.defaultPort
         prefs
             .edit()
             .putBoolean("print_session_active", true)
             .putString("print_session_type", if (sp.isLocal) "lan" else "cloud")
             .putString("print_session_name", sp.name)
             .putString("print_session_model", sp.model)
-            .putString("print_session_ip", sp.ip ?: sp.lanPrinter?.ip ?: "")
-            .putString("print_session_serial", sp.serial ?: sp.lanPrinter?.serial ?: "")
+            .putString("print_session_ip", sp.ip ?: lp?.ip ?: "")
+            .putString("print_session_serial", sp.serial ?: lp?.serial ?: "")
+            .putString("print_session_protocol", protocol.name)
+            .putInt("print_session_port", port)
             .putString("print_session_cloud_id", sp.cloudPrinter?.id ?: sp.id)
             .apply()
     }
@@ -948,13 +978,22 @@ class AppViewModel(
             printNotificationTracker.begin(justStarted = false, nowMs = android.os.SystemClock.elapsedRealtime())
             startCloudPrintMonitoring(sp)
         } else {
+            val sessionModel = prefs.getString("print_session_model", "Centauri Carbon 2").orEmpty()
+            val sessionProto =
+                world.yemyat.slicepilot.cloud.PrinterProtocol.fromString(
+                    prefs.getString("print_session_protocol", null),
+                    sessionModel,
+                )
+            val sessionPort = prefs.getInt("print_session_port", sessionProto.defaultPort)
             val lp =
                 world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter(
                     ip = prefs.getString("print_session_ip", "").orEmpty(),
                     serial = prefs.getString("print_session_serial", "").orEmpty(),
-                    model = prefs.getString("print_session_model", "Centauri Carbon 2").orEmpty(),
+                    model = sessionModel,
                     name = name.ifBlank { "Centauri Carbon 2" },
                     lanMode = true,
+                    protocol = sessionProto,
+                    port = sessionPort,
                 )
             if (lp.ip.isBlank() && lp.serial.isBlank()) return false
             val sp = lp.toConnectedPrinter()
@@ -1669,14 +1708,29 @@ class AppViewModel(
         if (_cameraOn.value) stopCamera() else startCamera()
     }
 
+    private val _cameraError = MutableStateFlow<String?>(null)
+    val cameraError: StateFlow<String?> = _cameraError.asStateFlow()
+
     fun startCamera() {
         val sp = selectedPrinter ?: return
         if (_cameraOn.value || _demoMode.value) return
         val ip = sp.ip ?: sp.lanPrinter?.ip
         if (sp.isLocal) {
             if (ip.isNullOrBlank()) return
+            _cameraError.value = null
             _cameraOn.value = true
-            EventNotifier.trackEvent("printer_camera_on", mapOf("printer" to sp.name, "transport" to "lan"))
+            val protocol =
+                sp.lanPrinter?.protocol
+                    ?: world.yemyat.slicepilot.cloud.PrinterProtocol.fromString(null, sp.model)
+            EventNotifier.trackEvent(
+                "printer_camera_on",
+                mapOf(
+                    "printer" to sp.name,
+                    "model" to sp.model,
+                    "transport" to "lan",
+                    "protocol" to protocol.name,
+                ),
+            )
             val monitor = activeLanMonitor
             cameraOffJob?.cancel() // quick OFF/ON: keep the camera armed, don't cycle it
             if (monitor.cameraNeedsArm) monitor.setCamera(true)
@@ -1684,28 +1738,104 @@ class AppViewModel(
             val gen = ++cameraGen
             cameraJob =
                 viewModelScope.launch {
+                    val sessionStartedAt = System.currentTimeMillis()
                     // The printer's camera + streaming pipeline needs a few seconds after
                     // the 1042 enable; connecting too early gets the stream yanked.
                     delay(monitor.cameraWarmupMs)
                     var attempt = 0
+                    var totalAttempts = 0
+                    var totalFrames = 0
+                    var totalDecodeFailures = 0
+                    var totalBytes = 0L
+                    var reportedFirstFrame = false
+                    var lastOutcome: world.yemyat.slicepilot.cloud.CameraStream.StreamOutcome? = null
+                    var lastUrl = ""
+
                     while (isActive && gen == cameraGen && _cameraOn.value) {
                         val startedAt = System.currentTimeMillis()
+                        val url = monitor.cameraStreamUrl(ip)
+                        lastUrl = url
+                        totalAttempts++
+                        var attemptOutcome: world.yemyat.slicepilot.cloud.CameraStream.StreamOutcome? = null
                         world.yemyat.slicepilot.cloud.CameraStream
-                            .frames(monitor.cameraStreamUrl(ip))
-                            .collect { _cameraFrame.value = it }
+                            .frames(url) { attemptOutcome = it }
+                            .collect { frame ->
+                                _cameraFrame.value = frame
+                                totalFrames++
+                                if (!reportedFirstFrame) {
+                                    reportedFirstFrame = true
+                                    EventNotifier.trackEvent(
+                                        "camera_first_frame",
+                                        buildMap {
+                                            put("protocol", protocol.name)
+                                            put("model", sp.model)
+                                            put("endpoint", world.yemyat.slicepilot.cloud.CameraStream.sanitizeEndpoint(url))
+                                            put("first_frame_ms", System.currentTimeMillis() - sessionStartedAt)
+                                            put("attempts", totalAttempts)
+                                            putAll(monitor.cameraDiagnostics())
+                                        },
+                                    )
+                                }
+                            }
+                        attemptOutcome?.let { out ->
+                            lastOutcome = out
+                            totalDecodeFailures += out.decodeFailures
+                            totalBytes += out.bytesRead
+                        }
                         if (!isActive || gen != cameraGen || !_cameraOn.value) break
-                        // The printer serves one video connection; pounding it with fast
-                        // reconnects wedges its camera server (TCP resets), so back off
-                        // exponentially and re-arm the camera (1042) on the way.
+
+                        val reason = attemptOutcome?.reason
+                        // Don't burn all 5 retries on clearly permanent mismatches (e.g. HTML/WebRTC or 404).
+                        val maxAttempts =
+                            when {
+                                reason?.isLikelyPermanent == true -> 2
+                                reason == world.yemyat.slicepilot.cloud.CameraStream.StreamFailureReason.HTTP_ERROR &&
+                                    (attemptOutcome?.httpCode in listOf(401, 403, 404)) -> 2
+                                else -> 5
+                            }
                         attempt = if (System.currentTimeMillis() - startedAt > 3000) 0 else attempt + 1
-                        if (attempt >= 5) break
+                        if (attempt >= maxAttempts) break
                         if (monitor.cameraNeedsArm && attempt % 2 == 0) monitor.setCamera(true)
                         delay(minOf(2000L * attempt, 8000L))
                     }
-                    // Stream gone for good: reset the toggle.
-                    if (gen == cameraGen && _cameraOn.value) stopCamera()
+
+                    // Stream gone for good: report structured diagnostics to Crashlytics/analytics.
+                    if (gen == cameraGen && _cameraOn.value) {
+                        val out = lastOutcome
+                        val errorName = if (totalFrames > 0) "camera_stream_dropped" else "camera_stream_failed"
+                        val props =
+                            buildMap<String, Any?> {
+                                put("protocol", protocol.name)
+                                put("model", sp.model)
+                                put("reason", out?.reason?.name ?: "UNKNOWN")
+                                put("http_code", out?.httpCode ?: -1)
+                                put("content_type", out?.contentType.orEmpty())
+                                put("endpoint", world.yemyat.slicepilot.cloud.CameraStream.sanitizeEndpoint(lastUrl))
+                                put("frames_decoded", totalFrames)
+                                put("decode_failures", totalDecodeFailures)
+                                put("bytes_read", totalBytes)
+                                put("attempts", totalAttempts)
+                                put("duration_ms", System.currentTimeMillis() - sessionStartedAt)
+                                put("message", out?.errorMessage.orEmpty().take(200))
+                                putAll(monitor.cameraDiagnostics())
+                            }
+                        EventNotifier.trackError(errorName, out?.throwable, props)
+                        _cameraError.value =
+                            when (out?.reason) {
+                                world.yemyat.slicepilot.cloud.CameraStream.StreamFailureReason.UNEXPECTED_CONTENT_TYPE ->
+                                    "Camera stream format unsupported (${out.contentType ?: "not MJPEG"})"
+                                world.yemyat.slicepilot.cloud.CameraStream.StreamFailureReason.HTTP_ERROR ->
+                                    "Camera stream unavailable (HTTP ${out.httpCode ?: "error"})"
+                                world.yemyat.slicepilot.cloud.CameraStream.StreamFailureReason.CONNECTION_REFUSED ->
+                                    "Camera service isn't reachable on the printer"
+                                else ->
+                                    if (totalFrames > 0) "Camera stream disconnected" else "Couldn't load camera stream"
+                            }
+                        stopCamera(preserveError = true)
+                    }
                 }
         } else {
+            _cameraError.value = null
             startCloudCamera(sp)
         }
     }
@@ -1803,7 +1933,8 @@ class AppViewModel(
             }
     }
 
-    fun stopCamera() {
+    fun stopCamera(preserveError: Boolean = false) {
+        if (!preserveError) _cameraError.value = null
         if (!_cameraOn.value) return
         cameraGen++
         _cameraOn.value = false
@@ -1822,7 +1953,7 @@ class AppViewModel(
                     delay(5000)
                     if (!_cameraOn.value) activeLanMonitor.setCamera(false)
                 }
-        } else if (sp != null) {
+        } else if (sp != null && !sp.isLocal) {
             val cp = sp.cloudPrinter ?: _printers.value.firstOrNull { it.id == sp.id }
             cloudCameraHeartbeatJob?.cancel()
             cloudCameraHeartbeatJob = null
@@ -2082,7 +2213,7 @@ class AppViewModel(
                                     accessCode,
                                 ) { msg -> applyPrintStatus(msg) }
                             if (local is CloudResult.Err && isConnectionFailure(local.message)) {
-                                if (cloudLoggedIn) {
+                                if (cloudLoggedIn && sp.lanPrinter?.protocol != world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER) {
                                     applyPrintStatus("Local upload failed — trying cloud…")
                                     val cloudMatch =
                                         when (val lr = cloud.listPrinters()) {
@@ -2389,6 +2520,7 @@ class AppViewModel(
 
     fun refreshLanFilament(printer: world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter? = _selectedLanPrinter.value) {
         val p = printer ?: return
+        if (p.protocol == world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER) return
         viewModelScope.launch {
             var info: world.yemyat.slicepilot.cloud.FilamentInfo? = null
             val isCc1 =
@@ -2704,10 +2836,11 @@ class AppViewModel(
         }
     }
 
-    /** Centauri-series machines (CC1/CC2) — the only ones the banner probes. */
-    private fun isPrintBannerPrinter(model: String): Boolean =
-        model.contains("Centauri", true) ||
-            model.contains("CC1", true) || model.contains("CC2", true)
+    /** Printers whose live status the Home print banner probes (CC1/CC2 + COSMOS/Moonraker). */
+    private fun isPrintBannerPrinter(sp: ConnectedPrinter): Boolean =
+        sp.lanPrinter?.protocol == world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER ||
+            sp.model.contains("Centauri", true) ||
+            sp.model.contains("CC1", true) || sp.model.contains("CC2", true)
 
     /**
      * Prints started outside SlicePilot (Matrix app / cloud): open the same
@@ -2718,10 +2851,10 @@ class AppViewModel(
     private suspend fun probeSelectedPrinterStatus() {
         if (_demoMode.value) return
         // Printer selection restores asynchronously (cloud login / LAN prefs);
-        // wait for a Centauri printer to show up.
+        // wait for a supported printer to show up.
         val sp =
             kotlinx.coroutines.withTimeoutOrNull(20_000) {
-                _selectedPrinter.first { it != null && isPrintBannerPrinter(it.model) }
+                _selectedPrinter.first { it != null && isPrintBannerPrinter(it) }
             } ?: return
         val cur = _printStatus.value
         if (printMonitorActive || (cur != null && !cur.state.isTerminal)) return
@@ -3377,6 +3510,12 @@ class AppViewModel(
             val name = prefs.getString("lan_printer_name", "") ?: ""
             val model = prefs.getString("lan_printer_model", "") ?: ""
             val lanMode = prefs.getBoolean("lan_printer_lan_mode", true)
+            val proto =
+                world.yemyat.slicepilot.cloud.PrinterProtocol.fromString(
+                    prefs.getString("lan_printer_protocol", null),
+                    model,
+                )
+            val port = prefs.getInt("lan_printer_port", proto.defaultPort)
             if ((ip.isNotBlank() || serial.isNotBlank()) && lanMode) {
                 val lp =
                     world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter(
@@ -3385,6 +3524,8 @@ class AppViewModel(
                         model = model.ifBlank { "Centauri Carbon 2" },
                         name = name.ifBlank { model.ifBlank { "Centauri Carbon 2" } },
                         lanMode = true,
+                        protocol = proto,
+                        port = port,
                     )
                 _selectedLanPrinter.value = lp
                 _selectedPrinter.value = lp.toConnectedPrinter()
@@ -3888,6 +4029,12 @@ class AppViewModel(
                 cfg.infillSpeed?.let { appendLine("sparse_infill_speed=$it") }
                 cfg.travelSpeed?.let { appendLine("travel_speed=$it") }
                 if (bedType != null) appendLine("curr_bed_type=$bedType")
+                // OpenCentauri COSMOS / Klipper (Moonraker): COSMOS disables Moonraker's
+                // on-printer object processor to save RAM, so emit EXCLUDE_OBJECT_* tags
+                // directly from libslic3r to enable mid-print part skipping.
+                if (selectedPrinter?.lanPrinter?.protocol == world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER) {
+                    appendLine("exclude_object=1")
+                }
             }
         android.util.Log.i("SliceCore", "config overrides:\n$overrides")
         val t = _modelTransform.value
@@ -4904,6 +5051,54 @@ class AppViewModel(
         }
     }
 
+    private val _moonrakerConnecting = MutableStateFlow(false)
+    val moonrakerConnecting: StateFlow<Boolean> = _moonrakerConnecting.asStateFlow()
+    private val _moonrakerConnectError = MutableStateFlow<String?>(null)
+    val moonrakerConnectError: StateFlow<String?> = _moonrakerConnectError.asStateFlow()
+
+    fun clearMoonrakerConnectError() {
+        _moonrakerConnectError.value = null
+    }
+
+    /**
+     * Manually connect to an OpenCentauri COSMOS or Klipper/Moonraker printer by IP or hostname
+     * (e.g. `192.168.1.42`, `cosmos.local`, or `192.168.1.42:7125`).
+     */
+    fun connectMoonrakerByHost(
+        rawHost: String,
+        apiKey: String = "",
+    ) {
+        if (_moonrakerConnecting.value) return
+        viewModelScope.launch {
+            _moonrakerConnecting.value = true
+            _moonrakerConnectError.value = null
+            try {
+                when (val res = lanPrint.probeMoonraker(rawHost, apiKey)) {
+                    is CloudResult.Ok -> {
+                        val printer = res.value
+                        if (apiKey.isNotBlank()) {
+                            prefs.edit().putString(accessCodeKey(printer), apiKey.trim()).apply()
+                        }
+                        val existing = _lanPrinters.value.filterNot { it.ip == printer.ip && it.port == printer.port }
+                        _lanPrinters.value = listOf(printer) + existing
+                        selectLanPrinter(printer)
+                        _cloudMessage.value = "Connected to ${printer.name}"
+                        EventNotifier.trackEvent(
+                            "lan_moonraker_manual_connected",
+                            mapOf("model" to printer.model, "port" to printer.port),
+                        )
+                    }
+
+                    is CloudResult.Err -> {
+                        _moonrakerConnectError.value = res.message
+                    }
+                }
+            } finally {
+                _moonrakerConnecting.value = false
+            }
+        }
+    }
+
     fun selectLanPrinter(printer: world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter) {
         if (!printer.lanMode) {
             _cloudMessage.value =
@@ -4921,6 +5116,8 @@ class AppViewModel(
             .putString("lan_printer_ip", printer.ip)
             .putString("lan_printer_name", printer.name)
             .putString("lan_printer_model", printer.model)
+            .putString("lan_printer_protocol", printer.protocol.name)
+            .putInt("lan_printer_port", printer.port)
             .putBoolean("lan_printer_lan_mode", true)
             .apply()
         recomputeAvailablePrinters()
@@ -4996,6 +5193,8 @@ class AppViewModel(
             .remove("lan_printer_ip")
             .remove("lan_printer_name")
             .remove("lan_printer_model")
+            .remove("lan_printer_protocol")
+            .remove("lan_printer_port")
             .remove("lan_printer_lan_mode")
             .remove("cloud_printer_id")
             .apply()
@@ -5085,6 +5284,7 @@ class AppViewModel(
         cloudPrint.release()
         lanPrintMonitor.shutdown()
         lanPrintMonitorCc1.shutdown()
+        lanPrintMonitorMoonraker.shutdown()
         super.onCleared()
     }
 

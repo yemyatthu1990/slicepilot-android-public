@@ -1,7 +1,7 @@
 export const SITE_URL = "https://slicepilot.eu"
 export const PLAY_URL = "https://play.google.com/store/apps/details?id=world.yemyat.slicepilot"
 export const REPO_URL = "https://github.com/yemyatthu1990/slicepilot-android-public"
-export const VERSION = "1.10.2"
+export const VERSION = "1.11.0"
 
 export const FAQS = [
   {
@@ -13,6 +13,14 @@ export const FAQS = [
     a: "Yes. SlicePilot connects to the Elegoo Centauri Carbon 2 over both Elegoo Cloud and local Wi-Fi (LAN). It reads your loaded Canvas / AMS filament spools, automatically maps multi-colour 3MF colours to matching slots, places a compact waste-chute prime tower strictly inside the 256×256 mm build plate, and streams the live printer camera.",
   },
   {
+    q: "Does SlicePilot support OpenCentauri COSMOS and Klipper / Moonraker printers?",
+    a: "Yes. SlicePilot connects directly over local Wi-Fi to Elegoo Centauri Carbon 1 & 2 printers flashed with OpenCentauri COSMOS firmware as well as standard Klipper / Moonraker printers. It auto-discovers Moonraker over mDNS or connects by IP/hostname (port 80 on COSMOS or 7125 on standard Klipper), uploads & starts G-code, streams uStreamer MJPEG video, controls temperatures, fans, and LED, and supports mid-print part skipping.",
+  },
+  {
+    q: "Can I skip or cancel a single failed part mid-print on Android?",
+    a: "Yes on OpenCentauri COSMOS and Klipper / Moonraker printers with [exclude_object] enabled. SlicePilot automatically embeds Klipper EXCLUDE_OBJECT tags during on-device slicing (so it works even with COSMOS's low-RAM Moonraker config) and gives you a live Skip a Part sheet with a 2D build plate map to cancel a detached part without stopping the rest of the job. Stock Elegoo CC1/CC2 firmware does not expose mid-print object exclusion.",
+  },
+  {
     q: "Can I customize MakerWorld parametric models (like name keychains) on my phone?",
     a: "Yes. SlicePilot includes an in-app MakerWorld parametric customizer for OpenSCAD models. You can edit text, sizes, and model parameters, choose from 48+ curated fonts, pick filament colours with 20 one-tap swatches or custom RGB sliders, orbit the live 3D preview, and export straight into multi-colour AMS slicing.",
   },
@@ -22,15 +30,15 @@ export const FAQS = [
   },
   {
     q: "Can I use SlicePilot with 3D printers other than the Centauri Carbon 2?",
-    a: "Direct cloud and local LAN print upload, live camera streaming, and AMS spool syncing are built for the Elegoo Centauri Carbon 2. However, anyone can browse models, customize MakerWorld designs, slice STL/3MF files on-device, preview G-code layers, and save the exported G-code file to their Android device.",
+    a: "Yes. In addition to Elegoo Centauri Carbon 1 & 2 (stock cloud/LAN and OpenCentauri COSMOS), SlicePilot supports any Klipper printer running Moonraker on your local network (Voron, Neptune 4, rooted K1, and more). You can also slice STL/3MF files on-device and export the G-code file for any other printer.",
   },
   {
     q: "Does SlicePilot support local LAN printing as well as cloud printing?",
-    a: "Yes. You can connect over Elegoo Cloud (including Sign in with Google) to print and monitor from anywhere, or connect directly over local Wi-Fi (LAN) on the same network as your Centauri Carbon 2.",
+    a: "Yes. You can connect over Elegoo Cloud (including Sign in with Google) on stock Elegoo firmware, or connect directly over local Wi-Fi (LAN) on stock CC1/CC2, OpenCentauri COSMOS, or any Klipper / Moonraker printer.",
   },
   {
-    q: "Is SlicePilot free, and is it affiliated with Elegoo or Bambu Lab?",
-    a: "SlicePilot is free on Google Play. It is an independent open-source project and is not affiliated with, endorsed by, or sponsored by Elegoo, MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, or Nexprint.",
+    q: "Is SlicePilot free, and is it affiliated with Elegoo, OpenCentauri, or Bambu Lab?",
+    a: "SlicePilot is free on Google Play. It is an independent open-source project and is not affiliated with, endorsed by, or sponsored by Elegoo, OpenCentauri, MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, or Nexprint.",
   },
 ]
 
@@ -65,7 +73,39 @@ export const GUIDES = [
         body: "Watch the full-screen pinch-to-zoom camera feed with photo capture, adjust nozzle/bed/chamber temperatures, control cooling and auxiliary fans, and toggle the case light from your phone.",
       },
     ],
-    faqSubset: [1, 5, 4],
+    faqSubset: [1, 7, 2],
+  },
+  {
+    slug: "opencentauri-cosmos",
+    shortTitle: "OpenCentauri COSMOS & Klipper",
+    title: "OpenCentauri COSMOS & Klipper Moonraker Android App — On-Device Slicer & Skip Object | SlicePilot",
+    description:
+      "Slice STL/3MF on Android and print directly to OpenCentauri COSMOS (Centauri Carbon 1 & 2) and Klipper / Moonraker printers. Includes automatic exclude_object slicing, mid-print Skip Part with 2D bed map, and uStreamer live camera.",
+    eyebrow: "Custom firmware guide · COSMOS & Klipper",
+    h1: "The Android 3D slicer built for OpenCentauri COSMOS & Klipper (Moonraker)",
+    lead:
+      "Flashed OpenCentauri COSMOS on your Centauri Carbon — or running Klipper and Moonraker? SlicePilot connects straight to Moonraker over local Wi-Fi, bakes Klipper EXCLUDE_OBJECT tags right in the slicer, and lets you skip a failed part mid-print from your phone.",
+    screenshot: "/screenshots/v1.10.2/06_printer_control.webp",
+    screenshotAlt: "SlicePilot live Moonraker and OpenCentauri COSMOS printer dashboard on Android",
+    highlights: [
+      {
+        title: "Mid-print Skip Part (Klipper exclude_object) with 2D build plate map",
+        body: "When one part on a multi-part plate detaches, tap Skip a part to see every object on a top-down 2D bed map and cancel just the failed object via EXCLUDE_OBJECT without aborting the rest of the print.",
+      },
+      {
+        title: "Automatic exclude_object=1 slicing for low-RAM COSMOS boards",
+        body: "COSMOS disables Moonraker's on-printer object processor to save memory on the R528 board. SlicePilot automatically enables exclude_object in its native libslic3r engine whenever you slice for a Moonraker/COSMOS printer.",
+      },
+      {
+        title: "Zero-config COSMOS & Klipper Moonraker discovery",
+        body: "Auto-discovers Moonraker over mDNS or connects by IP/hostname (port 80 on COSMOS, port 7125 on standard Klipper, with optional API key). Automatically maps COSMOS fans (aux_fan, case_fan), dimmable case LED, and chamber sensor.",
+      },
+      {
+        title: "Direct upload, live telemetry & uStreamer MJPEG camera",
+        body: "Uploads sliced G-code directly to /server/files/upload and starts printing in one tap, tracks real-time progress over Moonraker WebSocket, and streams uStreamer MJPEG video with pinch-to-zoom and photo capture.",
+      },
+    ],
+    faqSubset: [2, 3, 6],
   },
   {
     slug: "android-3d-slicer",
@@ -97,7 +137,7 @@ export const GUIDES = [
         body: "Keep using your phone while SlicePilot slices in the background with live progress notifications, then scrub every G-code layer with print time, gram weight, and filament length estimates.",
       },
     ],
-    faqSubset: [0, 3, 4],
+    faqSubset: [0, 5, 6],
   },
   {
     slug: "makerworld-customizer-android",
@@ -129,7 +169,7 @@ export const GUIDES = [
         body: "Tap 'Use preview & slice' to pack your customized multi-colour 3MF directly into Print setup with automatic Centauri Carbon 2 AMS / Canvas spool matching.",
       },
     ],
-    faqSubset: [2, 1, 3],
+    faqSubset: [4, 1, 5],
   },
   {
     slug: "compare",
@@ -148,6 +188,7 @@ export const GUIDES = [
       ["In-app MakerWorld parametric customizer", "Yes (3D preview, 48+ fonts, colour picker)", "No", "Via web browser"],
       ["Search 4 model communities (MakerWorld, Printables, Thingiverse, Nexprint)", "Yes (unified search)", "Nexprint only", "Separate browser tabs"],
       ["Centauri Carbon 2 Cloud + Local LAN printing", "Yes (Cloud & LAN)", "Yes", "Yes (desktop)"],
+      ["OpenCentauri COSMOS & Klipper (Moonraker) LAN + Mid-Print Skip Part", "Yes (Moonraker + 2D bed map)", "No (stock firmware only)", "Yes (desktop + web UI)"],
       ["Multi-colour 3MF & Canvas / AMS spool mapping", "Yes (auto-map + compact prime tower)", "Pre-sliced multi-colour", "Yes (full desktop control)"],
       ["Live printer camera, temps & fan controls", "Yes", "Yes", "Yes"],
       ["Advanced mesh painting & manual modifier meshes", "Basic multi-part / 3MF colours", "No", "Best on desktop"],
@@ -156,13 +197,13 @@ export const GUIDES = [
     highlights: [
       {
         title: "Best for phone-first 3D printing",
-        body: "Choose SlicePilot when you want to find a model, customize a keychain or sign, slice a multi-colour 3MF, and start a print on your Centauri Carbon 2 directly from the couch or workshop without booting a PC.",
+        body: "Choose SlicePilot when you want to find a model, customize a keychain or sign, slice a multi-colour 3MF, and start a print on your Centauri Carbon 2, OpenCentauri COSMOS, or Klipper/Moonraker printer directly from your phone.",
       },
       {
         title: "When to use a desktop slicer",
         body: "Choose OrcaSlicer or Elegoo Slicer on a computer when you need freehand brush painting on single-body STLs, complex negative-part CAD modifiers, or deep custom printer profile engineering.",
       },
     ],
-    faqSubset: [0, 1, 6],
+    faqSubset: [0, 2, 8],
   },
 ]

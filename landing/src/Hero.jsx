@@ -1,6 +1,7 @@
 import React, { Suspense, lazy } from "react"
 import { motion } from "framer-motion"
 import { PlayButton } from "./ui.jsx"
+import { VERSION } from "./seoData.js"
 
 const Scene3D = lazy(() => import("./Scene3D.jsx"))
 
@@ -28,7 +29,7 @@ export default function Hero() {
         <motion.div {...fade(0.1)} className="max-w-2xl">
           <span className="inline-flex items-center gap-2 rounded-full border border-ember-500/30 bg-ember-500/10 px-4 py-1.5 font-mono text-xs text-ember-300">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-ember-400" />
-            Now on Google Play — v1.10.2
+            Now on Google Play — v{VERSION} · COSMOS &amp; Klipper
           </span>
         </motion.div>
 
@@ -44,9 +45,10 @@ export default function Hero() {
         <motion.p {...fade(0.35)} className="mt-6 max-w-xl text-lg leading-relaxed text-cream-500 sm:text-xl">
           SlicePilot puts a <span className="text-cream-100 font-medium">desktop-class 3D slicer</span>,{" "}
           <span className="text-cream-100 font-medium">parametric customizer</span>, and{" "}
-          <span className="text-cream-100 font-medium">multi-colour AMS printing</span> in your pocket. Browse four
-          communities, personalize models in 3D, slice on-device, and print to your Centauri Carbon 2 over cloud or
-          local Wi-Fi.
+          <span className="text-cream-100 font-medium">multi-colour AMS printing</span> in your pocket. Print over
+          cloud or local Wi-Fi to your Centauri Carbon 2,{" "}
+          <span className="text-cream-100 font-medium">OpenCentauri COSMOS</span>, or Klipper / Moonraker printer —
+          with mid-print part skipping.
         </motion.p>
 
         <motion.div {...fade(0.5)} className="mt-9 flex flex-wrap items-center gap-5">

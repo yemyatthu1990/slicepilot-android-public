@@ -1,5 +1,6 @@
 # Play Store listing
 
+**v1.11.0 (53) went to production at 100 % on 2026-11-26** (Play edit `12290804424531887166`, bundle sha1 `b4af80e7cb7f326e45e445484f51ba60c9869209`, ProGuard mapping + native symbols uploaded; OpenCentauri COSMOS / Klipper Moonraker LAN support, mid-print Skip Part with 2D build plate map, camera playback diagnostics, and Wi-Fi scanning spinner fix).
 Published 2026-11-24 from Play edit `18093862744728633418` (en-US listing + 7 `phone_v1.10.2` promotional screenshots + `1024×500` feature graphic + v1.10.2 production 100%).
 **v1.10.2 (49) went to production at 100 % on 2026-11-24** (Play edit `18093862744728633418`; internal upload edit `17281019097205255164`, bundle sha1 `3cd877681e1b6197278f4945b1fae46bc88ce2a3`, ProGuard mapping + native symbols uploaded).
 **v1.10.1 (48) is on the internal track since 2026-11-24** (Play edit `07714278245451368962`, bundle sha1 `a80b3f487eecb7b9cd008c4e0d5b4a5a7be2fcfa`, ProGuard mapping + native symbols uploaded).
@@ -62,6 +63,11 @@ DESKTOP-CLASS ON-DEVICE SLICING ENGINE
 - Open STL/3MF files directly from your Files app
 
 SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint or Elegoo. All trademarks belong to their respective owners.
+
+## What's new (1.11.0)
+• Added OpenCentauri COSMOS & Klipper (Moonraker) LAN support: auto-discover via mDNS or connect by IP/hostname (port 80 or 7125, optional API key) to upload, monitor, control temps/fans/light, and stream MJPEG camera
+• Mid-print Skip Part (Klipper exclude_object): automatically embeds object tags when slicing for COSMOS/Moonraker and adds a live 2D build plate map to cancel failed parts mid-print
+• Improved LAN camera error diagnostics & retry UI, plus fixed Wi-Fi scanning spinner alignment
 
 ## What's new (1.10.5)
 • Fixed supports, support interfaces, brim, and prime tower disappearing from the final G-code preview on large high-detail models (such as 500+ layer prints using adaptive LOD)

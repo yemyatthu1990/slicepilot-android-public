@@ -383,9 +383,10 @@ private fun LocalNetworkSection(
             }
 
             if (selectedPrinter?.isLocal == true) {
+                val isMoonraker = selectedPrinter.lanPrinter?.protocol == world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER
                 Spacer(Modifier.height(4.dp))
                 BrandButton(
-                    text = "Access code",
+                    text = if (isMoonraker) "API key (optional)" else "Access code",
                     onClick = { vm.requestAccessCodeEntry() },
                     role = ButtonRole.Secondary,
                     icon = { Icon(Icons.Filled.Visibility, null, modifier = Modifier.size(16.dp)) },
@@ -434,6 +435,94 @@ private fun LocalNetworkSection(
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+        }
+    }
+
+    // Direct IP / hostname connect for OpenCentauri COSMOS & Klipper/Moonraker printers
+    // (works even when mDNS is blocked across subnets/VLANs or over Tailscale).
+    MoonrakerManualConnectCard(vm = vm)
+}
+
+@Composable
+private fun MoonrakerManualConnectCard(vm: AppViewModel) {
+    val connecting by vm.moonrakerConnecting.collectAsState()
+    val error by vm.moonrakerConnectError.collectAsState()
+    var hostInput by rememberSaveable { mutableStateOf("") }
+    var apiKeyInput by rememberSaveable { mutableStateOf("") }
+    var showApiKey by rememberSaveable { mutableStateOf(false) }
+
+    Spacer(Modifier.height(4.dp))
+    BrandSectionLabel("COSMOS / Klipper (Moonraker)")
+    Surface(
+        shape = RoundedCornerShape(Radius.md),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        border = BorderStroke(1.dp, LanternGold.copy(alpha = 0.18f)),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                "Enter your printer's IP address or hostname to connect to OpenCentauri COSMOS or any Moonraker/Klipper printer. Supports mid-print part skipping.",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = hostInput,
+                onValueChange = {
+                    hostInput = it
+                    if (error != null) vm.clearMoonrakerConnectError()
+                },
+                label = { Text("IP address or hostname") },
+                placeholder = { Text("192.168.1.42 or cosmos.local") },
+                singleLine = true,
+                enabled = !connecting,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions =
+                    KeyboardActions(
+                        onDone = {
+                            if (hostInput.isNotBlank() && !connecting) {
+                                vm.connectMoonrakerByHost(hostInput, apiKeyInput)
+                            }
+                        },
+                    ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (showApiKey) {
+                OutlinedTextField(
+                    value = apiKeyInput,
+                    onValueChange = { apiKeyInput = it },
+                    label = { Text("Moonraker API key (optional)") },
+                    singleLine = true,
+                    enabled = !connecting,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            if (error != null) {
+                Text(
+                    error.orEmpty(),
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BrandButton(
+                    text = if (connecting) "Connecting…" else "Connect",
+                    onClick = { vm.connectMoonrakerByHost(hostInput, apiKeyInput) },
+                    enabled = hostInput.isNotBlank() && !connecting,
+                    loading = connecting,
+                    height = ButtonSize.Small,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { showApiKey = !showApiKey }) {
+                    Text(if (showApiKey) "Hide key" else "API key", fontSize = 12.sp)
+                }
             }
         }
     }
@@ -826,6 +915,7 @@ private fun PrinterRow(
 fun AccessCodeDialog(
     printerName: String,
     initialCode: String,
+    isMoonraker: Boolean = false,
     onDismiss: () -> Unit,
     onSave: (String) -> Unit,
 ) {
@@ -833,18 +923,34 @@ fun AccessCodeDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Access code", fontWeight = FontWeight.Bold) },
+        title = {
+            Text(
+                if (isMoonraker) "Moonraker API key" else "Access code",
+                fontWeight = FontWeight.Bold,
+            )
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    "Enter the access code shown on $printerName's screen (Settings → Network → LAN Only mode).",
+                    if (isMoonraker) {
+                        "Optional API key for $printerName. OpenCentauri COSMOS does not require an API key on your local Wi-Fi."
+                    } else {
+                        "Enter the access code shown on $printerName's screen (Settings → Network → LAN Only mode)."
+                    },
                     fontSize = 14.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 OutlinedTextField(
                     value = code,
-                    onValueChange = { code = it.filter(Char::isLetterOrDigit).take(16) },
-                    label = { Text("Access code") },
+                    onValueChange = { raw ->
+                        code =
+                            if (isMoonraker) {
+                                raw.filter { it.isLetterOrDigit() || it == '-' || it == '_' }.take(64)
+                            } else {
+                                raw.filter(Char::isLetterOrDigit).take(16)
+                            }
+                    },
+                    label = { Text(if (isMoonraker) "API key" else "Access code") },
                     singleLine = true,
                     keyboardOptions =
                         KeyboardOptions(
@@ -858,8 +964,12 @@ fun AccessCodeDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    "No code on the screen? Update the printer's firmware, then turn on " +
-                        "LAN Only mode in its network settings.",
+                    if (isMoonraker) {
+                        "Only needed if your Moonraker server has api_key authentication enabled."
+                    } else {
+                        "No code on the screen? Update the printer's firmware, then turn on " +
+                            "LAN Only mode in its network settings."
+                    },
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

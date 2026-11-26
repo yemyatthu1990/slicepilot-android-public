@@ -334,6 +334,7 @@ private fun LiveCameraCard(
 ) {
     val photos by vm.photos.collectAsState()
     val cameraOn by vm.cameraOn.collectAsState()
+    val cameraError by vm.cameraError.collectAsState()
     LaunchedEffect(Unit) { vm.refreshPhotos() }
 
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -401,6 +402,21 @@ private fun LiveCameraCard(
                             tint = Color.White,
                             modifier = Modifier.size(22.dp),
                         )
+                    }
+                }
+            } else if (cameraError != null) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(horizontal = 20.dp),
+                ) {
+                    Text(
+                        cameraError.orEmpty(),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    TextButton(onClick = { vm.startCamera() }) {
+                        Text("Retry camera")
                     }
                 }
             } else {

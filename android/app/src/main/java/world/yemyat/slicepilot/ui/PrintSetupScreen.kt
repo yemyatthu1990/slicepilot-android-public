@@ -442,12 +442,14 @@ fun PrintSetupScreen(vm: AppViewModel) {
                         )
                     }
 
+                    val isMoonrakerPrinter =
+                        printer?.lanPrinter?.protocol == world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER
                     if (multiColourActive) {
                         AmsFilamentMapSection(
                             assignments = multiAssignments,
                             reportedTrays = reportedTrays,
                             hasCustomMapping = amsSlotOverrides.isNotEmpty(),
-                            isLocalWithoutTrays = printer?.isLocal == true && reportedTrays.isEmpty(),
+                            isLocalWithoutTrays = printer?.isLocal == true && !isMoonrakerPrinter && reportedTrays.isEmpty(),
                             onSelectSlot = { idx, slot -> vm.setAmsSlotForModelFilament(idx, slot) },
                             onAutoMatch = { vm.autoMatchAmsSlots() },
                             onEnterAccessCode = { vm.requestAccessCodeEntry() },
@@ -461,8 +463,8 @@ fun PrintSetupScreen(vm: AppViewModel) {
                         )
 
                         // When the printer reports its spools, the Material dropdown already lists them
-                        // per tray; only pick a bare slot manually when it reported nothing.
-                        if (printer?.isLocal == true && vm.lanSpools().isEmpty()) {
+                        // per tray; only pick a bare slot manually when an Elegoo LAN printer reported nothing.
+                        if (printer?.isLocal == true && !isMoonrakerPrinter && vm.lanSpools().isEmpty()) {
                             Column(verticalArrangement = Arrangement.spacedBy(Space.xs)) {
                                 BrandSectionLabel("Printer spool")
                                 Row(horizontalArrangement = Arrangement.spacedBy(Space.xs)) {

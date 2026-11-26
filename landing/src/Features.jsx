@@ -36,12 +36,12 @@ const FEATURES = [
   },
   {
     icon: "M7 8V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3M7 8H5a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h2m10-9h2a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2m-10 0v3a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-3H7Zm2-4h6",
-    title: "Cloud & local LAN printing",
-    text: "Connect to your Centauri Carbon 2 over cloud or local Wi-Fi: monitor live print progress, watch the live printer camera, control temperatures and fans, and send jobs directly.",
+    title: "Cloud, LAN & OpenCentauri COSMOS",
+    text: "Print over Elegoo Cloud or local Wi-Fi to Centauri Carbon 1 & 2, OpenCentauri COSMOS, and Klipper / Moonraker printers — with live camera, controls, and mid-print Skip Part (exclude_object).",
   },
 ]
 
-const COMMUNITIES = ["MakerWorld", "Printables", "Thingiverse", "Nexprint"]
+const COMMUNITIES = ["MakerWorld", "Printables", "Thingiverse", "Nexprint", "OpenCentauri COSMOS", "Klipper · Moonraker"]
 
 export default function Features() {
   return (

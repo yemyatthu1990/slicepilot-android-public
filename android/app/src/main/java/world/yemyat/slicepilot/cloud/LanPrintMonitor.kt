@@ -20,6 +20,49 @@ import org.json.JSONObject
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 
+/** Transport protocol used to talk to a LAN printer. */
+enum class PrinterProtocol {
+    /** Elegoo Centauri Carbon 2 stock firmware (UDP 52700 + HTTP PUT /upload + MQTT 1883). */
+    CC2_MQTT,
+
+    /** Elegoo Centauri Carbon 1 stock firmware (UDP 3000 + HTTP POST /uploadFile/upload + SDCP WS 3030). */
+    CC1_SDCP,
+
+    /** OpenCentauri COSMOS and generic Klipper/Moonraker printers (HTTP + JSON-RPC WS on :80 or :7125). */
+    MOONRAKER,
+    ;
+
+    val defaultPort: Int
+        get() =
+            when (this) {
+                CC2_MQTT -> 80
+                CC1_SDCP -> 80
+                MOONRAKER -> 80
+            }
+
+    val isMoonraker: Boolean get() = this == MOONRAKER
+
+    companion object {
+        fun fromString(raw: String?, model: String = ""): PrinterProtocol =
+            when (raw?.uppercase()) {
+                "MOONRAKER" -> MOONRAKER
+                "CC1_SDCP" -> CC1_SDCP
+                "CC2_MQTT" -> CC2_MQTT
+                else -> if (LanPrintManager.isCc1Model(model)) CC1_SDCP else CC2_MQTT
+            }
+    }
+}
+
+/**
+ * One printable object reported by Klipper's `[exclude_object]` module during a print.
+ * Coordinates are in bed millimetres (X/Y) as emitted by `EXCLUDE_OBJECT_DEFINE`.
+ */
+data class PrintObject(
+    val name: String,
+    val center: Pair<Float, Float>? = null,
+    val polygon: List<Pair<Float, Float>> = emptyList(),
+)
+
 /** Live print job state, mapped from the CC2 machine/print status codes. */
 enum class PrintJobState {
     CONNECTING,
@@ -74,9 +117,19 @@ data class PrintStatus(
     val boxFanSpeed: Int = -1,
     /** Case light from `led.status`; null = never reported. */
     val lightOn: Boolean? = null,
+    /** Printable objects defined in the active G-code (Klipper `[exclude_object]`). */
+    val objects: List<PrintObject> = emptyList(),
+    /** Object names already cancelled mid-print via `EXCLUDE_OBJECT`. */
+    val excludedObjects: Set<String> = emptySet(),
+    /** Name of the object currently being printed, if reported by Klipper. */
+    val currentObject: String? = null,
     /** True once the printer has sent at least one real status message. */
     val live: Boolean = false,
 ) {
+    /** True when the active job exposes multiple objects that can be skipped mid-print. */
+    val canExcludeObjects: Boolean
+        get() = objects.size > 1 && state.isInProgress && state != PrintJobState.CONNECTING
+
     val speedPercent: Int get() =
         when (speedMode) {
             0 -> 50
@@ -128,6 +181,12 @@ interface PrintMonitor {
 
     fun setCamera(enable: Boolean)
 
+    /** Cancel a single object mid-print (supported on Klipper/COSMOS via Moonraker). */
+    fun excludeObject(name: String) {}
+
+    /** True when this monitor's firmware supports mid-print object exclusion. */
+    val supportsExcludeObject: Boolean get() = false
+
     fun shutdown()
 
     /** CC2 needs method 1042 to wake its camera; the CC1 streams unconditionally. */
@@ -138,6 +197,9 @@ interface PrintMonitor {
 
     /** MJPEG stream endpoint for [CameraStream]. */
     fun cameraStreamUrl(ip: String): String = "http://$ip:8080/?action=stream"
+
+    /** Extra camera diagnostic fields (e.g. Moonraker webcam service/source) for telemetry. */
+    fun cameraDiagnostics(): Map<String, Any> = emptyMap()
 
     /**
      * One-shot: if the print lands in PAUSED shortly after starting (CC1

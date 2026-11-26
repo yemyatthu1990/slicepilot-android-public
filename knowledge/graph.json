@@ -155,6 +155,24 @@
       ]
     },
     {
+      "id": "br:feature/cosmos-moonraker",
+      "kind": "branch",
+      "title": "feature/cosmos-moonraker",
+      "status": "merged",
+      "summary": "Isolated worktree implementing OpenCentauri COSMOS / Klipper Moonraker LAN support and mid-print object skipping.",
+      "updated": "2026-11-26",
+      "edges": [
+        [
+          "part_of",
+          "proj:slicepilot-android"
+        ],
+        [
+          "carries",
+          "feat:cosmos-moonraker"
+        ]
+      ]
+    },
+    {
       "id": "br:feature/google-sign-in",
       "kind": "branch",
       "title": "feature/google-sign-in",
@@ -1199,6 +1217,37 @@
           "feat:printer-pairing"
         ]
       ]
+    },
+    {
+      "id": "feat:cosmos-moonraker",
+      "kind": "feature",
+      "title": "OpenCentauri COSMOS / Moonraker support and mid-print part skipping",
+      "status": "shipped",
+      "summary": "Adds PrinterProtocol.MOONRAKER with mDNS + manual IP discovery, multipart upload/print, JSON-RPC WebSocket monitoring (COSMOS hardware auto-detection for fans/LED/chamber/webcam), automatic exclude_object=1 slicing override, and a mid-print Skip Part bottom sheet with 2D build plate map.",
+      "updated": "2026-11-26",
+      "edges": [
+        [
+          "implemented_by",
+          "mod:android-app"
+        ],
+        [
+          "depends_on",
+          "feat:lan-print"
+        ],
+        [
+          "shipped_in",
+          "rel:v1.11.0"
+        ]
+      ],
+      "next": [
+        "Monitor Crashlytics camera_stream_failed / camera_stream_dropped and Moonraker telemetry from production",
+        "Run a real COSMOS-flashed Centauri Carbon verification pass"
+      ],
+      "verification": {
+        "level": "store",
+        "ref": "play-12290804424531887166",
+        "at": "2026-11-26"
+      }
     },
     {
       "id": "feat:gcode-history",
@@ -2680,7 +2729,7 @@
       "id": "rel:v1.10.5",
       "kind": "release",
       "title": "v1.10.5 (52)",
-      "status": "live",
+      "status": "superseded",
       "summary": "Preserves supports, support interfaces, brim, and prime tower in G-code preview across all adaptive LOD levels (0..5) and eliminates odd-layer support gaps at LOD 3, with 1.35x support segment coalescing to stay within the 48 MB cap. Uploaded to Play internal (edit 18397921120296925531, sha1 7202af9a95c0dfcd11cc8847cc42327532b70757) with ProGuard mapping + native symbols and promoted to Play production 100% (edit 05737116327998787386).",
       "updated": "2026-11-26",
       "refs": [
@@ -2688,9 +2737,7 @@
         "file:android/app/build.gradle.kts",
         "commit:5986254"
       ],
-      "next": [
-        "Monitor Play vitals / Crashlytics on v1.10.5 production rollout"
-      ],
+      "next": [],
       "attrs": {
         "date": "2026-11-26",
         "version_code": 52,
@@ -2714,6 +2761,32 @@
         [
           "supersedes",
           "rel:v1.10.4"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.11.0",
+      "kind": "release",
+      "title": "v1.11.0 (53)",
+      "status": "live",
+      "summary": "Production rollout (100%, Play edit 12290804424531887166, sha1 b4af80e7cb7f326e45e445484f51ba60c9869209): OpenCentauri COSMOS & Klipper/Moonraker LAN support, mid-print Skip Part (exclude_object with 2D build plate map), structured LAN camera playback diagnostics & Crashlytics grouping, Wi-Fi scanning spinner fix, and COSMOS/Klipper SEO for slicepilot.eu and GitHub.",
+      "updated": "2026-11-26",
+      "edges": [
+        [
+          "supersedes",
+          "rel:v1.10.5"
+        ],
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "affects",
+          "mod:android-app"
         ]
       ]
     },

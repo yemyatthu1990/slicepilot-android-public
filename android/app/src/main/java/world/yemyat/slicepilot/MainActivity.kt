@@ -677,6 +677,7 @@ class MainActivity : ComponentActivity() {
             AccessCodeDialog(
                 printerName = printer.name.ifBlank { printer.model.ifBlank { "the printer" } },
                 initialCode = vm.storedAccessCode(printer),
+                isMoonraker = printer.protocol == world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER,
                 onDismiss = { vm.dismissAccessCodePrompt() },
                 onSave = { code -> vm.setLanAccessCode(printer, code) },
             )

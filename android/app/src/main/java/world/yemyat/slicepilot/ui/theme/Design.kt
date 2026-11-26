@@ -518,18 +518,20 @@ fun BrandButton(
         // Caller-supplied icons have no tint of their own most of the time, so
         // the role's label colour is what they inherit.
         CompositionLocalProvider(LocalContentColor provides paint.content) {
-            if (loading) {
-                CircularProgressIndicator(
-                    modifier = Modifier.height(20.dp),
-                    color = paint.content,
-                    strokeWidth = 2.dp,
-                )
-            } else {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (loading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = paint.content,
+                        strokeWidth = 2.dp,
+                    )
+                } else {
                     icon?.invoke()
+                }
+                if (text.isNotEmpty()) {
                     Text(
                         text,
                         fontSize =

@@ -33,7 +33,7 @@ const homeJsonLd = {
       url: `${SITE_URL}/`,
       name: "SlicePilot",
       description:
-        "On-device Android 3D slicer, MakerWorld parametric customizer, and multi-colour AMS/Canvas print controller for the Elegoo Centauri Carbon 2.",
+        "On-device Android 3D slicer, MakerWorld parametric customizer, multi-colour AMS/Canvas print controller for Elegoo Centauri Carbon 2, and OpenCentauri COSMOS / Klipper (Moonraker) controller with mid-print Skip Part.",
     },
     {
       "@type": "SoftwareApplication",
@@ -65,6 +65,7 @@ const homeJsonLd = {
         "Native on-device libslic3r 3D slicing for Android (STL and multi-colour 3MF)",
         "In-app MakerWorld OpenSCAD parametric customizer with inline 3D preview, 48+ curated fonts, and 20-swatch + RGB colour picker",
         "Multi-colour 3MF preview, automatic Elegoo Centauri Carbon 2 Canvas / AMS spool matching, and compact waste-chute prime tower inside the build plate",
+        "OpenCentauri COSMOS (Centauri Carbon 1 & 2) and Klipper / Moonraker LAN printing with automatic exclude_object slicing and mid-print Skip Part (2D build plate map)",
         "Unified model search across MakerWorld, Printables, Thingiverse, and Nexprint",
         "Layer-by-layer multi-colour G-code preview with print time, filament weight, and length estimates",
         "Cloud and local Wi-Fi (LAN) printing with live printer camera, temperature, fan, and light controls",
@@ -123,7 +124,7 @@ const staticHomeBody = `
       <p class="font-mono text-xs uppercase tracking-widest text-ember-400">Now on Google Play — v${VERSION}</p>
       <h1 class="mt-4 font-display text-5xl font-extrabold text-cream-50">Your printer's co-pilot.</h1>
       <p class="mt-4 max-w-2xl text-lg text-cream-500">
-        SlicePilot puts a desktop-class 3D slicer (native libslic3r), MakerWorld parametric customizer, and multi-colour AMS / Canvas printing in your Android pocket. Browse MakerWorld, Printables, Thingiverse, and Nexprint, personalize OpenSCAD models in 3D, slice locally on-device, and print to your Elegoo Centauri Carbon 2 over cloud or local Wi-Fi.
+        SlicePilot puts a desktop-class 3D slicer (native libslic3r), MakerWorld parametric customizer, multi-colour AMS / Canvas printing, and OpenCentauri COSMOS / Klipper (Moonraker) support with mid-print Skip Part in your Android pocket.
       </p>
       <p class="mt-6"><a href="${PLAY_URL}" class="font-semibold text-ember-400">Download SlicePilot Free on Google Play</a></p>
     </section>
@@ -136,7 +137,7 @@ const staticHomeBody = `
         <li><h3 class="font-semibold text-cream-50">4 model communities in one app</h3><p class="mt-1 text-sm text-cream-500">Search and browse MakerWorld, Printables, Thingiverse, and Nexprint together. Filter customizable models, inspect photos and comments, and download straight into the slicer.</p></li>
         <li><h3 class="font-semibold text-cream-50">Desktop-class on-device engine</h3><p class="mt-1 text-sm text-cream-500">Full native C++ libslic3r slicing running locally on Android. Multi-part placement, supports (including multi-material support interfaces), brim, seams, speed, and background slicing.</p></li>
         <li><h3 class="font-semibold text-cream-50">Multi-colour G-code preview</h3><p class="mt-1 text-sm text-cream-500">Inspect multi-colour 3MF and STL projects in seconds, then scrub sliced G-code layer by layer with print time, filament weight, and length estimates.</p></li>
-        <li><h3 class="font-semibold text-cream-50">Cloud &amp; local LAN printing</h3><p class="mt-1 text-sm text-cream-500">Connect to your Elegoo Centauri Carbon 2 over Elegoo Cloud or local Wi-Fi: monitor live print progress, watch the live printer camera, control temperatures and fans, and send sliced jobs directly.</p></li>
+        <li><h3 class="font-semibold text-cream-50">Cloud, LAN &amp; OpenCentauri COSMOS (Moonraker)</h3><p class="mt-1 text-sm text-cream-500">Connect to your Elegoo Centauri Carbon 1 &amp; 2 over Elegoo Cloud or local Wi-Fi, or connect directly to OpenCentauri COSMOS and Klipper / Moonraker printers with live camera, controls, and mid-print Skip Part (exclude_object).</p></li>
       </ul>
     </section>
 

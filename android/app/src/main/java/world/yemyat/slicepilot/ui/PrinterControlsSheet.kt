@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.LayersClear
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -156,7 +157,16 @@ fun PrinterJobActions(
 ) {
     var confirmPause by remember { mutableStateOf(false) }
     var confirmStop by remember { mutableStateOf(false) }
+    var skipSheetOpen by remember { mutableStateOf(false) }
     val paused = status.state.isPaused
+
+    if (skipSheetOpen && status.canExcludeObjects) {
+        SkipPartSheet(
+            status = status,
+            onExclude = { vm.excludePrintObject(it) },
+            onDismiss = { skipSheetOpen = false },
+        )
+    }
 
     if (confirmPause) {
         AlertDialog(
@@ -200,31 +210,44 @@ fun PrinterJobActions(
     // Both actions used to be plain M3 buttons with hand-picked container
     // colours; they now ask for their role, so "resume" and "stop" look the way
     // they look everywhere else in the app.
-    Row(modifier = modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        BrandButton(
-            text = if (paused) "Resume" else "Pause",
-            onClick = {
-                if (paused) vm.resumePrint() else confirmPause = true
-            },
-            modifier = Modifier.weight(1f),
-            role = if (paused) ButtonRole.Primary else ButtonRole.Tonal,
-            icon = {
-                Icon(
-                    if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
-                    null,
-                    modifier = Modifier.size(18.dp),
-                )
-            },
-            height = ButtonSize.Small,
-        )
-        BrandButton(
-            text = "Stop",
-            onClick = { confirmStop = true },
-            modifier = Modifier.weight(1f),
-            role = ButtonRole.Destructive,
-            icon = { Icon(Icons.Filled.Stop, null, modifier = Modifier.size(16.dp)) },
-            height = ButtonSize.Small,
-        )
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            BrandButton(
+                text = if (paused) "Resume" else "Pause",
+                onClick = {
+                    if (paused) vm.resumePrint() else confirmPause = true
+                },
+                modifier = Modifier.weight(1f),
+                role = if (paused) ButtonRole.Primary else ButtonRole.Tonal,
+                icon = {
+                    Icon(
+                        if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                        null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                },
+                height = ButtonSize.Small,
+            )
+            BrandButton(
+                text = "Stop",
+                onClick = { confirmStop = true },
+                modifier = Modifier.weight(1f),
+                role = ButtonRole.Destructive,
+                icon = { Icon(Icons.Filled.Stop, null, modifier = Modifier.size(16.dp)) },
+                height = ButtonSize.Small,
+            )
+        }
+        if (status.canExcludeObjects) {
+            val activeCount = status.objects.count { it.name !in status.excludedObjects }
+            BrandButton(
+                text = "Skip a part ($activeCount/${status.objects.size})",
+                onClick = { skipSheetOpen = true },
+                modifier = Modifier.fillMaxWidth(),
+                role = ButtonRole.Secondary,
+                icon = { Icon(Icons.Filled.LayersClear, null, modifier = Modifier.size(16.dp)) },
+                height = ButtonSize.Small,
+            )
+        }
     }
 }
 

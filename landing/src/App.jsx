@@ -27,8 +27,8 @@ function CTA() {
           <span className="text-gradient">Hit print from anywhere.</span>
         </h2>
         <p className="mx-auto mt-5 max-w-xl text-cream-500 sm:text-lg">
-          Free on Android. Customize parametric models, slice multi-colour 3MFs, and print to your Centauri Carbon 2
-          over cloud or local Wi-Fi.
+          Free on Android. Customize parametric models, slice multi-colour 3MFs, and print to your Centauri Carbon 2,
+          OpenCentauri COSMOS, or Klipper / Moonraker printer over cloud or local Wi-Fi.
         </p>
         <div className="mt-9 flex justify-center">
           <PlayButton className="px-7! py-4!" />

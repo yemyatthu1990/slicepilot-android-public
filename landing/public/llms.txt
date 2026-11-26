@@ -1,35 +1,37 @@
 # SlicePilot
 
-> Free Android 3D printing slicer, MakerWorld parametric model customizer, and cloud/LAN print controller for the Elegoo Centauri Carbon 2 (with Canvas / AMS multi-colour support).
+> Free Android 3D printing slicer, MakerWorld parametric model customizer, and cloud/LAN print controller for the Elegoo Centauri Carbon 1 & 2 (stock firmware + Canvas / AMS multi-colour), OpenCentauri COSMOS firmware, and Klipper / Moonraker printers with mid-print Skip Part (`exclude_object`).
 
 - Website: https://slicepilot.eu
 - Google Play (Android): https://play.google.com/store/apps/details?id=world.yemyat.slicepilot
 - Source code (public mirror): https://github.com/yemyatthu1990/slicepilot-android-public
-- Current version: v1.10.2 (Android arm64-v8a)
+- Current version: v1.11.0 (Android arm64-v8a)
 - Price: Free
 - Privacy policy: http://yemyat.world/apps/slicepilot/privacy.html
 - Contact: thu.yemyat@gmail.com
 
 ## What SlicePilot Does
 
-SlicePilot runs a full native desktop-class slicing engine (`libslic3r`) directly on Android phones — no desktop computer, remote desktop, or cloud slicing server required. Users can search models across four communities, customize MakerWorld OpenSCAD parametric models in 3D, map multi-colour 3MF projects to loaded AMS / Canvas filaments, slice locally on-device, preview G-code layer by layer, and send prints directly to an Elegoo Centauri Carbon 2 over Elegoo Cloud or local Wi-Fi (LAN).
+SlicePilot runs a full native desktop-class slicing engine (`libslic3r`) directly on Android phones — no desktop computer, remote desktop, or cloud slicing server required. Users can search models across four communities, customize MakerWorld OpenSCAD parametric models in 3D, map multi-colour 3MF projects to loaded AMS / Canvas filaments, slice locally on-device, preview G-code layer by layer with 3D directional shading, and send prints directly to an Elegoo Centauri Carbon 1/2 (stock Elegoo Cloud/LAN or OpenCentauri COSMOS) or any Klipper / Moonraker printer over local Wi-Fi.
 
 ## Core Capabilities
 
 - **On-Device Native Slicing (Android):** Full C++ `libslic3r` engine running locally via JNI. Supports STL and multi-part / multi-colour 3MF project files (respecting embedded printer, filament, and process settings), multi-part selection/pose controls (rotate, mirror, move, lay flat, auto-arrange), supports (including multi-material support interfaces), brim/skirt/raft, seams, speed/quality presets, and background slicing with progress notifications.
+- **OpenCentauri COSMOS & Klipper / Moonraker Support + Mid-Print Skip Part:** Connects directly over local Wi-Fi via mDNS or manual IP/hostname (port 80 on COSMOS, port 7125 on standard Moonraker, with optional API key). Automatically enables `exclude_object=1` during on-device slicing (required because COSMOS disables Moonraker's on-printer object processor to save RAM), exposes a live **Skip a part** bottom sheet with a 2D top-down build plate map to cancel individual failed parts mid-print (`EXCLUDE_OBJECT`), auto-detects COSMOS fans/LED/chamber sensors, and streams uStreamer MJPEG video.
 - **In-App MakerWorld Parametric Customizer:** Edit text, dimensions, and OpenSCAD parameters for customizable MakerWorld designs (name keychains, signs, tags, organizers) right on Android with an inline interactive 3D preview, 48+ curated fonts with quick-pick chips, a 20-swatch + custom RGB filament colour picker, and automatic multi-colour 3MF export.
-- **Multi-Colour 3MF & AMS / Canvas Support:** Colour 3D model preview, automatic spool matching against loaded Centauri Carbon 2 Canvas / AMS filaments, compact waste-chute prime tower sizing (`M6211` flush chute) strictly verified inside the 256x256 mm build plate, and layer-by-layer multi-colour G-code preview with print time, filament weight, and length estimates.
+- **Multi-Colour 3MF & AMS / Canvas Support:** Colour 3D model preview, automatic spool matching against loaded Centauri Carbon 2 Canvas / AMS filaments, compact waste-chute prime tower sizing (`M6211` flush chute) strictly verified inside the 256x256 mm build plate, and layer-by-layer multi-colour G-code preview with 3D directional shading and adaptive LOD for large 500+ layer models.
 - **4 Model Communities in One App:** Unified search and browsing across MakerWorld, Printables, Thingiverse, and Nexprint, with photos, comments, votes, customizable-model filtering, and print-profile selection.
-- **Cloud & Local LAN Printer Control (Elegoo Centauri Carbon 2):** Sign in with email/password or Google (Elegoo cloud), or connect directly over local Wi-Fi (LAN). Monitor print progress, watch the live printer camera (pinch-to-zoom, shutter, gallery), control nozzle/bed/chamber temperatures, fans, and case light, and upload sliced G-code directly from Android.
+- **Cloud & Local LAN Printer Control (Elegoo Centauri Carbon 1 & 2):** Sign in with email/password or Google (Elegoo cloud), or connect directly over local Wi-Fi (LAN). Monitor print progress, watch the live printer camera (pinch-to-zoom, shutter, gallery), control nozzle/bed/chamber temperatures, fans, and case light, and upload sliced G-code directly from Android.
 
 ## Honest Scope & Limitations
 
 - **Platform:** Android (`arm64-v8a`) on Google Play today. No iOS App Store release yet.
-- **Direct Printer Integration:** Built specifically for the Elegoo Centauri Carbon 2 (cloud and local LAN, single-colour and Canvas/AMS multi-colour). Users with other 3D printers can still browse models, customize parametric designs, slice STL/3MF on Android, and save/export the sliced `.gcode` file to their device.
-- **Affiliation:** Independent app; not affiliated with, endorsed by, or sponsored by Elegoo, Bambu Lab, MakerWorld, Prusa Research, Printables, Thingiverse, or Nexprint.
+- **Direct Printer Integration:** Supports Elegoo Centauri Carbon 1 & 2 (stock cloud and local LAN), OpenCentauri COSMOS custom firmware (Moonraker), and generic Klipper / Moonraker printers on local Wi-Fi. Mid-print part skipping (`EXCLUDE_OBJECT`) works on COSMOS and Klipper/Moonraker printers with `[exclude_object]` enabled (stock Elegoo CC1/CC2 firmware does not expose mid-print object exclusion). Users with other printers can still browse models, customize parametric designs, slice STL/3MF on Android, and export `.gcode`.
+- **Affiliation:** Independent app; not affiliated with, endorsed by, or sponsored by Elegoo, OpenCentauri, Bambu Lab, MakerWorld, Prusa Research, Printables, Thingiverse, or Nexprint.
 
 ## Dedicated Guides
 
+- [OpenCentauri COSMOS & Klipper Moonraker Guide (Skip Object on Android)](https://slicepilot.eu/opencentauri-cosmos/): Direct Moonraker LAN control for COSMOS & Klipper, automatic `exclude_object` slicing, mid-print Skip Part with 2D bed map, and uStreamer live camera.
 - [Elegoo Centauri Carbon 2 Android App & Canvas AMS Guide](https://slicepilot.eu/elegoo-centauri-carbon-2/): Cloud & LAN printing, live camera, multi-colour AMS spool mapping, and compact prime tower placement.
 - [On-Device Android 3D Slicer Guide](https://slicepilot.eu/android-3d-slicer/): Native `libslic3r` slicing on Android for STL & 3MF without a PC.
 - [MakerWorld Parametric Customizer on Android](https://slicepilot.eu/makerworld-customizer-android/): Customizing OpenSCAD models, 48+ fonts, colour picker swatches, and multi-colour 3MF export on mobile.
