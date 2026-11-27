@@ -889,6 +889,21 @@ void run_slice(std::string model_path, DynamicPrintConfig config, std::string ov
         if (!overrides_ini.empty()) {
             try {
                 config.load_from_ini_string(overrides_ini, ForwardCompatibilitySubstitutionRule::EnableSilent);
+                // Explicit user adhesion overrides must also win over per-object overrides
+                // embedded in a 3MF (e.g. a part with per-object brim_type=outer_only or
+                // painted brim ears): PrintObject::object_config_from_model_object overlays
+                // ModelObject::config on top of the global config.
+                DynamicPrintConfig parsed_overrides;
+                parsed_overrides.load_from_ini_string(overrides_ini, ForwardCompatibilitySubstitutionRule::EnableSilent);
+                static const char *kObjectAdhesionKeys[] = {"brim_type", "brim_width", "raft_layers"};
+                for (const char *key : kObjectAdhesionKeys) {
+                    if (!parsed_overrides.has(key)) continue;
+                    for (ModelObject *obj : model.objects) {
+                        if (obj->config.erase(key)) {
+                            LOGI("Cleared per-object 3MF override %s so user adhesion override takes effect", key);
+                        }
+                    }
+                }
             } catch (const std::exception &e) {
                 LOGE("Failed to apply overrides: %s", e.what());
             }

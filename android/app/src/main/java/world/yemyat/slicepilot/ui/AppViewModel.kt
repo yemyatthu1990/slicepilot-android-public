@@ -117,6 +117,54 @@ internal fun buildSupportFilamentOverrides(interfaceOnly: Boolean): String =
         appendLine("enable_prime_tower=1")
     }
 
+/**
+ * INI overrides for the Adhesion setting.
+ *
+ * libslic3r defaults `brim_type` to `auto_brim`, which ignores `brim_width=0` and still
+ * generates a brim for tall or small-footprint parts (`Print.hpp::has_brim` / `Brim.cpp`).
+ * Every non-auto mode therefore sets `brim_type` explicitly, and `"skirt"` also sets
+ * `skirt_loops` because the Elegoo base presets default `skirt_loops=0`.
+ */
+internal fun buildAdhesionOverrides(
+    adhesion: String,
+    brimWidth: Int?,
+): String =
+    buildString {
+        when (adhesion) {
+            "none" -> {
+                appendLine("brim_type=no_brim")
+                appendLine("brim_width=0")
+                appendLine("raft_layers=0")
+                appendLine("skirt_loops=0")
+                appendLine("skirt_height=0")
+            }
+
+            "skirt" -> {
+                appendLine("brim_type=no_brim")
+                appendLine("brim_width=0")
+                appendLine("raft_layers=0")
+                appendLine("skirt_loops=2")
+                appendLine("skirt_height=2")
+            }
+
+            "brim" -> {
+                appendLine("brim_type=outer_only")
+                appendLine("brim_width=${brimWidth ?: 5}")
+                appendLine("raft_layers=0")
+                appendLine("skirt_loops=0")
+                appendLine("skirt_height=0")
+            }
+
+            "raft" -> {
+                appendLine("brim_type=no_brim")
+                appendLine("brim_width=0")
+                appendLine("raft_layers=2")
+                appendLine("skirt_loops=0")
+                appendLine("skirt_height=0")
+            }
+        }
+    }
+
 data class MaterialOption(
     val label: String,
     val profile: String,
@@ -3997,29 +4045,7 @@ class AppViewModel(
                 cfg.bottomShellLayers?.let { appendLine("bottom_shell_layers=$it") }
                 cfg.infillDensity?.let { appendLine("sparse_infill_density=$it%") }
                 cfg.infillPattern?.let { appendLine("sparse_infill_pattern=$it") }
-                when (cfg.adhesion) {
-                    "none" -> {
-                        appendLine("brim_width=0")
-                        appendLine("raft_layers=0")
-                        appendLine("skirt_height=0")
-                    }
-
-                    "skirt" -> {
-                        appendLine("brim_width=0")
-                        appendLine("raft_layers=0")
-                        appendLine("skirt_height=2")
-                    }
-
-                    "brim" -> {
-                        appendLine("brim_width=${cfg.brimWidth ?: 5}")
-                        appendLine("raft_layers=0")
-                        appendLine("brim_type=outer_only")
-                    }
-
-                    "raft" -> {
-                        appendLine("raft_layers=2")
-                    }
-                }
+                append(buildAdhesionOverrides(cfg.adhesion, cfg.brimWidth))
                 appendLine("seam_position=${cfg.seamPosition}")
                 appendLine("ironing_type=${if (cfg.ironing) "top" else "no ironing"}")
                 cfg.wallSpeed?.let {

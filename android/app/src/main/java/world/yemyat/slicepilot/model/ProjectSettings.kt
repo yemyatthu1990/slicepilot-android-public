@@ -39,6 +39,10 @@ object ProjectSettingsReader {
         } catch (_: Exception) {
             return null
         }
+        return parse(json)
+    }
+
+    internal fun parse(json: String): ProjectPrintSettings? {
         val obj = try {
             JSONObject(json)
         } catch (_: Exception) {
@@ -81,13 +85,30 @@ object ProjectSettingsReader {
 
         val adhesion = run {
             val raft = int("raft_layers")
+            val brimType = str("brim_type")?.lowercase()
             val brim = float("brim_width")
-            val skirt = int("skirt_height")
+            val skirtHeight = int("skirt_height")
+            val skirtLoops = int("skirt_loops")
+            val explicitBrim =
+                when (brimType) {
+                    "no_brim", "auto_brim" -> false
+                    "painted" -> true
+                    "outer_only", "inner_only", "outer_and_inner", "brim_ears" ->
+                        brim == null || brim > 0f
+                    else -> brim != null && brim > 0f
+                }
+            val skirtActive =
+                when {
+                    skirtLoops != null -> skirtLoops > 0 && (skirtHeight == null || skirtHeight > 0)
+                    else -> skirtHeight != null && skirtHeight > 0
+                }
             when {
                 raft != null && raft > 0 -> "raft"
-                brim != null && brim > 0f -> "brim"
-                skirt != null && skirt > 0 -> "skirt"
-                raft == 0 && brim == 0f && skirt == 0 -> "none"
+                explicitBrim -> "brim"
+                skirtActive -> "skirt"
+                brimType == "auto_brim" -> "auto"
+                brimType == "no_brim" -> "none"
+                raft == 0 && brim == 0f && !skirtActive && (skirtLoops == 0 || skirtHeight == 0) -> "none"
                 else -> null
             }
         }

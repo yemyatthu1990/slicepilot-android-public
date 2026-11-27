@@ -1986,6 +1986,36 @@
       ]
     },
     {
+      "id": "iss:gh-1-adhesion-none-brim",
+      "kind": "issue",
+      "title": "Public GitHub #1: brim added when adhesion is set to none",
+      "status": "resolved",
+      "summary": "Setting Adhesion to none only wrote brim_width=0 without brim_type=no_brim; libslic3r defaults brim_type to auto_brim, which ignores brim_width=0 and still generates a brim. Fixed in AppViewModel (buildAdhesionOverrides), ProjectSettingsReader (brim_type and skirt_loops awareness), and slice_jni.cpp (clearing per-object 3MF brim_type/brim_width/raft_layers when user overrides adhesion).",
+      "updated": "2026-11-27",
+      "refs": [
+        "url:https://github.com/yemyatthu1990/slicepilot-android-public/issues/1",
+        "file:android/app/src/main/java/world/yemyat/slicepilot/ui/AppViewModel.kt",
+        "file:android/app/src/main/java/world/yemyat/slicepilot/model/ProjectSettings.kt",
+        "file:android/core/jni/slice_jni.cpp"
+      ],
+      "next": [
+        "Merge fix/adhesion-none-brim to main, verify on a tall/narrow part in a release build, and close public issue #1 once shipped"
+      ],
+      "attrs": {
+        "severity": "medium"
+      },
+      "edges": [
+        [
+          "affects",
+          "feat:slicing"
+        ],
+        [
+          "affects",
+          "feat:3mf-support"
+        ]
+      ]
+    },
+    {
       "id": "iss:multi-filament-unverified",
       "kind": "issue",
       "title": "Multi-filament work is unverified and unmerged",
@@ -2831,7 +2861,7 @@
       "id": "rel:v1.11.2",
       "kind": "release",
       "title": "v1.11.2 (55)",
-      "status": "live",
+      "status": "superseded",
       "summary": "Production rollout (100%, Play edit 16136559224094151341, sha1 3253037bbd678e0c114060002c3d309d77cf089a, ProGuard mapping + native symbols): one-tap Sign in with Google for MakerWorld via Chrome Custom Tabs + loopback ticket exchange, upgraded MakerWorld web sign-in bridge for Google/Apple/Facebook, and Sign in with Google in Nexprint's download sign-in dialog.",
       "updated": "2026-11-27",
       "refs": [
@@ -2851,6 +2881,46 @@
         [
           "supersedes",
           "rel:v1.11.1"
+        ],
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "affects",
+          "mod:android-app"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.11.3",
+      "kind": "release",
+      "title": "v1.11.3 (56)",
+      "status": "live",
+      "summary": "Production rollout (100%, Play edit 16666210659213987220; internal upload edit 08958491886613260908, sha1 239488eeeef5cb5f5ed8fc69cd467e1762bbf601, ProGuard mapping + native symbols): fixes public GitHub #1 where Adhesion -> None still generated an auto-brim (sets brim_type=no_brim and clears per-object 3MF brim overrides), fixes Skirt adhesion loops & auto-brim suppression, and fixes 3MF project import for no_brim/auto_brim.",
+      "updated": "2026-11-27",
+      "refs": [
+        "file:android/app/build.gradle.kts",
+        "file:store_listing/metadata.md",
+        "url:https://github.com/yemyatthu1990/slicepilot-android-public/issues/1"
+      ],
+      "next": [
+        "Monitor Play vitals / Crashlytics on v1.11.3 production rollout",
+        "reply on public GitHub issue #1"
+      ],
+      "attrs": {
+        "date": "2026-11-27",
+        "version_code": 56,
+        "version_name": "1.11.3-android"
+      },
+      "edges": [
+        [
+          "supersedes",
+          "rel:v1.11.2"
         ],
         [
           "hosted_on",

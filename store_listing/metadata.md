@@ -1,5 +1,6 @@
 # Play Store listing
 
+**v1.11.3 (56) went to production at 100 % on 2026-11-27** (Play edit `16666210659213987220`; internal upload edit `08958491886613260908`, bundle sha1 `239488eeeef5cb5f5ed8fc69cd467e1762bbf601`, ProGuard mapping + native symbols uploaded; fixes public GitHub #1 where Adhesion → None still generated an auto-brim, fixes Skirt adhesion loops & auto-brim suppression, clears per-object 3MF brim overrides when overriding adhesion, and fixes 3MF project import for `no_brim`/`auto_brim`).
 **v1.11.2 (55) went to production at 100 % on 2026-11-27** (Play edit `16136559224094151341`, bundle sha1 `3253037bbd678e0c114060002c3d309d77cf089a`, ProGuard mapping + native symbols uploaded; one-tap Sign in with Google for MakerWorld via Chrome Custom Tabs + loopback ticket exchange, upgraded MakerWorld web sign-in bridge for Apple/Facebook/Google, and Sign in with Google in Nexprint's download sign-in dialog).
 **v1.11.1 (54) went to production at 100 % on 2026-11-26** (production + en-US listing + 5 `2560×1440` tablet slides on `tenInchScreenshots` & `sevenInchScreenshots`: Play edit `01741459619850170829`; internal upload edit `15395737918513865419`, bundle sha1 `c2e6692e46e4d4662cb4fb11481802f2505f556e`, ProGuard mapping + native symbols uploaded; Material 3 adaptive tablet layouts across Home, Browse, Printer, Files, Print Setup, and Model Detail).
 **en-US Play Store listing updated on 2026-11-26** (Play edit `03106610955606778026`; short description 72 chars + full description 2919 chars adding OpenCentauri COSMOS, Klipper/Moonraker, and mid-print Skip Part SEO).
@@ -72,6 +73,11 @@ DESKTOP-CLASS ON-DEVICE SLICING ENGINE
 - Open STL/3MF files directly from your Files app
 
 SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint, OpenCentauri, or Elegoo. All trademarks belong to their respective owners.
+
+## What's new (1.11.3)
+• Fixed Adhesion → None still generating an automatic brim on tall or narrow parts (now explicitly disables auto-brim and clears per-object 3MF brim overrides)
+• Fixed Skirt adhesion not emitting skirt loops and prevented auto-brim from running alongside Skirt or Raft
+• Fixed 3MF project import so files with no-brim or auto-brim aren't forced to brim
 
 ## What's new (1.11.2)
 • Added one-tap Sign in with Google for MakerWorld (opens securely in your browser via Chrome Custom Tabs and returns straight to SlicePilot)
