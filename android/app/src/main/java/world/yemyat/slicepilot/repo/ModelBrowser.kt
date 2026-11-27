@@ -1,6 +1,10 @@
 package world.yemyat.slicepilot.repo
 
+import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.SharedPreferences
+import android.net.Uri
+import androidx.browser.customtabs.CustomTabsIntent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -255,6 +259,9 @@ class ModelBrowser(
     private var detailGeneration = 0
     private var homeLoaded = false
 
+    // Active loopback HTTP server waiting for a Bambu third-party OAuth callback from Custom Tabs.
+    private var bambuLoopbackServer: BambuLoopbackServer? = null
+
     /** Cache key for each source's popular-models (home feed) list. */
     private fun homeKey(source: ModelSource) = "${source.id}|@home"
 
@@ -356,6 +363,73 @@ class ModelBrowser(
             } catch (e: Exception) {
                 _state.value = _state.value.copy(bambuSigningIn = false, error = readable(e))
             }
+        }
+    }
+
+    /**
+     * One-tap "Sign in with Google" for MakerWorld: spins up a loopback listener on `127.0.0.1`,
+     * opens Bambu Lab's third-party Google OAuth URL in a Chrome Custom Tab, and exchanges the
+     * returned single-use ticket for a normal Bambu bearer token.
+     */
+    fun bambuStartGoogleSignIn(context: Context) {
+        if (_state.value.bambuSigningIn) return
+        bambuLoopbackServer?.close()
+        val server =
+            try {
+                BambuLoopbackServer { result ->
+                    bambuLoopbackServer = null
+                    scope.launch {
+                        when (result) {
+                            is BambuSocialLogin.CallbackResult.Ticket -> {
+                                _state.value = _state.value.copy(bambuSigningIn = true, error = null)
+                                try {
+                                    val session =
+                                        withContext(Dispatchers.IO) {
+                                            BambuSocialLogin.exchangeTicket(result.ticket)
+                                        }
+                                    bambuAdoptSession(session.accessToken, session.refreshToken, session.uid)
+                                    EventNotifier.trackEvent("makerworld_login_success", mapOf("method" to "google"))
+                                } catch (e: Exception) {
+                                    _state.value = _state.value.copy(bambuSigningIn = false, error = readable(e))
+                                }
+                            }
+
+                            is BambuSocialLogin.CallbackResult.DirectToken -> {
+                                _state.value = _state.value.copy(bambuSigningIn = true, error = null)
+                                val uid =
+                                    withContext(Dispatchers.IO) {
+                                        BambuSocialLogin.fetchProfileUid(result.accessToken)
+                                    }
+                                bambuAdoptSession(result.accessToken, result.refreshToken, uid)
+                                EventNotifier.trackEvent("makerworld_login_success", mapOf("method" to "google"))
+                            }
+
+                            is BambuSocialLogin.CallbackResult.Error -> {
+                                _state.value =
+                                    _state.value.copy(
+                                        bambuSigningIn = false,
+                                        error = result.message,
+                                    )
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(error = "Could not start Google sign-in: ${readable(e)}")
+                return
+            }
+        bambuLoopbackServer = server
+        val authUrl = BambuSocialLogin.thirdPartySignInUrl(server.baseUrl, BambuSocialLogin.PROVIDER_GOOGLE)
+        try {
+            CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(authUrl))
+            EventNotifier.trackEvent("makerworld_social_sign_in_started", mapOf("provider" to "google"))
+        } catch (_: ActivityNotFoundException) {
+            server.close()
+            bambuLoopbackServer = null
+            _state.value =
+                _state.value.copy(
+                    error = "No browser on this device for Google sign-in — use email and password.",
+                )
         }
     }
 
@@ -930,6 +1004,8 @@ class ModelBrowser(
     }
 
     fun dispose() {
+        bambuLoopbackServer?.close()
+        bambuLoopbackServer = null
         scope.cancel()
     }
 

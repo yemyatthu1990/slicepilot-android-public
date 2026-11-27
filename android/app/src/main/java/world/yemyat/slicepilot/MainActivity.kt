@@ -180,6 +180,11 @@ class MainActivity : ComponentActivity() {
             ),
         )
         if (vm.completeSocialSignIn(data)) return true
+        if (world.yemyat.slicepilot.repo.BambuSocialLogin
+                .isAppCallback(data.toString())
+        ) {
+            return true
+        }
         if (data.scheme == "http" ||
             data.scheme == "https" ||
             data.scheme == "content" ||

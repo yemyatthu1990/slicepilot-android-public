@@ -1,9 +1,11 @@
 package world.yemyat.slicepilot.ui
 
 import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.net.Uri
 import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
@@ -13,6 +15,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.annotation.Keep
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -22,14 +25,20 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import world.yemyat.slicepilot.repo.BambuLoopbackServer
+import world.yemyat.slicepilot.repo.BambuSocialLogin
 import world.yemyat.slicepilot.repo.MakerworldCustomizer
 import world.yemyat.slicepilot.repo.ScadCustomizer
 import world.yemyat.slicepilot.ui.theme.BrandButton
@@ -163,6 +172,34 @@ try {
 """
 
 /**
+ * Aliases desktop WebView bridge entrypoints (`webkit.messageHandlers.wx` on macOS/Linux and
+ * `chrome.webview` on Edge WebView2) onto our Android `window.wx.postMessage` bridge so
+ * `bambulab.com/en/sign-in` finds the slicer bridge regardless of which desktop API it probes.
+ */
+private const val SLICER_BRIDGE_SHIM_JS =
+    """
+(function () {
+  try {
+    if (!window.wx || !window.wx.postMessage) return;
+    var forward = function (msg) {
+      try {
+        window.wx.postMessage(typeof msg === 'string' ? msg : JSON.stringify(msg));
+      } catch (e) {}
+    };
+    if (!window.webkit) window.webkit = {};
+    if (!window.webkit.messageHandlers) window.webkit.messageHandlers = {};
+    if (!window.webkit.messageHandlers.wx) {
+      window.webkit.messageHandlers.wx = { postMessage: forward };
+    }
+    if (!window.chrome) window.chrome = {};
+    if (!window.chrome.webview) {
+      window.chrome.webview = { postMessage: forward };
+    }
+  } catch (e) {}
+})();
+"""
+
+/**
  * Named JS bridge exposed as `window.wx` inside MakerWorld's WebView.
  * Kept explicitly from R8 in `proguard-rules.pro` and via `@Keep`.
  */
@@ -172,6 +209,11 @@ internal class MakerWorldJsBridge(
     private val tokenPayload: () -> String?,
     private val onPmmRequest: (String) -> Unit,
     private val onPmmResult: (String) -> Unit,
+    private val onGetLocalhostUrl: () -> String? = { null },
+    private val onThirdPartyLogin: (String) -> Unit = {},
+    private val onTicketLogin: (String) -> Unit = {},
+    private val onDirectLogin: (access: String, refresh: String, uid: String) -> Unit = { _, _, _ -> },
+    private val onOpenExternalUrl: (String) -> Unit = {},
 ) {
     @JavascriptInterface
     fun postMessage(raw: String) {
@@ -185,7 +227,11 @@ internal class MakerWorldJsBridge(
                             "response",
                             JSONArray()
                                 .put("getSupportedCommands")
-                                .put("request_user_token_from_app"),
+                                .put("request_user_token_from_app")
+                                .put("get_localhost_url")
+                                .put("thirdparty_login")
+                                .put("user_ticket_login")
+                                .put("user_login"),
                         )
                 Log.i(TAG, "token bridge: replied to getSupportedCommands")
                 val w = webViewProvider() ?: return
@@ -214,6 +260,68 @@ internal class MakerWorldJsBridge(
                             ", window.location.origin)",
                         null,
                     )
+                }
+            }
+
+            "get_localhost_url" -> {
+                val baseUrl = onGetLocalhostUrl()?.takeIf { it.isNotBlank() } ?: return
+                val reply =
+                    JSONObject()
+                        .put("command", "get_localhost_url")
+                        .put("sequence_id", obj.opt("sequence_id"))
+                        .put(
+                            "response",
+                            JSONObject()
+                                .put("base_url", baseUrl)
+                                .put("result", "success"),
+                        )
+                Log.i(TAG, "slicer bridge: get_localhost_url -> $baseUrl")
+                val w = webViewProvider() ?: return
+                w.post {
+                    w.evaluateJavascript("window.postMessage(${reply}, '*')", null)
+                }
+            }
+
+            "thirdparty_login" -> {
+                val url = obj.optJSONObject("data")?.optString("url").orEmpty()
+                if (url.isNotBlank()) {
+                    Log.i(TAG, "slicer bridge: thirdparty_login url=$url")
+                    onThirdPartyLogin(url)
+                }
+            }
+
+            "user_ticket_login" -> {
+                val ticket = obj.optJSONObject("data")?.optString("ticket").orEmpty()
+                if (ticket.isNotBlank()) {
+                    Log.i(TAG, "slicer bridge: user_ticket_login")
+                    onTicketLogin(ticket)
+                }
+            }
+
+            "user_login" -> {
+                val data = obj.optJSONObject("data")
+                val access =
+                    data?.optString("token").orEmpty().ifBlank {
+                        data?.optString("access_token").orEmpty()
+                    }
+                if (access.isNotBlank()) {
+                    val refresh = data?.optString("refresh_token").orEmpty()
+                    val uid =
+                        data
+                            ?.optJSONObject("user")
+                            ?.optString("uid")
+                            .orEmpty()
+                            .ifBlank { data?.optString("uid").orEmpty() }
+                    Log.i(TAG, "slicer bridge: user_login (uid=$uid)")
+                    onDirectLogin(access, refresh, uid)
+                }
+            }
+
+            "new_webpage" -> {
+                val url = obj.optJSONObject("data")?.optString("url").orEmpty()
+                if (url.startsWith("http")) {
+                    Log.i(TAG, "slicer bridge: new_webpage url=$url")
+                    onOpenExternalUrl(url)
                 }
             }
 
@@ -264,11 +372,21 @@ fun MakerWorldWebViewScreen(
     tokenPayload: () -> String? = { null },
     bannerHint: String = "Customize below and tap Generate, then load your model into SlicePilot.",
     importing: Boolean = false,
+    /**
+     * Enables Bambu Studio's slicer UA + loopback Custom Tabs handoff so Google/Apple/Facebook
+     * sign-in on `bambulab.com/en/sign-in` completes in Chrome instead of being rejected by an
+     * embedded WebView.
+     */
+    signInMode: Boolean = false,
 ) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var title by remember { mutableStateOf("") }
     var progress by remember { mutableIntStateOf(0) }
     var foundSource by remember { mutableStateOf(false) }
     var latestJob by remember { mutableStateOf<MakerworldCustomizer.Job?>(null) }
+    var authStatus by remember { mutableStateOf<String?>(null) }
+    var authError by remember { mutableStateOf<String?>(null) }
 
     val sourceRef = rememberUpdatedState(onSource)
     val payloadRef = rememberUpdatedState(tokenPayload)
@@ -277,6 +395,72 @@ fun MakerWorldWebViewScreen(
     val pmmReqRef = rememberUpdatedState(onRequest)
     val downloadUrlRef = rememberUpdatedState(onDownloadUrl)
     val viewRef = remember { mutableStateOf<WebView?>(null) }
+    val loopbackRef = remember { mutableStateOf<BambuLoopbackServer?>(null) }
+
+    fun finishTicketSignIn(ticket: String) {
+        coroutineScope.launch {
+            authError = null
+            authStatus = "Completing MakerWorld sign-in…"
+            try {
+                val session = withContext(Dispatchers.IO) { BambuSocialLogin.exchangeTicket(ticket) }
+                authStatus = null
+                sessionRef.value(session.accessToken, session.refreshToken, session.uid)
+            } catch (e: Exception) {
+                Log.w(TAG, "ticket exchange failed", e)
+                authStatus = null
+                authError = e.message ?: "MakerWorld sign-in failed. Please try again."
+            }
+        }
+    }
+
+    fun finishDirectTokenSignIn(
+        access: String,
+        refresh: String,
+    ) {
+        coroutineScope.launch {
+            authError = null
+            authStatus = "Completing MakerWorld sign-in…"
+            val uid = withContext(Dispatchers.IO) { BambuSocialLogin.fetchProfileUid(access) }
+            authStatus = null
+            sessionRef.value(access, refresh, uid)
+        }
+    }
+
+    fun ensureLoopbackServer(): BambuLoopbackServer {
+        loopbackRef.value?.let { return it }
+        val server =
+            BambuLoopbackServer { result ->
+                loopbackRef.value = null
+                when (result) {
+                    is BambuSocialLogin.CallbackResult.Ticket -> finishTicketSignIn(result.ticket)
+                    is BambuSocialLogin.CallbackResult.DirectToken ->
+                        finishDirectTokenSignIn(result.accessToken, result.refreshToken)
+                    is BambuSocialLogin.CallbackResult.Error -> {
+                        coroutineScope.launch {
+                            authStatus = null
+                            authError = result.message
+                        }
+                    }
+                }
+            }
+        loopbackRef.value = server
+        return server
+    }
+
+    fun launchCustomTab(targetUrl: String) {
+        try {
+            CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(targetUrl))
+        } catch (_: ActivityNotFoundException) {
+            authError = "No browser on this device to finish third-party sign-in."
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            loopbackRef.value?.close()
+            loopbackRef.value = null
+        }
+    }
 
     BackHandler {
         val w = viewRef.value
@@ -364,12 +548,19 @@ fun MakerWorldWebViewScreen(
             Text(
                 text =
                     when {
+                        authError != null -> authError!!
+                        authStatus != null -> authStatus!!
                         latestJob != null -> "Custom model ready — tap Load into SlicePilot below."
                         foundSource -> "Parameters detected — tap Generate or switch to the native form."
                         else -> bannerHint
                     },
                 fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color =
+                    if (authError != null) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 modifier = Modifier.padding(horizontal = Space.md, vertical = 6.dp),
             )
             AndroidView(
@@ -379,10 +570,16 @@ fun MakerWorldWebViewScreen(
                         settings.domStorageEnabled = true
                         settings.useWideViewPort = true
                         settings.loadWithOverviewMode = true
-                        // Strip "; wv" so Google OAuth doesn't reject embedded WebView sign-in,
-                        // while appending BBL-App so MakerWorld enables its native token bridge.
                         val baseUa = settings.userAgentString.replace("; wv", "")
-                        settings.userAgentString = "$baseUa BBL-App/${versionCode(ctx)} SlicePilot"
+                        settings.userAgentString =
+                            if (signInMode) {
+                                // Bambu Studio's slicer UA token unlocks the get_localhost_url +
+                                // thirdparty_login Chrome Custom Tab handoff on bambulab.com/en/sign-in.
+                                "$baseUa ${BambuSocialLogin.SLICER_USER_AGENT_TOKEN}"
+                            } else {
+                                // BBL-App enables MakerWorld's mobile customizer token bridge.
+                                "$baseUa BBL-App/${versionCode(ctx)} SlicePilot"
+                            }
                         val cm = CookieManager.getInstance()
                         cm.setAcceptCookie(true)
                         cm.setAcceptThirdPartyCookies(this, true)
@@ -409,6 +606,27 @@ fun MakerWorldWebViewScreen(
                                         post { latestJob = parsed }
                                     }
                                 },
+                                onGetLocalhostUrl = {
+                                    runCatching { ensureLoopbackServer().baseUrl }.getOrNull()
+                                },
+                                onThirdPartyLogin = { jumpUrl ->
+                                    post {
+                                        val server =
+                                            runCatching { ensureLoopbackServer() }.getOrElse {
+                                                authError = "Could not start local sign-in callback listener."
+                                                return@post
+                                            }
+                                        val rewritten = BambuSocialLogin.rewriteLoopbackUrl(jumpUrl, server.port)
+                                        authError = null
+                                        authStatus = "Finish sign-in in your browser…"
+                                        launchCustomTab(rewritten)
+                                    }
+                                },
+                                onTicketLogin = { ticket -> finishTicketSignIn(ticket) },
+                                onDirectLogin = { access, refresh, uid ->
+                                    post { sessionRef.value(access, refresh, uid) }
+                                },
+                                onOpenExternalUrl = { extUrl -> post { launchCustomTab(extUrl) } },
                             )
                         addJavascriptInterface(bridge, "wx")
 
@@ -440,12 +658,21 @@ fun MakerWorldWebViewScreen(
                                 ) {
                                     Log.i(TAG, "page started: ${url.orEmpty()}")
                                     title = view.title.orEmpty()
+                                    if (signInMode) {
+                                        view.evaluateJavascript(SLICER_BRIDGE_SHIM_JS, null)
+                                    }
                                 }
 
                                 override fun shouldOverrideUrlLoading(
                                     view: WebView,
                                     request: WebResourceRequest,
-                                ): Boolean = false
+                                ): Boolean {
+                                    val target = request.url?.toString().orEmpty()
+                                    if (signInMode && target.isNotBlank()) {
+                                        Log.i(TAG, "signIn nav: $target")
+                                    }
+                                    return false
+                                }
 
                                 override fun onPageFinished(
                                     view: WebView,
@@ -453,7 +680,11 @@ fun MakerWorldWebViewScreen(
                                 ) {
                                     title = view.title.orEmpty()
                                     cookiesRef.value(CookieManager.getInstance().getCookie(url).orEmpty())
-                                    view.evaluateJavascript(HOOK_JS, null)
+                                    if (signInMode) {
+                                        view.evaluateJavascript(SLICER_BRIDGE_SHIM_JS, null)
+                                    } else {
+                                        view.evaluateJavascript(HOOK_JS, null)
+                                    }
                                 }
                             }
                         viewRef.value = this

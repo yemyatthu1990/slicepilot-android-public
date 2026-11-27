@@ -1443,19 +1443,20 @@
       "title": "Model browser: MakerWorld, Printables, Thingiverse, Nexprint",
       "status": "shipped",
       "owner": "dev",
-      "updated": "2026-11-22",
+      "updated": "2026-11-27",
       "summary": "Search/browse four model communities, model detail with photos, votes and paged comments, profile picking and download into the slicer; includes the MakerWorld design-service 3mf fix and Bambu comment-service and Nexprint commentTree sources.",
       "refs": [
         "android/app/src/main/java/world/yemyat/slicepilot/ui/BrowseScreen.kt",
         "android/app/src/main/java/world/yemyat/slicepilot/repo/ModelBrowser.kt",
         "commit:737b579",
         "commit:a6a225a",
-        "commit:41891ce"
+        "commit:41891ce",
+        "file:android/app/src/main/java/world/yemyat/slicepilot/repo/BambuSocialLogin.kt"
       ],
       "verification": {
         "level": "store",
-        "ref": "file:store_listing/screenshots/phone_v1.9.0/03_model_detail_light.png",
-        "at": "2026-11-12"
+        "ref": "v1.11.2",
+        "at": "2026-11-27"
       },
       "next": [
         "Spot-check each source's API after the next release; four providers historically drift"
@@ -2794,16 +2795,14 @@
       "id": "rel:v1.11.1",
       "kind": "release",
       "title": "v1.11.1 (54)",
-      "status": "live",
+      "status": "superseded",
       "summary": "Production rollout (100%, Play edit 01741459619850170829; internal upload edit 15395737918513865419, sha1 c2e6692e46e4d4662cb4fb11481802f2505f556e, ProGuard mapping + native symbols): Material 3 adaptive tablet layouts across Home, Browse, Printer, Files, Print Setup, and Model Detail, plus 5 promotional 2560x1440 tablet screenshots uploaded to both 7-inch and 10-inch Play Store listing slots.",
-      "updated": "2026-11-26",
+      "updated": "2026-11-27",
       "refs": [
         "file:android/app/build.gradle.kts",
         "file:store_listing/metadata.md"
       ],
-      "next": [
-        "Monitor Play vitals / Crashlytics on v1.11.1 production rollout"
-      ],
+      "next": [],
       "attrs": {
         "date": "2026-11-26",
         "version_code": 54,
@@ -2813,6 +2812,45 @@
         [
           "supersedes",
           "rel:v1.11.0"
+        ],
+        [
+          "hosted_on",
+          "ext:google-play"
+        ],
+        [
+          "documented_by",
+          "doc:store-listing"
+        ],
+        [
+          "affects",
+          "mod:android-app"
+        ]
+      ]
+    },
+    {
+      "id": "rel:v1.11.2",
+      "kind": "release",
+      "title": "v1.11.2 (55)",
+      "status": "live",
+      "summary": "Production rollout (100%, Play edit 16136559224094151341, sha1 3253037bbd678e0c114060002c3d309d77cf089a, ProGuard mapping + native symbols): one-tap Sign in with Google for MakerWorld via Chrome Custom Tabs + loopback ticket exchange, upgraded MakerWorld web sign-in bridge for Google/Apple/Facebook, and Sign in with Google in Nexprint's download sign-in dialog.",
+      "updated": "2026-11-27",
+      "refs": [
+        "file:android/app/build.gradle.kts",
+        "file:store_listing/metadata.md",
+        "file:android/app/src/main/java/world/yemyat/slicepilot/repo/BambuSocialLogin.kt"
+      ],
+      "next": [
+        "Monitor Play vitals / Crashlytics on v1.11.2 production rollout"
+      ],
+      "attrs": {
+        "date": "2026-11-27",
+        "version_code": 55,
+        "version_name": "1.11.2-android"
+      },
+      "edges": [
+        [
+          "supersedes",
+          "rel:v1.11.1"
         ],
         [
           "hosted_on",

@@ -2,6 +2,7 @@ package world.yemyat.slicepilot.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -52,7 +53,9 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -66,6 +69,8 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import world.yemyat.slicepilot.R
+import world.yemyat.slicepilot.repo.BambuSocialLogin
 import world.yemyat.slicepilot.repo.ModelBrowser
 import world.yemyat.slicepilot.repo.ModelComment
 import world.yemyat.slicepilot.repo.ModelDetail
@@ -371,6 +376,9 @@ fun ModelDetailHost(
     }
     if (detail != null) {
         val favEntries by browser.favorites.entries.collectAsState()
+        val cloudMessage by vm.cloudMessage.collectAsState()
+        val nexprintSignedIn = remember(cloudMessage, vm.cloudLoggedIn) { vm.cloudLoggedIn }
+        val context = LocalContext.current
         var customizing by rememberSaveable(detail.listing.source, detail.listing.id) { mutableStateOf(false) }
         var webSignIn by rememberSaveable(detail.listing.source, detail.listing.id) { mutableStateOf(false) }
         var resumeCustomizeAfterWebSignIn by rememberSaveable(detail.listing.source, detail.listing.id) {
@@ -379,7 +387,8 @@ fun ModelDetailHost(
 
         if (webSignIn) {
             MakerWorldWebViewScreen(
-                url = "https://makerworld.com/en/sign-in?redirect=%2Fen%2F",
+                url = BambuSocialLogin.SIGN_IN_URL,
+                signInMode = true,
                 onBack = {
                     webSignIn = false
                     resumeCustomizeAfterWebSignIn = false
@@ -393,7 +402,7 @@ fun ModelDetailHost(
                         customizing = true
                     }
                 },
-                bannerHint = "Sign in to MakerWorld — your session is saved automatically for SlicePilot.",
+                bannerHint = "Sign in to Bambu Lab with Google, Apple, or email — your session is saved automatically.",
             )
             return true
         }
@@ -430,7 +439,7 @@ fun ModelDetailHost(
             bambuSigningIn = st.bambuSigningIn,
             bambuNeedsCode = st.bambuNeedsCode,
             bambuPendingEmail = st.bambuPendingEmail,
-            nexprintSignedIn = vm.cloudLoggedIn,
+            nexprintSignedIn = nexprintSignedIn,
             onBack = { browser.closeDetail() },
             onDownload = { file ->
                 browser.download(file) { path ->
@@ -441,6 +450,7 @@ fun ModelDetailHost(
             },
             onCustomize = { customizing = true },
             onBambuSignIn = { email, pass, onDone -> browser.bambuLogin(email, pass, onDone) },
+            onBambuGoogleSignIn = { browser.bambuStartGoogleSignIn(context) },
             onBambuWebSignIn = { forCustomize ->
                 resumeCustomizeAfterWebSignIn = forCustomize
                 webSignIn = true
@@ -452,6 +462,12 @@ fun ModelDetailHost(
                     onResult(if (ok) null else vm.cloudMessage.value)
                 }
             },
+            onNexprintGoogleSignIn =
+                if (vm.socialSignInAvailable) {
+                    { vm.startSocialSignIn(context) }
+                } else {
+                    null
+                },
             commentsLoading = st.commentsLoading,
             commentsLoadingMore = st.commentsLoadingMore,
             commentsExhausted = st.commentsExhausted,
@@ -751,12 +767,14 @@ private fun ModelDetailScreen(
     onUnfavorite: (String) -> Unit,
     /** Signs in, then calls `onDone` so the file picker or customizer the user asked for can open. */
     onBambuSignIn: (email: String, password: String, onDone: () -> Unit) -> Unit,
+    onBambuGoogleSignIn: () -> Unit = {},
     onBambuWebSignIn: (forCustomize: Boolean) -> Unit = {},
     onBambuVerify: (code: String, onDone: () -> Unit) -> Unit,
     /** Drops a pending code so the MakerWorld dialog returns to its email + password step. */
     onBambuUseAnotherAccount: () -> Unit,
     /** Elegoo sign-in for Nexprint: null result means signed in, else the failure text. */
     onNexprintSignIn: (email: String, password: String, onResult: (String?) -> Unit) -> Unit,
+    onNexprintGoogleSignIn: (() -> Unit)? = null,
     commentsLoading: Boolean,
     commentsLoadingMore: Boolean,
     /** The model's comments source has served its last page. */
@@ -789,6 +807,15 @@ private fun ModelDetailScreen(
             onCustomize()
         } else {
             pickingFile = true
+        }
+    }
+
+    // Resume automatically when an out-of-dialog Google sign-in completes in Chrome Custom Tabs.
+    LaunchedEffect(bambuSignedIn, nexprintSignedIn, signingInFor) {
+        if ((signingInFor == ModelSource.MAKERWORLD && bambuSignedIn) ||
+            (signingInFor == ModelSource.NEXPRINT && nexprintSignedIn)
+        ) {
+            resumeAfterSignIn()
         }
     }
 
@@ -1169,6 +1196,7 @@ private fun ModelDetailScreen(
                 error = error,
                 forCustomize = pendingCustomize,
                 onSignIn = { mail, pass -> onBambuSignIn(mail, pass) { resumeAfterSignIn() } },
+                onGoogleSignIn = onBambuGoogleSignIn,
                 onWebSignIn = {
                     val wasCustomize = pendingCustomize
                     signingInFor = null
@@ -1187,6 +1215,7 @@ private fun ModelDetailScreen(
         ModelSource.NEXPRINT -> {
             ElegooSignInDialog(
                 onSignIn = onNexprintSignIn,
+                onGoogleSignIn = onNexprintGoogleSignIn,
                 onSignedIn = { resumeAfterSignIn() },
                 onDismiss = { signingInFor = null },
             )
@@ -1446,6 +1475,7 @@ private fun MakerworldSignInDialog(
     error: String?,
     forCustomize: Boolean = false,
     onSignIn: (email: String, password: String) -> Unit,
+    onGoogleSignIn: (() -> Unit)? = null,
     onWebSignIn: (() -> Unit)? = null,
     onVerify: (code: String) -> Unit,
     /** Leaves the code stage unused, to sign in as someone else. */
@@ -1507,7 +1537,16 @@ private fun MakerworldSignInDialog(
             }
         },
         onBackToCredentials = if (needsCode) onUseAnotherAccount else null,
-        secondaryActionLabel = if (!needsCode && onWebSignIn != null) "Sign in with MakerWorld web" else null,
+        onGoogleSignIn =
+            if (!needsCode && onGoogleSignIn != null) {
+                {
+                    attempted = true
+                    onGoogleSignIn()
+                }
+            } else {
+                null
+            },
+        secondaryActionLabel = if (!needsCode && onWebSignIn != null) "Other sign-in options (Apple / Web)" else null,
         onSecondaryAction = if (!needsCode) onWebSignIn else null,
     )
 }
@@ -1528,6 +1567,7 @@ private fun makerworldCodeMessage(pendingEmail: String): String =
 @Composable
 private fun ElegooSignInDialog(
     onSignIn: (email: String, password: String, onResult: (String?) -> Unit) -> Unit,
+    onGoogleSignIn: (() -> Unit)? = null,
     onSignedIn: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -1560,6 +1600,7 @@ private fun ElegooSignInDialog(
             }
         },
         onDismiss = onDismiss,
+        onGoogleSignIn = onGoogleSignIn,
     )
 }
 
@@ -1609,7 +1650,10 @@ private fun SignInDialog(
     onCode: (String) -> Unit = {},
     /** Offered in the code stage to return to the credentials form. */
     onBackToCredentials: (() -> Unit)? = null,
-    /** Optional secondary sign-in route (e.g. MakerWorld web SSO for Google/Apple accounts). */
+    /** Optional Google/social sign-in button rendered above the email/password fields. */
+    onGoogleSignIn: (() -> Unit)? = null,
+    googleButtonLabel: String = "Sign in with Google",
+    /** Optional secondary sign-in route rendered below the primary submit button. */
     secondaryActionLabel: String? = null,
     onSecondaryAction: (() -> Unit)? = null,
 ) {
@@ -1713,6 +1757,44 @@ private fun SignInDialog(
                         }
 
                         SignInStage.Credentials -> {
+                            if (onGoogleSignIn != null) {
+                                OutlinedButton(
+                                    onClick = onGoogleSignIn,
+                                    enabled = !busy,
+                                    shape = RoundedCornerShape(Radius.sm),
+                                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                                ) {
+                                    Image(
+                                        painter = painterResource(R.drawable.ic_google),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                    Text(
+                                        googleButtonLabel,
+                                        fontSize = 15.sp,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    HorizontalDivider(
+                                        modifier = Modifier.weight(1f),
+                                        color = MaterialTheme.colorScheme.outlineVariant,
+                                    )
+                                    Text(
+                                        " or ",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    HorizontalDivider(
+                                        modifier = Modifier.weight(1f),
+                                        color = MaterialTheme.colorScheme.outlineVariant,
+                                    )
+                                }
+                            }
                             AuthField(
                                 value = email,
                                 onValueChange = onEmail,

@@ -1,5 +1,6 @@
 # Play Store listing
 
+**v1.11.2 (55) went to production at 100 % on 2026-11-27** (Play edit `16136559224094151341`, bundle sha1 `3253037bbd678e0c114060002c3d309d77cf089a`, ProGuard mapping + native symbols uploaded; one-tap Sign in with Google for MakerWorld via Chrome Custom Tabs + loopback ticket exchange, upgraded MakerWorld web sign-in bridge for Apple/Facebook/Google, and Sign in with Google in Nexprint's download sign-in dialog).
 **v1.11.1 (54) went to production at 100 % on 2026-11-26** (production + en-US listing + 5 `2560×1440` tablet slides on `tenInchScreenshots` & `sevenInchScreenshots`: Play edit `01741459619850170829`; internal upload edit `15395737918513865419`, bundle sha1 `c2e6692e46e4d4662cb4fb11481802f2505f556e`, ProGuard mapping + native symbols uploaded; Material 3 adaptive tablet layouts across Home, Browse, Printer, Files, Print Setup, and Model Detail).
 **en-US Play Store listing updated on 2026-11-26** (Play edit `03106610955606778026`; short description 72 chars + full description 2919 chars adding OpenCentauri COSMOS, Klipper/Moonraker, and mid-print Skip Part SEO).
 **v1.11.0 (53) went to production at 100 % on 2026-11-26** (Play edit `12290804424531887166`, bundle sha1 `b4af80e7cb7f326e45e445484f51ba60c9869209`, ProGuard mapping + native symbols uploaded; OpenCentauri COSMOS / Klipper Moonraker LAN support, mid-print Skip Part with 2D build plate map, camera playback diagnostics, and Wi-Fi scanning spinner fix).
@@ -71,6 +72,11 @@ DESKTOP-CLASS ON-DEVICE SLICING ENGINE
 - Open STL/3MF files directly from your Files app
 
 SlicePilot is an independent app. SlicePilot is not affiliated with, endorsed by, or sponsored by MakerWorld, Bambu Lab, Printables, Prusa Research, Thingiverse, Nexprint, OpenCentauri, or Elegoo. All trademarks belong to their respective owners.
+
+## What's new (1.11.2)
+• Added one-tap Sign in with Google for MakerWorld (opens securely in your browser via Chrome Custom Tabs and returns straight to SlicePilot)
+• Upgraded MakerWorld web sign-in so Google, Apple, and Facebook hand off to your browser cleanly instead of failing inside a WebView
+• Added Sign in with Google directly inside the Nexprint download sign-in dialog
 
 ## What's new (1.11.1)
 • Adaptive tablet layouts following Material 3 guidelines: leading NavigationRail with pinned Local model button, 3- and 4-column model feeds with 4:3 cards, and inline search & filters on wide screens
