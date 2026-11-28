@@ -1,0 +1,4 @@
+using clang : arm64 : /home/ymt/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++ :
+    <arch>arm
+    <address-model>64
+    ;

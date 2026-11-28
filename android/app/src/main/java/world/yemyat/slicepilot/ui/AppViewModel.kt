@@ -1,0 +1,5395 @@
+package world.yemyat.slicepilot.ui
+
+import android.content.ActivityNotFoundException
+import android.content.Context
+import android.net.Uri
+import androidx.browser.customtabs.CustomTabsIntent
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import world.yemyat.slicepilot.BuildConfig
+import world.yemyat.slicepilot.NativeLib
+import world.yemyat.slicepilot.PrintForegroundService
+import world.yemyat.slicepilot.SliceForegroundService
+import world.yemyat.slicepilot.SliceTransform
+import world.yemyat.slicepilot.cloud.CloudPrinter
+import world.yemyat.slicepilot.cloud.CloudResult
+import world.yemyat.slicepilot.cloud.ElegooCloudClient
+import world.yemyat.slicepilot.cloud.PairingCode
+import world.yemyat.slicepilot.cloud.PairingValues
+import world.yemyat.slicepilot.cloud.auth.CloudAuthResult
+import world.yemyat.slicepilot.cloud.auth.CloudSocialLogin
+import world.yemyat.slicepilot.model.GcodePreview
+import world.yemyat.slicepilot.model.GcodePreviewParser
+import world.yemyat.slicepilot.model.MeshData
+import world.yemyat.slicepilot.model.MeshDecimator
+import world.yemyat.slicepilot.model.ModelParser
+import world.yemyat.slicepilot.model.ProjectPrintSettings
+import world.yemyat.slicepilot.model.ProjectSettingsReader
+import world.yemyat.slicepilot.model.StlParser
+import world.yemyat.slicepilot.repo.GcodeHistoryEntry
+import world.yemyat.slicepilot.repo.GcodeHistoryStore
+import world.yemyat.slicepilot.tracking.EventNotifier
+import java.io.File
+
+private const val DEMO_EMAIL = "demo@demo.com"
+private const val DEMO_PASSWORD = "demo"
+private const val DEMO_PRINTER_ID = "DEMO-CC2-001"
+private const val DEMO_MODEL_ASSET = "demo/test_cube.stl"
+private const val DEMO_MODEL_FILE = "test_cube.stl"
+
+data class SliceConfig(
+    val printer: String? = null,
+    val process: String? = null,
+    val filament: String? = null,
+    val filamentColor: String? = null,
+    val filamentTrayId: Int? = null,
+    val filamentCanvasId: Int? = null,
+    val supportEnabled: Boolean = false,
+    val supportStyle: String = "grid",
+    val supportFilament: String? = null,
+    /** Multi-material (Canvas / dual-nozzle): support material filament preset + Canvas spool. */
+    val supportFilamentPreset: String? = null,
+    val supportFilamentColor: String? = null,
+    val supportFilamentTrayId: Int? = null,
+    val supportFilamentCanvasId: Int? = null,
+    /** When true (default), use the support spool only on support interfaces to cut swaps & waste. */
+    val supportInterfaceOnly: Boolean = true,
+    val layerHeight: Float? = null,
+    val wallLoops: Int? = null,
+    val topShellLayers: Int? = null,
+    val bottomShellLayers: Int? = null,
+    val infillDensity: Int? = null,
+    val infillPattern: String? = null,
+    val adhesion: String = "auto",
+    val brimWidth: Int? = null,
+    val seamPosition: String = "aligned",
+    val ironing: Boolean = false,
+    val supportOnPlateOnly: Boolean = false,
+    val supportThresholdAngle: Int? = null,
+    val supportZDistance: Float? = null,
+    val wallSpeed: Int? = null,
+    val infillSpeed: Int? = null,
+    val travelSpeed: Int? = null,
+)
+
+internal fun resolveSupportMachineProfile(
+    profile: String,
+    model: String,
+    availablePresets: Collection<String>,
+): String {
+    val isCC2 =
+        model.contains("Carbon 2", true) || model.contains("CC2", true) ||
+            profile.contains("Carbon 2", true)
+    if (isCC2) {
+        val single = profile.replace(Regex("(\\d\\.\\d)(\\+\\d\\.\\d|C) nozzle"), "$1 nozzle")
+        return if (single in availablePresets) single else profile
+    }
+    val m = Regex("(\\d\\.\\d) nozzle").find(profile) ?: return profile
+    val target = profile.replace(m.value, "${m.groupValues[1]}C nozzle")
+    return if (target in availablePresets) target else profile
+}
+
+internal fun buildSupportFilamentOverrides(interfaceOnly: Boolean): String =
+    buildString {
+        if (interfaceOnly) {
+            appendLine("support_filament=0")
+            appendLine("support_interface_filament=2")
+        } else {
+            appendLine("support_filament=2")
+            appendLine("support_interface_filament=2")
+        }
+        // Prime tower stabilizes nozzle pressure after material swaps; let the printer profile
+        // govern `purge_in_prime_tower` (0 on CC2, which flushes via M6211 into the waste chute).
+        appendLine("enable_prime_tower=1")
+    }
+
+/**
+ * INI overrides for the Adhesion setting.
+ *
+ * libslic3r defaults `brim_type` to `auto_brim`, which ignores `brim_width=0` and still
+ * generates a brim for tall or small-footprint parts (`Print.hpp::has_brim` / `Brim.cpp`).
+ * Every non-auto mode therefore sets `brim_type` explicitly, and `"skirt"` also sets
+ * `skirt_loops` because the Elegoo base presets default `skirt_loops=0`.
+ */
+internal fun buildAdhesionOverrides(
+    adhesion: String,
+    brimWidth: Int?,
+): String =
+    buildString {
+        when (adhesion) {
+            "none" -> {
+                appendLine("brim_type=no_brim")
+                appendLine("brim_width=0")
+                appendLine("raft_layers=0")
+                appendLine("skirt_loops=0")
+                appendLine("skirt_height=0")
+            }
+
+            "skirt" -> {
+                appendLine("brim_type=no_brim")
+                appendLine("brim_width=0")
+                appendLine("raft_layers=0")
+                appendLine("skirt_loops=2")
+                appendLine("skirt_height=2")
+            }
+
+            "brim" -> {
+                appendLine("brim_type=outer_only")
+                appendLine("brim_width=${brimWidth ?: 5}")
+                appendLine("raft_layers=0")
+                appendLine("skirt_loops=0")
+                appendLine("skirt_height=0")
+            }
+
+            "raft" -> {
+                appendLine("brim_type=no_brim")
+                appendLine("brim_width=0")
+                appendLine("raft_layers=2")
+                appendLine("skirt_loops=0")
+                appendLine("skirt_height=0")
+            }
+        }
+    }
+
+data class MaterialOption(
+    val label: String,
+    val profile: String,
+    val colorHex: String?,
+    val trayId: Int? = null,
+    val canvasId: Int? = null,
+) {
+    val key: String
+        get() =
+            if (trayId != null) {
+                "$profile|tray:$trayId|canvas:$canvasId"
+            } else {
+                "$profile|" + (colorHex ?: "")
+            }
+}
+
+data class ConnectedPrinter(
+    val id: String,
+    val name: String,
+    val model: String,
+    val online: Boolean = true,
+    val isLocal: Boolean = false,
+    val ip: String? = null,
+    val serial: String? = null,
+    val cloudPrinter: CloudPrinter? = null,
+    val lanPrinter: world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter? = null,
+)
+
+fun CloudPrinter.toConnectedPrinter(): ConnectedPrinter =
+    ConnectedPrinter(
+        id = this.id,
+        name = this.name,
+        model = this.model,
+        online = this.online,
+        isLocal = false,
+        cloudPrinter = this,
+    )
+
+fun world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter.toConnectedPrinter(): ConnectedPrinter =
+    ConnectedPrinter(
+        id = this.serial.ifBlank { this.ip },
+        name = this.name.ifBlank { this.model.ifBlank { "Centauri Carbon 2" } },
+        model = this.model.ifBlank { "Centauri Carbon 2" },
+        online = true,
+        isLocal = true,
+        ip = this.ip,
+        serial = this.serial,
+        lanPrinter = this,
+    )
+
+sealed class Screen {
+    data object Home : Screen()
+
+    data object Library : Screen()
+
+    data object Printer : Screen()
+
+    data object PrintSetup : Screen()
+
+    data object Slice : Screen()
+
+    data object Slicing : Screen()
+
+    data object Preview : Screen()
+
+    data object Printing : Screen()
+
+    data object DeviceStatus : Screen()
+
+    data object CameraFull : Screen()
+}
+
+/** Explicit, R8-safe screen name for GA4 `screen_view` reporting. */
+val Screen.analyticsName: String
+    get() =
+        when (this) {
+            Screen.Home -> "Home"
+            Screen.Library -> "Files"
+            Screen.Printer -> "Printer"
+            Screen.PrintSetup -> "PrintSetup"
+            Screen.Slice -> "Slice"
+            Screen.Slicing -> "Slicing"
+            Screen.Preview -> "Preview"
+            Screen.Printing -> "Printing"
+            Screen.DeviceStatus -> "DeviceStatus"
+            Screen.CameraFull -> "CameraFull"
+        }
+
+/** What a screen is called when another screen offers to go back to it. */
+val Screen.backLabel: String
+    get() =
+        when (this) {
+            Screen.Library -> "Files"
+            Screen.Printer -> "Printer"
+            Screen.PrintSetup -> "print setup"
+            Screen.Slice -> "slice"
+            Screen.Home -> "home"
+            else -> "back"
+        }
+
+/** The Files tab's two shelves: models the app kept, and pictures it took. */
+enum class LibraryTab(
+    val label: String,
+) {
+    MODELS("Models"),
+    GCODE("G-code"),
+    PHOTOS("Photos"),
+}
+
+class AppViewModel(
+    private val cloud: ElegooCloudClient,
+    private val cacheDir: File,
+    private val prefs: android.content.SharedPreferences,
+    private val context: Context,
+    private val initialOpenPreviewGcodePath: String? = null,
+    private val initialOpenPreviewModelPath: String? = null,
+    private val initialOpenPrintMonitor: Boolean = false,
+    private val initialOpenDeviceStatus: Boolean = false,
+    /** Print control tapped on the notification when no ViewModel was alive to receive it. */
+    private val initialPrintAction: String? = null,
+) : ViewModel() {
+    private val _screen = MutableStateFlow<Screen>(Screen.Home)
+    val screen: StateFlow<Screen> = _screen.asStateFlow()
+
+    /** Every g-code the app has sliced, so a slice outlives the model it was cut from. */
+    val gcodeHistory = GcodeHistoryStore(context)
+
+    /**
+     * Draw the previews the g-code shelf is missing, off the main thread: parsing a g-code
+     * is worth a background job and not a frame, and a tile appears as soon as it has one.
+     */
+    fun renderGcodeThumbs() {
+        viewModelScope.launch(Dispatchers.IO) { gcodeHistory.renderMissingThumbs() }
+    }
+
+    @Volatile var modelPath: String? = null
+        private set
+
+    @Volatile var gcodePath: String? = null
+        private set
+
+    private val _mesh = MutableStateFlow<MeshData?>(null)
+    val mesh: StateFlow<MeshData?> = _mesh.asStateFlow()
+    private val _gcodePreview = MutableStateFlow<GcodePreview?>(null)
+    val gcodePreview: StateFlow<GcodePreview?> = _gcodePreview.asStateFlow()
+    private val _gcodeStats = MutableStateFlow<world.yemyat.slicepilot.model.GcodeStats?>(null)
+    val gcodeStats: StateFlow<world.yemyat.slicepilot.model.GcodeStats?> = _gcodeStats.asStateFlow()
+
+    private val _modelLoading = MutableStateFlow(false)
+    val modelLoading: StateFlow<Boolean> = _modelLoading.asStateFlow()
+
+    /** 0..100 parse progress for the current model load, null before the first update. */
+    private val _modelLoadProgress = MutableStateFlow<Int?>(null)
+    val modelLoadProgress: StateFlow<Int?> = _modelLoadProgress.asStateFlow()
+
+    data class ModelError(
+        val code: String,
+        val message: String,
+    )
+
+    private val _modelError = MutableStateFlow<ModelError?>(null)
+    val modelError: StateFlow<ModelError?> = _modelError.asStateFlow()
+
+    fun reportModelLoadError(
+        stage: String,
+        t: Throwable,
+    ) {
+        val oom = t is OutOfMemoryError
+        val code =
+            when (stage) {
+                "parse" -> if (oom) "E101" else "E100"
+                "render" -> if (oom) "E201" else "E200"
+                else -> "E999"
+            }
+        val msg = t.javaClass.simpleName + (t.message?.let { ": $it" } ?: "")
+        EventNotifier.trackError(
+            "model_load_failed",
+            t,
+            mapOf(
+                "stage" to stage,
+                "code" to code,
+                "oom" to oom,
+                "model" to modelPath.orEmpty(),
+            ),
+        )
+        _modelError.value = ModelError(code, msg)
+        _mesh.value = null
+        _gcodePreview.value = null
+        modelPath = null
+        gcodePath = null
+    }
+
+    fun dismissModelError() {
+        _modelError.value = null
+    }
+
+    fun reportUnsupportedFormat(name: String) {
+        EventNotifier.trackEvent(
+            "model_rejected",
+            mapOf(
+                "name" to name,
+                "code" to "E102",
+                "reason" to "unsupported_format",
+            ),
+        )
+        _modelError.value = ModelError("E102", "Unsupported file format: $name")
+        _mesh.value = null
+        _gcodePreview.value = null
+        modelPath = null
+        gcodePath = null
+    }
+
+    private val _sliceProgress = MutableStateFlow(0f)
+    val sliceProgress: StateFlow<Float> = _sliceProgress.asStateFlow()
+    private val _sliceStatus = MutableStateFlow("")
+    val sliceStatus: StateFlow<String> = _sliceStatus.asStateFlow()
+    private val _slicing = MutableStateFlow(false)
+    val slicing: StateFlow<Boolean> = _slicing.asStateFlow()
+
+    @Volatile private var sliceGeneration = 0
+
+    @Volatile private var activeSliceJobId = 0L
+
+    @Volatile private var handledSliceJobId = 0L
+
+    @Volatile private var handledSliceErrorJobId = 0L
+
+    private var sliceFinalizeJob: Job? = null
+
+    /** Wait for any post-slice thumbnail/archive pass before reading [gcodePath] for print/save. */
+    suspend fun awaitSliceFinalized() {
+        sliceFinalizeJob?.join()
+    }
+
+    init {
+        observeSliceService()
+        renderGcodeThumbs()
+    }
+
+    private val _liveSliceLayers = MutableStateFlow<List<world.yemyat.slicepilot.model.GcodeLayer>>(emptyList())
+    val liveSliceLayers: StateFlow<List<world.yemyat.slicepilot.model.GcodeLayer>> = _liveSliceLayers.asStateFlow()
+    private val _liveSliceBounds = MutableStateFlow(floatArrayOf(0f, 0f, 1f, 1f, 0f))
+    val liveSliceBounds: StateFlow<FloatArray> = _liveSliceBounds.asStateFlow()
+
+    data class ModelTransform(
+        val rotX: Float = 0f,
+        val rotY: Float = 0f,
+        val rotZ: Float = 0f,
+        val mirrorX: Boolean = false,
+        val mirrorY: Boolean = false,
+        val mirrorZ: Boolean = false,
+        val offsetX: Float = 0f,
+        val offsetY: Float = 0f,
+    )
+
+    private val _modelTransform = MutableStateFlow(ModelTransform())
+    val modelTransform: StateFlow<ModelTransform> = _modelTransform.asStateFlow()
+
+    fun setModelTransform(t: FloatArray) {
+        if (t.size < 8) return
+        // Route through the renderer's own type so the ViewModel and the GL view can
+        // never disagree about a pose, and so the angles land normalized: the controls
+        // used to add 90° per tap forever, so ipadmini.stl sat at rot=(270, 720, 630)
+        // and the numbers shown no longer described the orientation.
+        val pose =
+            world.yemyat.slicepilot.preview.ModelTransform
+                .fromArray(t)
+        _modelTransform.value =
+            ModelTransform(
+                rotX = pose.rotX,
+                rotY = pose.rotY,
+                rotZ = pose.rotZ,
+                mirrorX = pose.mirrorX,
+                mirrorY = pose.mirrorY,
+                mirrorZ = pose.mirrorZ,
+                offsetX = pose.offsetX,
+                offsetY = pose.offsetY,
+            )
+    }
+
+    fun resetModelTransform() {
+        _modelTransform.value = ModelTransform()
+        clearPartPoses()
+    }
+
+    // Per-piece placement, in the order the parser listed the pieces. Null while the model is
+    // posed as one blob — every single-part file, and every multi-part file the user has not
+    // laid out yet — in which case the slicer uses modelTransform alone, exactly as before
+    // pieces existed. Setting it switches the slicer to one pose per object, which is what
+    // lets a 3MF holding two models print only one of them, or slide both onto one plate.
+    // The layout itself lives in model/PartPlacement; the payload shape in
+    // NativeLib.nativeSetPartPoses.
+    private val _partPoses =
+        MutableStateFlow<List<world.yemyat.slicepilot.preview.ModelTransform>?>(null)
+    val partPoses: StateFlow<List<world.yemyat.slicepilot.preview.ModelTransform>?> =
+        _partPoses.asStateFlow()
+
+    /** Pieces left off the plate. Empty means every piece prints (the pre-parts behaviour). */
+    private val _partsSkipped = MutableStateFlow<Set<Int>>(emptySet())
+    val partsSkipped: StateFlow<Set<Int>> = _partsSkipped.asStateFlow()
+
+    private val _selectedPart = MutableStateFlow(0)
+    val selectedPart: StateFlow<Int> = _selectedPart.asStateFlow()
+
+    /** Lay every piece out on a plateW×plateH plate the way PartPlacement derives it. */
+    fun arrangeParts(
+        plateW: Float,
+        plateH: Float,
+    ) {
+        val mesh = _mesh.value ?: return
+        if (mesh.parts.size < 2) return
+        _partPoses.value =
+            world.yemyat.slicepilot.model.PartPlacement
+                .defaultPoses(mesh, plateW, plateH)
+    }
+
+    /** Pose one piece — rotate, mirror or move it on its own. Unknown index: nothing to do. */
+    fun setPartPose(
+        index: Int,
+        pose: world.yemyat.slicepilot.preview.ModelTransform,
+    ) {
+        val current = _partPoses.value ?: return
+        if (index !in current.indices) return
+        _partPoses.value = current.toMutableList().also { it[index] = pose }
+    }
+
+    /** Print this piece, or leave it off the plate. */
+    fun setPartPrinted(
+        index: Int,
+        printed: Boolean,
+    ) {
+        val mesh = _mesh.value ?: return
+        if (index !in mesh.parts.indices) return
+        val current = _partsSkipped.value
+        _partsSkipped.value = if (printed) current - index else current + index
+    }
+
+    /**
+     * Print every piece, or leave every one off: the two answers nobody wants to tap nine
+     * times to print one clip out of a plate of them. The selection stays where it was, so
+     * the piece the viewer is posing does not change under the user.
+     */
+    fun setAllPartsPrinted(printed: Boolean) {
+        val mesh = _mesh.value ?: return
+        if (mesh.parts.isEmpty()) return
+        _partsSkipped.value = if (printed) emptySet() else mesh.parts.indices.toSet()
+    }
+
+    fun selectPart(index: Int) {
+        _selectedPart.value = index
+    }
+
+    /** Drop the per-piece layout, e.g. when a different model is selected. */
+    fun clearPartPoses() {
+        _partPoses.value = null
+        _partsSkipped.value = emptySet()
+        _selectedPart.value = 0
+    }
+
+    /**
+     * The pose rows to hand the slicer, or null when the current model has no pieces of its
+     * own (a plain STL, or a decimated preview): the single [modelTransform] then places it.
+     */
+    fun partPoseRows(): FloatArray? {
+        val mesh = _mesh.value ?: return null
+        val poses = _partPoses.value ?: return null
+        return world.yemyat.slicepilot.model.PartPlacement.poseRows(
+            mesh,
+            poses,
+            _partsSkipped.value,
+        )
+    }
+
+    private val _themeDark = MutableStateFlow(prefs.getBoolean("ui_dark", false))
+    val themeDark: StateFlow<Boolean> = _themeDark.asStateFlow()
+
+    fun toggleTheme() {
+        val v = !_themeDark.value
+        _themeDark.value = v
+        prefs.edit().putBoolean("ui_dark", v).apply()
+    }
+
+    private val _config =
+        MutableStateFlow(
+            SliceConfig(
+                printer =
+                    prefs.getString("cfg_printer", null)?.let { p ->
+                        if (p.contains("Carbon 2", true) && p.contains("+")) undualizeProfile(p) else p
+                    },
+                process = prefs.getString("cfg_process", null),
+                filament = prefs.getString("cfg_filament", null),
+                filamentColor = prefs.getString("cfg_filament_color", null),
+                filamentTrayId = if (prefs.contains("cfg_filament_tray")) prefs.getInt("cfg_filament_tray", 0) else null,
+                filamentCanvasId = if (prefs.contains("cfg_filament_canvas")) prefs.getInt("cfg_filament_canvas", 0) else null,
+                supportEnabled = prefs.getBoolean("cfg_support", false),
+                supportStyle = prefs.getString("cfg_support_style", "grid") ?: "grid",
+                supportFilament = prefs.getString("cfg_support_filament", null),
+                supportFilamentPreset = prefs.getString("cfg_support_preset", null),
+                supportFilamentColor = prefs.getString("cfg_support_color", null),
+                supportFilamentTrayId = if (prefs.contains("cfg_support_tray")) prefs.getInt("cfg_support_tray", 0) else null,
+                supportFilamentCanvasId = if (prefs.contains("cfg_support_canvas")) prefs.getInt("cfg_support_canvas", 0) else null,
+                supportInterfaceOnly = prefs.getBoolean("cfg_support_interface_only", true),
+                layerHeight = if (prefs.contains("cfg_layer_height")) prefs.getFloat("cfg_layer_height", 0.2f) else null,
+                wallLoops = if (prefs.contains("cfg_wall_loops")) prefs.getInt("cfg_wall_loops", 2) else null,
+                topShellLayers = if (prefs.contains("cfg_top_shells")) prefs.getInt("cfg_top_shells", 4) else null,
+                bottomShellLayers = if (prefs.contains("cfg_bottom_shells")) prefs.getInt("cfg_bottom_shells", 4) else null,
+                infillDensity = if (prefs.contains("cfg_infill_density")) prefs.getInt("cfg_infill_density", 15) else null,
+                infillPattern = prefs.getString("cfg_infill_pattern", null),
+                adhesion = prefs.getString("cfg_adhesion", "auto") ?: "auto",
+                brimWidth = if (prefs.contains("cfg_brim_width")) prefs.getInt("cfg_brim_width", 5) else null,
+                seamPosition = prefs.getString("cfg_seam_position", "aligned") ?: "aligned",
+                ironing = prefs.getBoolean("cfg_ironing", false),
+                supportOnPlateOnly = prefs.getBoolean("cfg_support_plate_only", false),
+                supportThresholdAngle = if (prefs.contains("cfg_support_angle")) prefs.getInt("cfg_support_angle", 30) else null,
+                supportZDistance = if (prefs.contains("cfg_support_z_distance")) prefs.getFloat("cfg_support_z_distance", 0.2f) else null,
+                wallSpeed = if (prefs.contains("cfg_wall_speed")) prefs.getInt("cfg_wall_speed", 120) else null,
+                infillSpeed = if (prefs.contains("cfg_infill_speed")) prefs.getInt("cfg_infill_speed", 150) else null,
+                travelSpeed = if (prefs.contains("cfg_travel_speed")) prefs.getInt("cfg_travel_speed", 300) else null,
+            ),
+        )
+    val config: StateFlow<SliceConfig> = _config.asStateFlow()
+
+    private val _printers = MutableStateFlow<List<CloudPrinter>>(emptyList())
+    val printers: StateFlow<List<CloudPrinter>> = _printers.asStateFlow()
+    private val _cloudMessage = MutableStateFlow<String?>(null)
+    val cloudMessage: StateFlow<String?> = _cloudMessage.asStateFlow()
+    private val _cloudReconnectNeeded = MutableStateFlow(false)
+    val cloudReconnectNeeded: StateFlow<Boolean> = _cloudReconnectNeeded.asStateFlow()
+    private val _pendingModelPath = MutableStateFlow<String?>(null)
+    val pendingModelPath: StateFlow<String?> = _pendingModelPath.asStateFlow()
+
+    /**
+     * The model a print is waiting on: set when the user picks a model while no printer is
+     * connected, so the pick is not silently dropped (which read as a broken button) nor
+     * committed either (a model on Home with nothing to print it on is a dead end). Non-null
+     * shows the ask dialog; [onConnectForPrint] or [onLaterForPrint] closes it.
+     */
+    private val _askPrinterForModel = MutableStateFlow<String?>(null)
+    val askPrinterForModel: StateFlow<String?> = _askPrinterForModel.asStateFlow()
+
+    /**
+     * The loaded model that leaving [Screen.PrintSetup] would throw away, shown as a confirm
+     * dialog. A model belongs to the print flow: a finished print clears it ([finishPrintToHome])
+     * and declining the printer ask never creates one ([onLaterForPrint]), so backing out of the
+     * flow the same way ended it. A live print answers the question without asking - it still
+     * needs the file - and so does demo mode, where the cube is the app's sample, not a pick.
+     */
+    private val _discardOnExitModel = MutableStateFlow<String?>(null)
+    val discardOnExitModel: StateFlow<String?> = _discardOnExitModel.asStateFlow()
+
+    /**
+     * A model whose PrintSetup is owed to whichever printer gets picked next - set when the
+     * ask dialog's "Connect" is accepted. The connect sheet stays open while the printer is
+     * chosen and the selection lands in [selectCloudPrinter] / [selectLanPrinter] instead of
+     * navigating anywhere, so those open the page here instead of stranding the pick.
+     */
+    private var printSetupQueuedFor: String? = null
+    private val _demoMode = MutableStateFlow(prefs.getBoolean("demo_mode", false))
+    val demoModeState: StateFlow<Boolean> = _demoMode.asStateFlow()
+    val isDemoMode: Boolean get() = _demoMode.value
+
+    // ---- Live print monitoring (LAN MQTT) ----
+
+    private val lanPrintMonitor =
+        world.yemyat.slicepilot.cloud
+            .LanPrintMonitor()
+    private val lanPrintMonitorCc1 =
+        world.yemyat.slicepilot.cloud
+            .LanPrintMonitorCC1()
+    private val lanPrintMonitorMoonraker =
+        world.yemyat.slicepilot.cloud
+            .LanPrintMonitorMoonraker()
+
+    /** The CC2 (MQTT), CC1 (SDCP WebSocket), or COSMOS/Moonraker monitor for the current LAN session. */
+    private var activeLanMonitor: world.yemyat.slicepilot.cloud.PrintMonitor = lanPrintMonitor
+    private val _printStatus = MutableStateFlow<world.yemyat.slicepilot.cloud.PrintStatus?>(null)
+
+    /** Live status of a started print; null when no monitor is active (e.g. cloud prints). */
+    val printStatus: StateFlow<world.yemyat.slicepilot.cloud.PrintStatus?> = _printStatus.asStateFlow()
+    private var printMonitorJob: Job? = null
+    private var demoMonitorJob: Job? = null
+    private var cloudMonitorJob: Job? = null
+    private var monitoredCloudSerial: String? = null
+    private var mqttStartJob: Job? = null
+    private var checkSessionJob: Job? = null
+
+    /** True while a print monitor feeds the foreground-service notification. */
+    private var printMonitorActive = false
+    private val printNotificationTracker = world.yemyat.slicepilot.PrintNotificationTracker()
+
+    private fun startPrintMonitoring(
+        sp: ConnectedPrinter,
+        accessCode: String,
+        autoResumeOnPause: Boolean = false,
+    ) {
+        val lp = sp.lanPrinter ?: _selectedLanPrinter.value
+        val ip = sp.ip ?: lp?.ip
+        val serial = sp.serial ?: lp?.serial
+        val protocol = lp?.protocol ?: world.yemyat.slicepilot.cloud.PrinterProtocol.fromString(null, sp.model)
+        val port = lp?.port ?: protocol.defaultPort
+        if (ip.isNullOrBlank() || (serial.isNullOrBlank() && protocol != world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER)) return
+        val resolvedSerial = serial.orEmpty().ifBlank { "moonraker:$ip:$port" }
+        EventNotifier.trackEvent(
+            "print_monitor_started",
+            mapOf("printer" to sp.name, "ip" to ip, "protocol" to protocol.name),
+        )
+        printMonitorJob?.cancel()
+        val monitor: world.yemyat.slicepilot.cloud.PrintMonitor =
+            when (protocol) {
+                world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER -> {
+                    lanPrintMonitorMoonraker.configurePort(port)
+                    lanPrintMonitorMoonraker
+                }
+
+                world.yemyat.slicepilot.cloud.PrinterProtocol.CC1_SDCP -> lanPrintMonitorCc1
+                world.yemyat.slicepilot.cloud.PrinterProtocol.CC2_MQTT -> lanPrintMonitor
+            }
+        activeLanMonitor = monitor
+        if (autoResumeOnPause) monitor.armAutoResume()
+        printMonitorJob =
+            viewModelScope.launch {
+                var ok = monitor.start(ip, resolvedSerial, accessCode)
+                // The CC2 MQTT broker keeps dead sessions (e.g. from a force-killed app)
+                // for tens of seconds and answers "too many clients" meanwhile — back off
+                // long enough (≈20 s total) for the broker to free the slots.
+                for (attempt in 0 until 4) {
+                    if (ok || !isActive) break
+                    delay(longArrayOf(1500, 3000, 5000, 8000)[attempt])
+                    ok = monitor.start(ip, resolvedSerial, accessCode)
+                }
+                // A cancelled start (user pressed back and reopened) must not clobber the
+                // status of the monitor that replaced it.
+                if (!isActive) return@launch
+                if (ok) {
+                    monitor.status.collect { incoming ->
+                        _printStatus.value = incoming?.let { applyLightHold(_printStatus.value, it) }
+                    }
+                } else {
+                    // Print started fine, monitoring is unavailable — show "no live status"
+                    // instead of leaving the screen stuck on "Connecting to printer…".
+                    _printStatus.value =
+                        world.yemyat.slicepilot.cloud.PrintStatus(
+                            state = world.yemyat.slicepilot.cloud.PrintJobState.CONNECTING,
+                        )
+                }
+                // CC1 Canvas/AMS filament (Cmd 324) shares spool info like the CC2's
+                // MQTT canvas report; feed the same filament store.
+                if (monitor === lanPrintMonitorCc1) {
+                    launch {
+                        lanPrintMonitorCc1.filament.collect { f ->
+                            if (f != null && (f.present || f.trays.isNotEmpty())) {
+                                applyFilament(resolvedSerial, ip, f)
+                            }
+                        }
+                    }
+                }
+            }
+    }
+
+    /**
+     * Cloud prints: snapshot the last reported status, then follow live cloud MQTT
+     * updates for the printer (the cloud relays the same CC2 status schema).
+     */
+    private fun startCloudPrintMonitoring(
+        sp: ConnectedPrinter,
+        justStarted: Boolean = false,
+    ) {
+        val serial = sp.cloudPrinter?.id ?: sp.id
+        if (serial.isBlank()) return
+        // Already actively monitoring this exact printer: reuse the running monitor
+        // instead of tearing it down and flashing "Connecting…".
+        if (!justStarted && cloudMonitorJob?.isActive == true && monitoredCloudSerial == serial) {
+            startMqtt()
+            return
+        }
+        EventNotifier.trackEvent("print_monitor_started", mapOf("printer" to sp.name, "transport" to "cloud"))
+        val switchingPrinter = monitoredCloudSerial != null && monitoredCloudSerial != serial
+        if (justStarted || switchingPrinter || _printStatus.value == null) {
+            _printStatus.value =
+                world.yemyat.slicepilot.cloud.PrintStatus(
+                    state = world.yemyat.slicepilot.cloud.PrintJobState.CONNECTING,
+                )
+        }
+        monitoredCloudSerial = serial
+        cloudMonitorJob?.cancel()
+        cloudMonitorJob =
+            viewModelScope.launch {
+                // Report-data lags a few seconds behind a print start: right after
+                // `start` it still carries the *previous* print's terminal state.
+                // Accepting that immediately ends the fresh session with a bogus
+                // "Print stopped". Hold terminal states for a grace window until
+                // this print has been seen running at least once.
+                val startedAt = android.os.SystemClock.elapsedRealtime()
+                var sawActive = false
+
+                fun freshEnough(state: world.yemyat.slicepilot.cloud.PrintJobState): Boolean {
+                    if (state == world.yemyat.slicepilot.cloud.PrintJobState.PRINTING ||
+                        state == world.yemyat.slicepilot.cloud.PrintJobState.PAUSED
+                    ) {
+                        sawActive = true
+                        return true
+                    }
+                    return !(
+                        justStarted && state.isTerminal && !sawActive &&
+                            android.os.SystemClock.elapsedRealtime() - startedAt < 30_000
+                    )
+                }
+                val snapshot = cloud.getReportStatus(serial)
+                // Don't let a cancelled job clobber the status of the monitor that replaced it.
+                if (!isActive) return@launch
+                snapshot?.let {
+                    if (freshEnough(it.state)) {
+                        mqtt.seedPrintStatus(serial, it)
+                        _printStatus.value = applyLightHold(_printStatus.value, it)
+                    }
+                }
+                startMqtt()
+                launch {
+                    mqtt.printStatuses
+                        .map { it[serial] }
+                        .filterNotNull()
+                        .collect {
+                            if (freshEnough(it.state)) {
+                                _printStatus.value = applyLightHold(_printStatus.value, it)
+                            }
+                        }
+                }
+                // Periodic full-report sync: fills fields CC2 delta pushes omit (total_layer,
+                // filename, targets, led) and keeps status live even if MQTT drops briefly.
+                while (isActive) {
+                    delay(if (mqtt.connected) 10_000L else 5_000L)
+                    if (!mqtt.connected) startMqtt()
+                    val live = cloud.getReportStatus(serial) ?: continue
+                    if (!isActive) return@launch
+                    if (!freshEnough(live.state)) continue
+                    val prev = _printStatus.value
+                    // Keep the richer/optimistic state when the poll is behind.
+                    if (prev != null && live.state == world.yemyat.slicepilot.cloud.PrintJobState.CONNECTING) {
+                        continue
+                    }
+                    mqtt.seedPrintStatus(serial, live)
+                    val merged =
+                        if (prev != null && prev.live) {
+                            world.yemyat.slicepilot.cloud.MqttManager.mergeSnapshotWithLive(live, prev)
+                        } else {
+                            live
+                        }
+                    _printStatus.value = applyLightHold(prev, merged)
+                }
+            }
+    }
+
+    private var cloudControlRetryJob: Job? = null
+
+    private fun cloudControl(
+        method: Int,
+        confirm: (world.yemyat.slicepilot.cloud.PrintJobState) -> Boolean,
+        optimistic: (world.yemyat.slicepilot.cloud.PrintStatus) -> world.yemyat.slicepilot.cloud.PrintStatus,
+    ) {
+        val sp = selectedPrinter ?: return
+        val cp = sp.cloudPrinter ?: _printers.value.firstOrNull { it.id == sp.id } ?: return
+        _printStatus.update { cur -> cur?.let(optimistic) }
+        cloudControlRetryJob?.cancel()
+        cloudControlRetryJob =
+            viewModelScope.launch {
+                // RTM publishes are fire-and-forget; resend until the status stream confirms,
+                // so one tap is enough (mirrors LanPrintMonitor.resendUntilConfirmed).
+                for (attempt in 1..3) {
+                    val r = cloudPrint.control(cp, method)
+                    if (r is CloudResult.Err) {
+                        android.util.Log.w("AppViewModel", "cloud print control $method failed: ${r.message}")
+                        EventNotifier.trackError("print_control_failed", null, mapOf("method" to method, "message" to r.message))
+                    }
+                    val confirmed =
+                        withTimeoutOrNull(8_000) {
+                            mqtt.printStatuses
+                                .map { it[cp.id] }
+                                .first { it != null && confirm(it.state) }
+                            true
+                        } ?: false
+                    if (confirmed) break
+                    android.util.Log.i("AppViewModel", "cloud control $method unconfirmed (attempt $attempt), resending")
+                }
+            }
+    }
+
+    /** Demo mode fake monitor: progress ticks up, pause/resume/stop behave plausibly. */
+    private fun startDemoMonitor() {
+        demoMonitorJob?.cancel()
+        demoMonitorJob =
+            viewModelScope.launch {
+                var progress = 0
+                _printStatus.value =
+                    world.yemyat.slicepilot.cloud.PrintStatus(
+                        state = world.yemyat.slicepilot.cloud.PrintJobState.PRINTING,
+                        filename = suggestedGcodeName,
+                        totalLayer = 240,
+                        live = true,
+                    )
+                while (progress < 100) {
+                    val cur = _printStatus.value
+                    if (cur != null && !cur.state.isTerminal && cur.state != world.yemyat.slicepilot.cloud.PrintJobState.PAUSED) {
+                        progress = (progress + 1).coerceAtMost(100)
+                        _printStatus.value =
+                            cur.copy(
+                                progress = progress,
+                                currentLayer = 240 * progress / 100,
+                                elapsedSec = progress * 18,
+                                remainingSec = (100 - progress) * 18,
+                            )
+                    }
+                    delay(500)
+                }
+                _printStatus.update {
+                    it?.copy(state = world.yemyat.slicepilot.cloud.PrintJobState.COMPLETED, progress = 100, remainingSec = 0)
+                }
+            }
+    }
+
+    fun pausePrint() {
+        EventNotifier.trackEvent("print_paused", mapOf("printer" to selectedPrinter?.name.orEmpty()))
+        if (_demoMode.value) {
+            _printStatus.update { it?.copy(state = world.yemyat.slicepilot.cloud.PrintJobState.PAUSED) }
+        } else if (selectedPrinter?.isLocal == true) {
+            activeLanMonitor.pausePrint()
+        } else {
+            cloudControl(1021, { it == world.yemyat.slicepilot.cloud.PrintJobState.PAUSED }) {
+                it.copy(state = world.yemyat.slicepilot.cloud.PrintJobState.PAUSING)
+            }
+        }
+    }
+
+    fun resumePrint() {
+        EventNotifier.trackEvent("print_resumed", mapOf("printer" to selectedPrinter?.name.orEmpty()))
+        if (_demoMode.value) {
+            _printStatus.update { it?.copy(state = world.yemyat.slicepilot.cloud.PrintJobState.PRINTING) }
+        } else if (selectedPrinter?.isLocal == true) {
+            activeLanMonitor.resumePrint()
+        } else {
+            cloudControl(1023, { it == world.yemyat.slicepilot.cloud.PrintJobState.PRINTING }) {
+                it.copy(state = world.yemyat.slicepilot.cloud.PrintJobState.RESUMING)
+            }
+        }
+    }
+
+    fun stopPrintJob() {
+        EventNotifier.trackEvent("print_stopped", mapOf("printer" to selectedPrinter?.name.orEmpty()))
+        if (_demoMode.value) {
+            _printStatus.update { it?.copy(state = world.yemyat.slicepilot.cloud.PrintJobState.STOPPED) }
+        } else if (selectedPrinter?.isLocal == true) {
+            activeLanMonitor.stopPrint()
+        } else {
+            cloudControl(
+                1022,
+                {
+                    it == world.yemyat.slicepilot.cloud.PrintJobState.STOPPED ||
+                        it == world.yemyat.slicepilot.cloud.PrintJobState.COMPLETED
+                },
+            ) {
+                it.copy(state = world.yemyat.slicepilot.cloud.PrintJobState.STOPPING)
+            }
+        }
+    }
+
+    fun excludePrintObject(name: String) {
+        if (name.isBlank()) return
+        EventNotifier.trackEvent(
+            "print_object_excluded",
+            mapOf("printer" to selectedPrinter?.name.orEmpty(), "object" to name),
+        )
+        if (_demoMode.value) {
+            _printStatus.update { cur ->
+                cur?.copy(excludedObjects = cur.excludedObjects + name)
+            }
+        } else if (selectedPrinter?.isLocal == true && activeLanMonitor.supportsExcludeObject) {
+            activeLanMonitor.excludeObject(name)
+        }
+    }
+
+    /** Stop watching the print (the job itself keeps running on the printer). */
+    private fun stopPrintMonitoring() {
+        printMonitorActive = false
+        printNotificationTracker.reset()
+        PrintForegroundService.clear(context)
+        prefs.edit().putBoolean("print_session_active", false).apply()
+        printMonitorJob?.cancel()
+        printMonitorJob = null
+        demoMonitorJob?.cancel()
+        demoMonitorJob = null
+        cloudMonitorJob?.cancel()
+        cloudMonitorJob = null
+        monitoredCloudSerial = null
+        lanPrintMonitor.shutdown()
+        lanPrintMonitorCc1.shutdown()
+        lanPrintMonitorMoonraker.shutdown()
+        _printStatus.value = null
+    }
+
+    /** Persist enough to rebuild the monitor screen after the app process dies. */
+    private fun persistPrintSession(sp: ConnectedPrinter) {
+        val lp = sp.lanPrinter ?: _selectedLanPrinter.value
+        val protocol = lp?.protocol ?: world.yemyat.slicepilot.cloud.PrinterProtocol.fromString(null, sp.model)
+        val port = lp?.port ?: protocol.defaultPort
+        prefs
+            .edit()
+            .putBoolean("print_session_active", true)
+            .putString("print_session_type", if (sp.isLocal) "lan" else "cloud")
+            .putString("print_session_name", sp.name)
+            .putString("print_session_model", sp.model)
+            .putString("print_session_ip", sp.ip ?: lp?.ip ?: "")
+            .putString("print_session_serial", sp.serial ?: lp?.serial ?: "")
+            .putString("print_session_protocol", protocol.name)
+            .putInt("print_session_port", port)
+            .putString("print_session_cloud_id", sp.cloudPrinter?.id ?: sp.id)
+            .apply()
+    }
+
+    /**
+     * Open the print monitor screen — tap target of the print notification. In a fresh process
+     * (app swiped away, notification tapped) the session is rebuilt from persisted prefs.
+     */
+    fun openPrintMonitor() {
+        stopCamera()
+        if (_screen.value == Screen.Printing) return
+        if (_printStatus.value != null) {
+            val sp = selectedPrinter ?: return
+            _printSim.update { it.copy(progress = 1f, complete = true, message = "Print started on ${sp.name}") }
+            _screen.value = Screen.Printing
+            return
+        }
+        viewModelScope.launch {
+            // The restore selects the printer; keep the print-screen entry state in sync.
+            if (restorePrintSession(switchScreen = true)) Unit
+        }
+    }
+
+    /**
+     * Rebuild the print monitor from the persisted print session (notification tap,
+     * or app launch while the printer is printing — the latter with [switchScreen]
+     * false, so the home banner can show live status without hijacking navigation).
+     * Returns true when a monitor is live for the session.
+     */
+    private suspend fun restorePrintSession(switchScreen: Boolean): Boolean {
+        if (_demoMode.value || !prefs.getBoolean("print_session_active", false)) return false
+        if (printMonitorActive && _printStatus.value != null) return true
+        val name = prefs.getString("print_session_name", "Centauri Carbon 2").orEmpty()
+        if (prefs.getString("print_session_type", "lan") == "cloud") {
+            val cloudId = prefs.getString("print_session_cloud_id", "").orEmpty()
+            if (_printers.value.isEmpty()) refreshPrinters()
+            val cp =
+                _printers.value.firstOrNull { it.id == cloudId }
+                    ?: _printers.value.firstOrNull { it.name == name }
+                    ?: return false
+            val sp = cp.toConnectedPrinter()
+            _selectedPrinter.value = sp
+            _printSim.update { it.copy(progress = 1f, complete = true, message = "Print started on ${sp.name}") }
+            if (switchScreen) _screen.value = Screen.Printing
+            printMonitorActive = true
+            printNotificationTracker.begin(justStarted = false, nowMs = android.os.SystemClock.elapsedRealtime())
+            startCloudPrintMonitoring(sp)
+        } else {
+            val sessionModel = prefs.getString("print_session_model", "Centauri Carbon 2").orEmpty()
+            val sessionProto =
+                world.yemyat.slicepilot.cloud.PrinterProtocol.fromString(
+                    prefs.getString("print_session_protocol", null),
+                    sessionModel,
+                )
+            val sessionPort = prefs.getInt("print_session_port", sessionProto.defaultPort)
+            val lp =
+                world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter(
+                    ip = prefs.getString("print_session_ip", "").orEmpty(),
+                    serial = prefs.getString("print_session_serial", "").orEmpty(),
+                    model = sessionModel,
+                    name = name.ifBlank { "Centauri Carbon 2" },
+                    lanMode = true,
+                    protocol = sessionProto,
+                    port = sessionPort,
+                )
+            if (lp.ip.isBlank() && lp.serial.isBlank()) return false
+            val sp = lp.toConnectedPrinter()
+            _selectedLanPrinter.value = lp
+            _selectedPrinter.value = sp
+            _printSim.update { it.copy(progress = 1f, complete = true, message = "Print started on ${sp.name}") }
+            if (switchScreen) _screen.value = Screen.Printing
+            printMonitorActive = true
+            printNotificationTracker.begin(justStarted = false, nowMs = android.os.SystemClock.elapsedRealtime())
+            startPrintMonitoring(sp, storedAccessCode(lp))
+        }
+        return true
+    }
+
+    /**
+     * The old full-screen device status page. The Printer tab shows the same thing
+     * inline now, so this route is what the print flow and the launch deep link open.
+     */
+    fun openDeviceStatus() {
+        if (selectedPrinter == null) return
+        _screen.value = Screen.DeviceStatus
+        watchSelectedPrinter()
+    }
+
+    /**
+     * Start (or reuse) the selected printer's status monitor and arm its camera without
+     * changing the screen. The Printer tab calls this while it is on screen — that is
+     * how the dashboard gets live temps with no extra tap — and it is the single owner
+     * of the printer's one camera stream, which is also why the camera no longer needs
+     * its own page: two screens competing for one stream is what made the preview look
+     * like a separate feature.
+     *
+     * Local printers: preview the camera by default once the monitor goes live.
+     */
+    fun watchSelectedPrinter() {
+        val sp = selectedPrinter ?: return
+        autoCameraPending = !_demoMode.value
+        val monitorRunning =
+            if (_demoMode.value) {
+                _printStatus.value != null
+            } else if (sp.isLocal) {
+                printMonitorJob?.isActive == true && _printStatus.value != null
+            } else {
+                val serial = sp.cloudPrinter?.id ?: sp.id
+                cloudMonitorJob?.isActive == true && monitoredCloudSerial == serial && _printStatus.value != null
+            }
+        if (monitorRunning) {
+            // Monitor already live (kept alive from a previous open): the status flow
+            // emits nothing new, so start the camera right here.
+            if (autoCameraPending && _printStatus.value?.live == true && !_cameraOn.value) {
+                autoCameraPending = false
+                startCamera()
+            }
+            return
+        }
+        if (_demoMode.value) {
+            // A finished/stopped demo print must not resurrect as a fresh simulation
+            // (progress restarting at 0 looked like the print restarting). The session
+            // flag is set on print start and cleared on terminal states, so an ended
+            // print lands on the idle device status instead.
+            if (printMonitorActive) return
+            if (prefs.getBoolean("print_session_active", false)) {
+                startDemoMonitor()
+            } else {
+                _printStatus.value =
+                    world.yemyat.slicepilot.cloud.PrintStatus(
+                        state = world.yemyat.slicepilot.cloud.PrintJobState.IDLE,
+                        live = true,
+                    )
+            }
+            return
+        }
+        viewModelScope.launch {
+            if (sp.isLocal) {
+                val lp = sp.lanPrinter ?: _selectedLanPrinter.value
+                startPrintMonitoring(sp, lp?.let { storedAccessCode(it) }.orEmpty())
+            } else {
+                startCloudPrintMonitoring(sp)
+            }
+        }
+    }
+
+    fun closeDeviceStatus() {
+        _screen.value = Screen.Home
+        autoCameraPending = false
+        stopCamera()
+        // Keep the monitor alive after browsing (reopening reuses it: the CC2 broker
+        // runs out of client slots when connections are churned, "too many clients").
+        // Idle monitoring stops when the app is backgrounded; a print's monitor keeps
+        // going for the notification.
+        if (_demoMode.value && !printMonitorActive) stopPrintMonitoring()
+    }
+
+    /** App backgrounded: pause camera and drop idle monitoring (active prints stay live). */
+    fun onAppBackgrounded() {
+        autoCameraPending = false
+        stopCamera()
+        val activelyPrinting =
+            printMonitorActive ||
+                (_printStatus.value?.live == true && _printStatus.value?.state?.isInProgress == true)
+        if (!activelyPrinting) stopPrintMonitoring()
+    }
+
+    /**
+     * App foregrounded: re-establish the print status (and camera if currently viewing the
+     * Printer / DeviceStatus / Printing screen) without churning an already-live monitor.
+     */
+    fun onAppForegrounded() {
+        if (_demoMode.value) return
+        val onLiveScreen =
+            _screen.value == Screen.Printer ||
+                _screen.value == Screen.DeviceStatus ||
+                _screen.value == Screen.Printing ||
+                _screen.value == Screen.CameraFull
+        if (onLiveScreen && selectedPrinter != null) {
+            watchSelectedPrinter()
+            return
+        }
+        if (printMonitorActive) return
+        viewModelScope.launch {
+            if (prefs.getBoolean("print_session_active", false)) {
+                restorePrintSession(switchScreen = false)
+            } else {
+                probeSelectedPrinterStatus()
+            }
+        }
+    }
+
+    /** Method 1028: manual nozzle target (°C; 0 = heater off). */
+    fun setNozzleTarget(tempC: Int) = setPrinterTemperature(extruder = tempC, bed = null)
+
+    /** Method 1028: manual bed target (°C; 0 = heater off). */
+    fun setBedTarget(tempC: Int) = setPrinterTemperature(extruder = null, bed = tempC)
+
+    private fun setPrinterTemperature(
+        extruder: Int?,
+        bed: Int?,
+    ) {
+        val sp = selectedPrinter ?: return
+        _printStatus.update { cur ->
+            cur?.copy(
+                nozzleTarget = extruder?.toFloat() ?: cur.nozzleTarget,
+                bedTarget = bed?.toFloat() ?: cur.bedTarget,
+            )
+        }
+        EventNotifier.trackEvent(
+            "printer_temp_set",
+            mapOf("printer" to sp.name, "extruder" to (extruder ?: -1), "bed" to (bed ?: -1)),
+        )
+        if (_demoMode.value) return
+        if (sp.isLocal) {
+            activeLanMonitor.setTemperature(extruder, bed)
+        } else {
+            val cp = sp.cloudPrinter ?: _printers.value.firstOrNull { it.id == sp.id } ?: return
+            val params = org.json.JSONObject()
+            extruder?.let { params.put("extruder", it) }
+            bed?.let { params.put("heater_bed", it) }
+            viewModelScope.launch {
+                val r = cloudPrint.control(cp, 1028, params)
+                if (r is CloudResult.Err) {
+                    android.util.Log.w("AppViewModel", "set temp failed: ${r.message}")
+                }
+            }
+        }
+    }
+
+    /** Method 1030: part ("model") cooling fan, 0-100 % (mapped to the CC2 0-255 PWM scale). */
+    fun setFanSpeed(percent: Int) = setFanSpeed("fan", percent)
+
+    /** Method 1030: aux (chamber circulation) fan, 0-100 %. */
+    fun setAuxFanSpeed(percent: Int) = setFanSpeed("aux_fan", percent)
+
+    @Volatile private var pendingLightState: Boolean? = null
+    @Volatile private var pendingLightUntilMs: Long = 0L
+    private var lightCommandJob: Job? = null
+
+    /**
+     * Keep a newly-toggled case light state from flipping back when a stale 5s cloud poll
+     * or partial status frame (missing `led`) arrives before the printer reports the change.
+     */
+    private fun applyLightHold(
+        prev: world.yemyat.slicepilot.cloud.PrintStatus?,
+        incoming: world.yemyat.slicepilot.cloud.PrintStatus,
+    ): world.yemyat.slicepilot.cloud.PrintStatus {
+        val pending = pendingLightState
+        if (pending != null) {
+            if (incoming.lightOn == pending) {
+                pendingLightState = null
+                return incoming
+            }
+            if (android.os.SystemClock.elapsedRealtime() < pendingLightUntilMs) {
+                return incoming.copy(lightOn = pending)
+            }
+            pendingLightState = null
+        }
+        return if (incoming.lightOn == null && prev?.lightOn != null) {
+            incoming.copy(lightOn = prev.lightOn)
+        } else {
+            incoming
+        }
+    }
+
+    /** Method 1029 SET_LIGHT: case light on/off (Matrix `lightSwitch`, `{"power": n}`). */
+    fun setCaseLight(on: Boolean) {
+        val sp = selectedPrinter ?: return
+        pendingLightState = on
+        pendingLightUntilMs = android.os.SystemClock.elapsedRealtime() + 12_000L
+        _printStatus.update { it?.copy(lightOn = on) }
+        EventNotifier.trackEvent("printer_light_set", mapOf("printer" to sp.name, "on" to on))
+        if (_demoMode.value) return
+        if (sp.isLocal) {
+            activeLanMonitor.setLight(on)
+        } else {
+            val cp = sp.cloudPrinter ?: _printers.value.firstOrNull { it.id == sp.id } ?: return
+            lightCommandJob?.cancel()
+            lightCommandJob =
+                viewModelScope.launch {
+                    var lastErr: String? = null
+                    repeat(2) { attempt ->
+                        if (attempt > 0) delay(1_500)
+                        val r =
+                            cloudPrint.control(
+                                cp,
+                                1029,
+                                org.json.JSONObject()
+                                    .put("power", if (on) 1 else 0)
+                                    .put("brightness", if (on) 255 else 0),
+                            )
+                        if (r is CloudResult.Ok) {
+                            lastErr = null
+                            return@launch
+                        }
+                        lastErr = (r as CloudResult.Err).message
+                        android.util.Log.w("AppViewModel", "set light attempt ${attempt + 1} failed: $lastErr")
+                    }
+                    if (lastErr != null) {
+                        pendingLightState = null
+                        _printStatus.update { it?.copy(lightOn = !on) }
+                        _cloudMessage.value = "Couldn't set printer light: $lastErr"
+                    }
+                }
+        }
+    }
+
+    private var cameraJob: Job? = null
+
+    /** Deferred 1042 disable, cancelled when the camera is re-opened quickly. */
+    private var cameraOffJob: Job? = null
+    private var cloudCameraHeartbeatJob: Job? = null
+    private var cloudCameraRtcUid: Int? = null
+
+    /** Bumped on every start/stop so cancelled camera loops can't reconnect over a new one. */
+    private var cameraGen = 0
+    private var autoCameraPending = false
+    private val cloudRtc by lazy {
+        world.yemyat.slicepilot.cloud
+            .CloudRtcCamera(context)
+    }
+    private val _cameraSurface = MutableStateFlow<android.view.TextureView?>(null)
+    val cameraSurface = _cameraSurface.asStateFlow()
+    private val _cameraVideoReady = MutableStateFlow(false)
+    val cameraVideoReady = _cameraVideoReady.asStateFlow()
+    private val _cameraOn = MutableStateFlow(false)
+    val cameraOn = _cameraOn.asStateFlow()
+    private val _cameraFrame = MutableStateFlow<android.graphics.Bitmap?>(null)
+    val cameraFrame = _cameraFrame.asStateFlow()
+
+    /**
+     * A photo taken with the printer camera: the app's own copy plus, once it is
+     * saved, the system gallery's copy. Keeping both means the app can always show,
+     * share and re-save the picture, and a release never strands photos its
+     * predecessor published (MediaStore on Android 10+, a shared file on 9).
+     */
+    data class CameraPhoto(
+        val name: String,
+        val takenAt: Long,
+        val file: File? = null,
+        val galleryUri: String? = null,
+        val bitmap: android.graphics.Bitmap? = null,
+    ) {
+        /** Where the picture lives outside the app, shown under the photo. */
+        val savedTo: String? get() = galleryUri?.let { if (it.startsWith("content://")) "Pictures/SlicePilot/$name" else it }
+
+        /** Whether the picture is still there. */
+        fun exists(): Boolean = file?.exists() == true || galleryUri != null
+    }
+
+    private val _photos = MutableStateFlow<List<CameraPhoto>>(emptyList())
+    val photos: StateFlow<List<CameraPhoto>> = _photos.asStateFlow()
+
+    private val _libraryTab = MutableStateFlow(LibraryTab.MODELS)
+    val libraryTab = _libraryTab.asStateFlow()
+
+    /**
+     * Pictures live in the Files tab, so "open the gallery" means switching that tab
+     * to its Photos shelf — there is no separate Photos screen to come back from.
+     */
+    fun openPhotos() = selectLibraryTab(LibraryTab.PHOTOS)
+
+    fun selectLibraryTab(tab: LibraryTab) {
+        if (tab == LibraryTab.PHOTOS) refreshPhotos()
+        _libraryTab.value = tab
+        _screen.value = Screen.Library
+    }
+
+    /**
+     * Re-open an archived g-code from Files: its preview, and from there the print it can
+     * start. The model is only re-attached when nothing is loaded — a past slice must not
+     * silently replace the model the user is working on - and back returns to the shelf, since
+     * this g-code was opened on its own and the print setup a fresh slice would go back to has
+     * no model in it.
+     */
+    fun openGcodeFromHistory(entry: GcodeHistoryEntry): Boolean =
+        openPreviewFromPaths(
+            entry.gcodePath,
+            if (modelPath == null) entry.modelPath else null,
+            returnTo = Screen.Library,
+        )
+
+    /** Take an archived g-code off the Files shelf and delete its file. */
+    fun deleteGcodeFromHistory(entry: GcodeHistoryEntry) {
+        gcodeHistory.remove(entry.id)
+        if (gcodePath == entry.gcodePath) {
+            gcodePath = null
+            _gcodePreview.value = null
+            _gcodeStats.value = null
+        }
+        EventNotifier.trackEvent("gcode_history_deleted", mapOf("model" to entry.modelName))
+    }
+
+    /**
+     * Load the gallery, newest first. The app's own folder is the source of truth;
+     * each file is paired with the copy the system has (MediaStore on Android 10+,
+     * the uri recorded on 9), and saved shots without an app copy are listed too.
+     */
+    fun refreshPhotos() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val known = _photos.value
+            val saved = savedPhotos()
+            val files = photoDir().listFiles()?.filter { it.isFile && it.name.endsWith(".jpg") }.orEmpty()
+            val fromFiles =
+                files.map { f ->
+                    saved.firstOrNull { it.name == f.name }?.copy(file = f)
+                        ?: known.firstOrNull { it.name == f.name }?.copy(file = f)
+                        ?: CameraPhoto(f.name, f.lastModified(), f)
+                }
+            val orphans = saved.filter { s -> files.none { it.name == s.name } }
+            _photos.value =
+                (
+                    fromFiles + known.filter { it.file == null && files.none { f -> f.name == it.name } } +
+                        orphans.filter { o -> known.none { it.name == o.name } }
+                ).filter { it.exists() }
+                    .sortedByDescending { it.takenAt }
+        }
+    }
+
+    /**
+     * Saved copies the system knows about: MediaStore's own rows on Android 10+,
+     * merged with the uris the app recorded itself (the only record on Android 9).
+     */
+    private fun savedPhotos(): List<CameraPhoto> {
+        val recorded =
+            savedGalleryUris().map { (name, uri) ->
+                CameraPhoto(name, fileFromUri(uri)?.lastModified() ?: 0L, fileFromUri(uri), uri)
+            }
+        val fromMediaStore =
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                queryStoredPhotos()
+            } else {
+                emptyList()
+            }
+        return fromMediaStore + recorded.filter { r -> fromMediaStore.none { it.name == r.name } }
+    }
+
+    /** name → gallery uri for every photo the app has saved, kept in prefs. */
+    private fun savedGalleryUris(): Map<String, String> {
+        val raw = prefs.getString("photo_gallery_uris", null) ?: return emptyMap()
+        return try {
+            val json = org.json.JSONObject(raw)
+            json.keys().asSequence().associateWith { json.getString(it) }
+        } catch (e: Exception) {
+            emptyMap()
+        }
+    }
+
+    private fun rememberSavedGalleryUri(
+        name: String,
+        uri: String,
+    ) = writeSavedGalleryUris(savedGalleryUris() + (name to uri))
+
+    private fun forgetSavedGalleryUri(name: String) = writeSavedGalleryUris(savedGalleryUris() - name)
+
+    private fun writeSavedGalleryUris(uris: Map<String, String>) {
+        prefs.edit().putString("photo_gallery_uris", org.json.JSONObject(uris).toString()).apply()
+    }
+
+    /** The file behind a `file://` uri (Android 9 saves), or null for a content uri. */
+    private fun fileFromUri(uri: String): File? =
+        if (uri.startsWith("file://")) {
+            File(
+                android.net.Uri
+                    .parse(uri)
+                    .path ?: "",
+            )
+        } else {
+            null
+        }
+
+    /** The app's photos as MediaStore sees them under `Pictures/SlicePilot`. */
+    private fun queryStoredPhotos(): List<CameraPhoto> {
+        val images = android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        val rows = mutableListOf<CameraPhoto>()
+        context.contentResolver
+            .query(
+                images,
+                arrayOf(
+                    android.provider.MediaStore.Images.Media._ID,
+                    android.provider.MediaStore.Images.Media.DISPLAY_NAME,
+                    android.provider.MediaStore.Images.Media.DATE_ADDED,
+                ),
+                "${android.provider.MediaStore.Images.Media.RELATIVE_PATH} LIKE ?",
+                arrayOf("Pictures/SlicePilot%"),
+                "${android.provider.MediaStore.Images.Media.DATE_ADDED} DESC",
+            )?.use { c ->
+                val idCol = c.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media._ID)
+                val nameCol = c.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.DISPLAY_NAME)
+                val dateCol = c.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.DATE_ADDED)
+                while (c.moveToNext()) {
+                    rows +=
+                        CameraPhoto(
+                            name = c.getString(nameCol) ?: "photo.jpg",
+                            takenAt = c.getLong(dateCol) * 1000L,
+                            galleryUri = "$images/${c.getLong(idCol)}",
+                        )
+                }
+            }
+        return rows
+    }
+
+    /** Remove a photo: the app's copy and, when it was saved, the gallery entry. */
+    fun deletePhoto(photo: CameraPhoto) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val gone =
+                try {
+                    val appCopy = photo.file?.delete() ?: true
+                    val gallery =
+                        photo.galleryUri?.let {
+                            context.contentResolver.delete(android.net.Uri.parse(it), null, null) > 0
+                        } ?: true
+                    appCopy && gallery
+                } catch (e: Exception) {
+                    android.util.Log.w("AppViewModel", "Could not delete ${photo.name}", e)
+                    false
+                }
+            if (gone) {
+                forgetSavedGalleryUri(photo.name)
+                _photos.value = _photos.value.filterNot { it.name == photo.name }
+                EventNotifier.trackEvent("camera_photo_deleted", mapOf("name" to photo.name))
+            }
+        }
+    }
+
+    /**
+     * Decode [photo] small enough for its slot — the app's file, subsampled, or
+     * MediaStore's own thumbnail when only the gallery copy exists.
+     */
+    fun loadPhotoBitmap(
+        photo: CameraPhoto,
+        maxPx: Int,
+    ): android.graphics.Bitmap? {
+        photo.bitmap?.let { return it }
+        return try {
+            photo.file?.let { return decodePhotoFile(it, maxPx) }
+            val uri = photo.galleryUri ?: return null
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                context.contentResolver.loadThumbnail(
+                    android.net.Uri.parse(uri),
+                    android.util.Size(maxPx, maxPx),
+                    null,
+                )
+            } else {
+                context.contentResolver.openInputStream(android.net.Uri.parse(uri))?.use {
+                    android.graphics.BitmapFactory.decodeStream(it)
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("AppViewModel", "Could not decode ${photo.name}", e)
+            null
+        }
+    }
+
+    /** Decode a JPEG at or below [maxPx] on its longest edge instead of full size. */
+    private fun decodePhotoFile(
+        file: File,
+        maxPx: Int,
+    ): android.graphics.Bitmap? {
+        val bounds =
+            android.graphics.BitmapFactory
+                .Options()
+                .apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(file.absolutePath, bounds)
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxPx) sample *= 2
+        return android.graphics.BitmapFactory.decodeFile(
+            file.absolutePath,
+            android.graphics.BitmapFactory
+                .Options()
+                .apply { inSampleSize = sample },
+        )
+    }
+
+    /**
+     * Take a photo with the printer camera. The CC2 has no capture command — the
+     * camera only streams (1042 switches it on, port 8080 serves the MJPEG feed)
+     * — so this saves the picture that is already on screen: the newest streamed
+     * frame for a local printer, a PixelCopy of the Agora surface for a cloud
+     * one. The JPEG goes to `Pictures/SlicePilot`; nothing is uploaded.
+     */
+    fun captureCameraPhoto(onDone: (CameraPhoto?) -> Unit) {
+        if (_demoMode.value) {
+            onDone(null)
+            return
+        }
+        val frame = _cameraFrame.value
+        if (frame != null) {
+            viewModelScope.launch(Dispatchers.IO) { onDone(writeCameraPhoto(frame)) }
+            return
+        }
+        // Cloud printers render into a TextureView, which hands back its current frame directly.
+        val surface = _cameraSurface.value
+        val shot = surface?.takeIf { it.isAvailable && it.width > 0 && it.height > 0 }?.bitmap
+        if (shot == null) {
+            onDone(null)
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) { onDone(writeCameraPhoto(shot)) }
+    }
+
+    /**
+     * Write [bitmap] into the app's photo folder, hand it to [publishToGallery] so
+     * a capture is never trapped in app storage, and add it to the gallery.
+     */
+    private fun writeCameraPhoto(bitmap: android.graphics.Bitmap): CameraPhoto? {
+        val takenAt = System.currentTimeMillis()
+        return try {
+            val file = File(photoDir().apply { mkdirs() }, uniquePhotoName(takenAt))
+            file.outputStream().use { out ->
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out)
+            }
+            val uri = publishToGallery(file, file.name, takenAt)
+            if (uri != null) rememberSavedGalleryUri(file.name, uri)
+            val photo = CameraPhoto(file.name, takenAt, file, uri, bitmap)
+            EventNotifier.trackEvent(
+                "camera_photo_captured",
+                mapOf("name" to file.name, "saved_to_gallery" to (uri != null)),
+            )
+            _photos.value =
+                (listOf(photo) + _photos.value.filterNot { it.name == file.name })
+                    .sortedByDescending { it.takenAt }
+            photo
+        } catch (e: Exception) {
+            android.util.Log.e("AppViewModel", "Camera photo failed", e)
+            EventNotifier.trackError("camera_photo_failed", e)
+            null
+        }
+    }
+
+    /** `SlicePilot_20261023_003139.jpg`, with a counter when two land in one second. */
+    private fun uniquePhotoName(takenAt: Long): String {
+        val stem =
+            "SlicePilot_" +
+                java.text
+                    .SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+                    .format(java.util.Date(takenAt))
+        var name = "$stem.jpg"
+        var n = 1
+        while (File(photoDir(), name).exists() || savedGalleryUris().containsKey(name)) {
+            name = "$stem-${n++}.jpg"
+        }
+        return name
+    }
+
+    /**
+     * Put the picture in the system gallery — a MediaStore row under
+     * Pictures/SlicePilot on Android 10+, or a copy in the shared Pictures folder
+     * on 9 (where the manifest still holds WRITE_EXTERNAL_STORAGE) plus a media
+     * scan — and return its uri, or null when storage refused it.
+     */
+    private fun publishToGallery(file: File): String? = publishToGallery(file, file.name, file.lastModified())
+
+    private fun publishToGallery(
+        file: File,
+        name: String,
+        takenAt: Long,
+    ): String? {
+        return try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                val target =
+                    context.contentResolver.insert(
+                        android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        android.content.ContentValues().apply {
+                            put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, name)
+                            put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                            put(android.provider.MediaStore.Images.Media.DATE_TAKEN, takenAt)
+                            put(
+                                android.provider.MediaStore.Images.Media.RELATIVE_PATH,
+                                "Pictures/SlicePilot",
+                            )
+                        },
+                    ) ?: return null
+                context.contentResolver.openOutputStream(target)?.use { out ->
+                    file.inputStream().copyTo(out)
+                } ?: return null
+                target.toString()
+            } else {
+                val dir =
+                    File(
+                        android.os.Environment.getExternalStoragePublicDirectory(
+                            android.os.Environment.DIRECTORY_PICTURES,
+                        ),
+                        "SlicePilot",
+                    )
+                dir.mkdirs()
+                val public = File(dir, name)
+                file.copyTo(public, overwrite = true)
+                android.media.MediaScannerConnection.scanFile(
+                    context,
+                    arrayOf(public.absolutePath),
+                    arrayOf("image/jpeg"),
+                    null,
+                )
+                android.net.Uri
+                    .fromFile(public)
+                    .toString()
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("AppViewModel", "Could not save $name to the gallery", e)
+            null
+        }
+    }
+
+    /**
+     * The Save button: put a photo the app only holds internally into the system
+     * gallery and remember where it went.
+     */
+    fun savePhotoToGallery(
+        photo: CameraPhoto,
+        onDone: (String?) -> Unit,
+    ) {
+        val file = photo.file
+        if (file == null || photo.galleryUri != null) {
+            onDone(photo.galleryUri)
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val uri = publishToGallery(file)
+            if (uri != null) {
+                rememberSavedGalleryUri(photo.name, uri)
+                _photos.update { list -> list.map { if (it.name == photo.name) it.copy(galleryUri = uri) else it } }
+                EventNotifier.trackEvent("camera_photo_saved", mapOf("name" to photo.name))
+            }
+            onDone(uri)
+        }
+    }
+
+    /**
+     * The Share button: hand the picture to another app. The gallery copy is
+     * preferred (any app can read it); otherwise the app's own file goes out
+     * through its FileProvider.
+     */
+    fun sharePhoto(photo: CameraPhoto): Boolean {
+        val uri =
+            try {
+                photo.galleryUri?.let { android.net.Uri.parse(it) }
+                    ?: photo.file?.let {
+                        androidx.core.content.FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            it,
+                        )
+                    }
+            } catch (e: Exception) {
+                android.util.Log.w("AppViewModel", "Could not share ${photo.name}", e)
+                null
+            } ?: return false
+        val send =
+            android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                type = "image/jpeg"
+                putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        return try {
+            context.startActivity(android.content.Intent.createChooser(send, photo.name))
+            EventNotifier.trackEvent("camera_photo_shared", mapOf("name" to photo.name))
+            true
+        } catch (e: Exception) {
+            android.util.Log.w("AppViewModel", "Could not open the share sheet", e)
+            false
+        }
+    }
+
+    /** The app's `Pictures/SlicePilot` folder — the photo store on Android 9. */
+    private fun photoDir(): File = File(context.getExternalFilesDir(android.os.Environment.DIRECTORY_PICTURES), "SlicePilot")
+
+    /**
+     * Camera preview for local printers: method 1042 enables the camera, the MJPEG stream
+     * comes from `http://ip:8080`. The printer allows one stream connection, so the
+     * preview stops when the device-status screen closes.
+     */
+    fun toggleCamera() {
+        if (_cameraOn.value) stopCamera() else startCamera()
+    }
+
+    private val _cameraError = MutableStateFlow<String?>(null)
+    val cameraError: StateFlow<String?> = _cameraError.asStateFlow()
+
+    fun startCamera() {
+        val sp = selectedPrinter ?: return
+        if (_cameraOn.value || _demoMode.value) return
+        val ip = sp.ip ?: sp.lanPrinter?.ip
+        if (sp.isLocal) {
+            if (ip.isNullOrBlank()) return
+            _cameraError.value = null
+            _cameraOn.value = true
+            val protocol =
+                sp.lanPrinter?.protocol
+                    ?: world.yemyat.slicepilot.cloud.PrinterProtocol.fromString(null, sp.model)
+            EventNotifier.trackEvent(
+                "printer_camera_on",
+                mapOf(
+                    "printer" to sp.name,
+                    "model" to sp.model,
+                    "transport" to "lan",
+                    "protocol" to protocol.name,
+                ),
+            )
+            val monitor = activeLanMonitor
+            cameraOffJob?.cancel() // quick OFF/ON: keep the camera armed, don't cycle it
+            if (monitor.cameraNeedsArm) monitor.setCamera(true)
+            cameraJob?.cancel()
+            val gen = ++cameraGen
+            cameraJob =
+                viewModelScope.launch {
+                    val sessionStartedAt = System.currentTimeMillis()
+                    // The printer's camera + streaming pipeline needs a few seconds after
+                    // the 1042 enable; connecting too early gets the stream yanked.
+                    delay(monitor.cameraWarmupMs)
+                    var attempt = 0
+                    var totalAttempts = 0
+                    var totalFrames = 0
+                    var totalDecodeFailures = 0
+                    var totalBytes = 0L
+                    var reportedFirstFrame = false
+                    var lastOutcome: world.yemyat.slicepilot.cloud.CameraStream.StreamOutcome? = null
+                    var lastUrl = ""
+
+                    while (isActive && gen == cameraGen && _cameraOn.value) {
+                        val startedAt = System.currentTimeMillis()
+                        val url = monitor.cameraStreamUrl(ip)
+                        lastUrl = url
+                        totalAttempts++
+                        var attemptOutcome: world.yemyat.slicepilot.cloud.CameraStream.StreamOutcome? = null
+                        world.yemyat.slicepilot.cloud.CameraStream
+                            .frames(url) { attemptOutcome = it }
+                            .collect { frame ->
+                                _cameraFrame.value = frame
+                                totalFrames++
+                                if (!reportedFirstFrame) {
+                                    reportedFirstFrame = true
+                                    EventNotifier.trackEvent(
+                                        "camera_first_frame",
+                                        buildMap {
+                                            put("protocol", protocol.name)
+                                            put("model", sp.model)
+                                            put("endpoint", world.yemyat.slicepilot.cloud.CameraStream.sanitizeEndpoint(url))
+                                            put("first_frame_ms", System.currentTimeMillis() - sessionStartedAt)
+                                            put("attempts", totalAttempts)
+                                            putAll(monitor.cameraDiagnostics())
+                                        },
+                                    )
+                                }
+                            }
+                        attemptOutcome?.let { out ->
+                            lastOutcome = out
+                            totalDecodeFailures += out.decodeFailures
+                            totalBytes += out.bytesRead
+                        }
+                        if (!isActive || gen != cameraGen || !_cameraOn.value) break
+
+                        val reason = attemptOutcome?.reason
+                        // Don't burn all 5 retries on clearly permanent mismatches (e.g. HTML/WebRTC or 404).
+                        val maxAttempts =
+                            when {
+                                reason?.isLikelyPermanent == true -> 2
+                                reason == world.yemyat.slicepilot.cloud.CameraStream.StreamFailureReason.HTTP_ERROR &&
+                                    (attemptOutcome?.httpCode in listOf(401, 403, 404)) -> 2
+                                else -> 5
+                            }
+                        attempt = if (System.currentTimeMillis() - startedAt > 3000) 0 else attempt + 1
+                        if (attempt >= maxAttempts) break
+                        if (monitor.cameraNeedsArm && attempt % 2 == 0) monitor.setCamera(true)
+                        delay(minOf(2000L * attempt, 8000L))
+                    }
+
+                    // Stream gone for good: report structured diagnostics to Crashlytics/analytics.
+                    if (gen == cameraGen && _cameraOn.value) {
+                        val out = lastOutcome
+                        val errorName = if (totalFrames > 0) "camera_stream_dropped" else "camera_stream_failed"
+                        val props =
+                            buildMap<String, Any?> {
+                                put("protocol", protocol.name)
+                                put("model", sp.model)
+                                put("reason", out?.reason?.name ?: "UNKNOWN")
+                                put("http_code", out?.httpCode ?: -1)
+                                put("content_type", out?.contentType.orEmpty())
+                                put("endpoint", world.yemyat.slicepilot.cloud.CameraStream.sanitizeEndpoint(lastUrl))
+                                put("frames_decoded", totalFrames)
+                                put("decode_failures", totalDecodeFailures)
+                                put("bytes_read", totalBytes)
+                                put("attempts", totalAttempts)
+                                put("duration_ms", System.currentTimeMillis() - sessionStartedAt)
+                                put("message", out?.errorMessage.orEmpty().take(200))
+                                putAll(monitor.cameraDiagnostics())
+                            }
+                        EventNotifier.trackError(errorName, out?.throwable, props)
+                        _cameraError.value =
+                            when (out?.reason) {
+                                world.yemyat.slicepilot.cloud.CameraStream.StreamFailureReason.UNEXPECTED_CONTENT_TYPE ->
+                                    "Camera stream format unsupported (${out.contentType ?: "not MJPEG"})"
+                                world.yemyat.slicepilot.cloud.CameraStream.StreamFailureReason.HTTP_ERROR ->
+                                    "Camera stream unavailable (HTTP ${out.httpCode ?: "error"})"
+                                world.yemyat.slicepilot.cloud.CameraStream.StreamFailureReason.CONNECTION_REFUSED ->
+                                    "Camera service isn't reachable on the printer"
+                                else ->
+                                    if (totalFrames > 0) "Camera stream disconnected" else "Couldn't load camera stream"
+                            }
+                        stopCamera(preserveError = true)
+                    }
+                }
+        } else {
+            _cameraError.value = null
+            startCloudCamera(sp)
+        }
+    }
+
+    /** Cloud camera: Agora RTC video (same project as RTM), RTM 1054 start/heartbeat handshake. */
+    private fun startCloudCamera(sp: ConnectedPrinter) {
+        val cp = sp.cloudPrinter ?: _printers.value.firstOrNull { it.id == sp.id } ?: return
+        _cameraOn.value = true
+        EventNotifier.trackEvent("printer_camera_on", mapOf("printer" to sp.name, "transport" to "cloud"))
+        cameraJob?.cancel()
+        val gen = ++cameraGen
+        cameraJob =
+            viewModelScope.launch {
+                val credResult = cloud.getAgoraCredential()
+                val cred = (credResult as? CloudResult.Ok)?.value
+                if (!isActive || gen != cameraGen || !_cameraOn.value) return@launch
+                val rtcToken = cred?.rtcToken
+                val rtcUid = cred?.rtcUserId
+                if (cred == null || rtcToken.isNullOrBlank() || rtcUid == null) {
+                    val errMsg =
+                        (credResult as? CloudResult.Err)?.message
+                            ?: "missing rtc credentials"
+                    android.util.Log.w("AppViewModel", "cloud camera: $errMsg")
+                    EventNotifier.trackError(
+                        "camera_start_failed",
+                        null,
+                        mapOf("printer" to sp.name, "message" to errMsg),
+                    )
+                    _cloudMessage.value = "Couldn't start printer camera — try again"
+                    _cameraOn.value = false
+                    return@launch
+                }
+                // Matrix RtcHelper (CC2): device-rpc/direct prepare → RTC join →
+                // RTM method 1054 {action:"start"} → 30 s {action:"heartbeat"} loop.
+                // `app_rtc_connect` is only an analytics event name; the printer
+                // daemon answers unknown 1054 actions with error_code 1003.
+                val prepare = cloud.deviceRpcPrepare(cp.id)
+                android.util.Log.i("CloudRtc", "device-rpc prepare: $prepare")
+                if (!isActive || gen != cameraGen || !_cameraOn.value) return@launch
+                val surface = android.view.TextureView(context)
+                // Mount the TextureView BEFORE starting Agora so its SurfaceTexture is ready
+                // as soon as the printer joins and sends its first keyframe.
+                _cameraVideoReady.value = false
+                _cameraSurface.value = surface
+                cloudCameraRtcUid = rtcUid
+
+                val ok =
+                    cloudRtc.start(
+                        appId = BuildConfig.AGORA_APP_ID,
+                        token = rtcToken,
+                        channel = cp.id,
+                        uid = rtcUid,
+                        view = surface,
+                        onFirstFrame = {
+                            if (gen == cameraGen) _cameraVideoReady.value = true
+                        },
+                    )
+                if (!ok || !isActive || gen != cameraGen || !_cameraOn.value) {
+                    cloudRtc.stop()
+                    if (gen == cameraGen) {
+                        _cameraSurface.value = null
+                        _cameraVideoReady.value = false
+                        _cameraOn.value = false
+                    }
+                    return@launch
+                }
+                val pub =
+                    cloudPrint.publishRaw(
+                        cp,
+                        org.json
+                            .JSONObject()
+                            .put("action", "start")
+                            .put("client_rtc_uid", rtcUid),
+                    )
+                android.util.Log.i("CloudRtc", "rtc start publish: $pub")
+                if (!isActive || gen != cameraGen || !_cameraOn.value) {
+                    cloudRtc.stop()
+                    return@launch
+                }
+                cloudCameraHeartbeatJob?.cancel()
+                cloudCameraHeartbeatJob =
+                    viewModelScope.launch {
+                        while (isActive && gen == cameraGen && _cameraOn.value) {
+                            delay(30_000)
+                            if (!isActive || gen != cameraGen || !_cameraOn.value) break
+                            cloudPrint.publishRaw(
+                                cp,
+                                org.json
+                                    .JSONObject()
+                                    .put("action", "heartbeat")
+                                    .put("client_rtc_uid", rtcUid),
+                            )
+                        }
+                    }
+            }
+    }
+
+    fun stopCamera(preserveError: Boolean = false) {
+        if (!preserveError) _cameraError.value = null
+        if (!_cameraOn.value) return
+        cameraGen++
+        _cameraOn.value = false
+        _cameraFrame.value = null
+        _cameraSurface.value = null
+        _cameraVideoReady.value = false
+        cameraJob?.cancel()
+        cameraJob = null
+        val sp = selectedPrinter
+        if (sp?.isLocal == true && activeLanMonitor.cameraNeedsArm) {
+            // Debounce the 1042 disable: a quick OFF/ON toggle must not cycle the
+            // printer's camera (the disable/enable churn wedges its stream server).
+            cameraOffJob?.cancel()
+            cameraOffJob =
+                viewModelScope.launch {
+                    delay(5000)
+                    if (!_cameraOn.value) activeLanMonitor.setCamera(false)
+                }
+        } else if (sp != null && !sp.isLocal) {
+            val cp = sp.cloudPrinter ?: _printers.value.firstOrNull { it.id == sp.id }
+            cloudCameraHeartbeatJob?.cancel()
+            cloudCameraHeartbeatJob = null
+            cloudRtc.stop()
+            if (cp != null) {
+                val uid = cloudCameraRtcUid
+                cloudCameraRtcUid = null
+                viewModelScope.launch {
+                    cloudPrint.publishRaw(
+                        cp,
+                        org.json
+                            .JSONObject()
+                            .put("action", "stop")
+                            .apply { uid?.let { put("client_rtc_uid", it) } },
+                    )
+                }
+            }
+        }
+    }
+
+    private fun setFanSpeed(
+        target: String,
+        percent: Int,
+    ) {
+        val sp = selectedPrinter ?: return
+        val speed = (percent.coerceIn(0, 100) * 255 / 100)
+        _printStatus.update { cur ->
+            cur?.let {
+                when (target) {
+                    "aux_fan" -> it.copy(auxFanSpeed = speed)
+                    else -> it.copy(partFanSpeed = speed)
+                }
+            }
+        }
+        EventNotifier.trackEvent("printer_fan_set", mapOf("printer" to sp.name, "fan" to target, "speed" to speed))
+        if (_demoMode.value) return
+        if (sp.isLocal) {
+            activeLanMonitor.setFanSpeed(target, speed)
+        } else {
+            val cp = sp.cloudPrinter ?: _printers.value.firstOrNull { it.id == sp.id } ?: return
+            viewModelScope.launch {
+                val r = cloudPrint.control(cp, 1030, org.json.JSONObject().put(target, speed))
+                if (r is CloudResult.Err) {
+                    android.util.Log.w("AppViewModel", "set fan failed: ${r.message}")
+                }
+            }
+        }
+    }
+
+    init {
+        // Mirror the live print status into the foreground-service notification; on a terminal
+        // state, replace it with a result notification and end the service.
+        viewModelScope.launch {
+            _printStatus.collect { st ->
+                if (!printMonitorActive || st == null) return@collect
+                val name = selectedPrinter?.name ?: "Printer"
+                val now = android.os.SystemClock.elapsedRealtime()
+                when (val action = printNotificationTracker.onStatus(name, st, now)) {
+                    world.yemyat.slicepilot.PrintNotificationTracker.Action.Ignore -> Unit
+                    world.yemyat.slicepilot.PrintNotificationTracker.Action.Update -> {
+                        PrintForegroundService.ensureSession()
+                        PrintForegroundService.notifyStatus(context, name, st)
+                    }
+                    is world.yemyat.slicepilot.PrintNotificationTracker.Action.Finish -> {
+                        printMonitorActive = false
+                        prefs.edit().putBoolean("print_session_active", false).apply()
+                        PrintForegroundService.finish(context, name, action.text)
+                    }
+                    world.yemyat.slicepilot.PrintNotificationTracker.Action.Clear -> {
+                        printMonitorActive = false
+                        prefs.edit().putBoolean("print_session_active", false).apply()
+                        PrintForegroundService.clear(context)
+                    }
+                }
+            }
+        }
+        // Pause/Resume/Stop buttons on the notification.
+        viewModelScope.launch {
+            PrintForegroundService.commands.collect { cmd ->
+                when (cmd) {
+                    PrintForegroundService.ACTION_PAUSE -> pausePrint()
+                    PrintForegroundService.ACTION_RESUME -> resumePrint()
+                    PrintForegroundService.ACTION_STOP -> stopPrintJob()
+                }
+            }
+        }
+        // Auto-start the camera preview once the monitor goes live (LAN: 1042 + MJPEG;
+        // cloud: Agora RTC handshake). The screen list is the routes that actually render a
+        // preview — the Printer tab and the full-screen route it opens, plus the two print
+        // routes — because a pending arm used to be honoured only on the pre-tab route names,
+        // so from the tab or from full screen it stayed pending and the card spun forever.
+        viewModelScope.launch {
+            _printStatus.collect { st ->
+                if (autoCameraPending && st?.live == true &&
+                    (
+                        _screen.value == Screen.DeviceStatus || _screen.value == Screen.Printing ||
+                            _screen.value == Screen.Printer || _screen.value == Screen.CameraFull
+                    ) &&
+                    !_cameraOn.value
+                ) {
+                    autoCameraPending = false
+                    startCamera()
+                }
+            }
+        }
+        if (initialOpenPrintMonitor) {
+            // Same real-dispatch requirement as below: openPrintMonitor touches
+            // _printSim/_selectedPrinter, whose initializers have not run yet at
+            // this point in the constructor (init blocks run top-to-bottom).
+            viewModelScope.launch(Dispatchers.Main) { openPrintMonitor() }
+        }
+        // viewModelScope is Main.immediate: a plain launch would run during init,
+        // before properties declared later exist. Dispatch for real.
+        if (initialOpenDeviceStatus) viewModelScope.launch(Dispatchers.Main) { openDeviceStatus() }
+        // Control action from the print notification when the app UI was gone (swipe-kill):
+        // the service relaunched MainActivity with the action as an extra. Printer restore
+        // and the session restore are async, so act only once a monitor for the session exists.
+        initialPrintAction?.let { action ->
+            viewModelScope.launch {
+                kotlinx.coroutines.withTimeoutOrNull(10_000) {
+                    _selectedPrinter.first { it != null }
+                }
+                if (!printMonitorActive && prefs.getBoolean("print_session_active", false)) {
+                    restorePrintSession(switchScreen = false)
+                }
+                when (action) {
+                    PrintForegroundService.ACTION_PAUSE -> pausePrint()
+                    PrintForegroundService.ACTION_RESUME -> resumePrint()
+                    PrintForegroundService.ACTION_STOP -> stopPrintJob()
+                }
+            }
+        }
+    }
+
+    data class PrintSimStep(
+        val label: String,
+        val targetProgress: Float,
+        val durationMs: Long,
+    )
+
+    data class PrintSimState(
+        val stepIndex: Int = 0,
+        val progress: Float = 0f,
+        val message: String = "Preparing…",
+        val complete: Boolean = false,
+        val failed: Boolean = false,
+    )
+
+    private val _printSim = MutableStateFlow(PrintSimState())
+    val printSim: StateFlow<PrintSimState> = _printSim.asStateFlow()
+    private var printSimJob: Job? = null
+
+    /** G-code of a print that failed with an access-code rejection; retried when a code is saved. */
+    private var printRetryGcodeAfterCode: String? = null
+
+    val printSimSteps =
+        listOf(
+            PrintSimStep("Preparing G-code", 0.16f, 700L),
+            PrintSimStep("Uploading to printer", 0.58f, 1500L),
+            PrintSimStep("Sending print job", 0.84f, 900L),
+            PrintSimStep("Starting print", 1f, 800L),
+        )
+
+    private fun currentPrintSlots(): List<world.yemyat.slicepilot.cloud.PrintSlot> {
+        if (isMultiColourActive()) {
+            val assignments = activeMultiColourAssignments()
+            if (assignments.size > 1) {
+                return MultiColourMapping.toPrintSlots(assignments)
+            }
+        }
+        val cfg = _config.value
+        val canvas = cfg.filamentCanvasId ?: 0
+        // Local prints default to spool slot 1 when the user never picked one.
+        val tray =
+            cfg.filamentTrayId
+                ?: selectedPrinter?.takeIf { it.isLocal }?.let { 0 }
+                ?: return emptyList()
+        val slots =
+            listOf(
+                world.yemyat.slicepilot.cloud
+                    .PrintSlot(t = 0, canvasId = canvas, trayId = tray),
+            )
+        // Multi-material support spool: tool 1 draws from the support spool's Canvas tray.
+        if (cfg.supportEnabled && cfg.supportFilamentPreset != null && supportMaterialAvailable()) {
+            return slots +
+                world.yemyat.slicepilot.cloud.PrintSlot(
+                    t = 1,
+                    canvasId = cfg.supportFilamentCanvasId ?: canvas,
+                    trayId = cfg.supportFilamentTrayId ?: 1,
+                )
+        }
+        return slots
+    }
+
+    fun startPrint(context: android.content.Context) {
+        _screen.value = Screen.Printing
+        _printSim.value = PrintSimState(message = "Preparing print…")
+        printSimJob?.cancel()
+        printSimJob =
+            viewModelScope.launch {
+                awaitSliceFinalized()
+                val gp = gcodePath
+                if (gp == null) {
+                    failPrint("No sliced file to print")
+                    return@launch
+                }
+                val gcodeFile = File(gp)
+                if (!gcodeFile.exists() || gcodeFile.length() <= 0L) {
+                    failPrint(
+                        if (!gcodeFile.exists()) {
+                            "Sliced file is no longer on device — please slice again"
+                        } else {
+                            "Sliced G-code file is empty — please slice again"
+                        },
+                    )
+                    return@launch
+                }
+                val sp = selectedPrinter
+                if (sp == null) {
+                    failPrint("No printer selected")
+                    return@launch
+                }
+                val slots = currentPrintSlots()
+                var lanAccessCode = ""
+
+                if (_demoMode.value) {
+                    simulateDemoPrint(sp)
+                    return@launch
+                }
+
+                val ticker =
+                    launch {
+                        while (true) {
+                            delay(120L)
+                            _printSim.update {
+                                if (it.complete || it.failed) {
+                                    it
+                                } else {
+                                    it.copy(progress = (it.progress + 0.012f).coerceAtMost(0.92f))
+                                }
+                            }
+                        }
+                    }
+
+                val result =
+                    try {
+                        if (sp.isLocal) {
+                            val lanTarget = sp.lanPrinter ?: _selectedLanPrinter.value
+                            val accessCode = lanTarget?.let { storedAccessCode(it) }.orEmpty()
+                            lanAccessCode = accessCode
+                            var local =
+                                lanPrint.print(
+                                    context.applicationContext,
+                                    File(gp),
+                                    lanTarget,
+                                    slots,
+                                    accessCode,
+                                ) { msg -> applyPrintStatus(msg) }
+                            if (local is CloudResult.Err && isConnectionFailure(local.message)) {
+                                if (cloudLoggedIn && sp.lanPrinter?.protocol != world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER) {
+                                    applyPrintStatus("Local upload failed — trying cloud…")
+                                    val cloudMatch =
+                                        when (val lr = cloud.listPrinters()) {
+                                            is CloudResult.Ok -> {
+                                                lr.value.firstOrNull {
+                                                    it.id == sp.serial || it.id == sp.ip || it.name == sp.name
+                                                }
+                                            }
+
+                                            is CloudResult.Err -> {
+                                                null
+                                            }
+                                        }
+                                    if (cloudMatch != null) {
+                                        local = cloudPrint.print(cloudMatch, File(gp), slots) { msg -> applyPrintStatus(msg) }
+                                    }
+                                } else if (sp.lanPrinter?.lanMode == false) {
+                                    local =
+                                        CloudResult.Err(
+                                            "Printer is in cloud (WAN) mode. Enable LAN-only mode on the printer or sign in to cloud.",
+                                        )
+                                }
+                            }
+                            local
+                        } else {
+                            val cp = sp.cloudPrinter ?: _printers.value.firstOrNull { it.id == sp.id }
+                            if (cp == null || !cloudLoggedIn) {
+                                ticker.cancel()
+                                failPrint("Sign in to cloud to print on ${sp.name}")
+                                return@launch
+                            }
+                            if (!cp.online) {
+                                ticker.cancel()
+                                EventNotifier.trackEvent(
+                                    "print_skipped_printer_offline",
+                                    mapOf("printer" to sp.name),
+                                )
+                                _printSim.update {
+                                    it.copy(
+                                        message = "${sp.name} is offline. Wake it up and try again.",
+                                        failed = true,
+                                        complete = false,
+                                    )
+                                }
+                                return@launch
+                            }
+                            cloudPrint.print(cp, File(gp), slots) { msg -> applyPrintStatus(msg) }
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        ticker.cancel()
+                        throw e
+                    } catch (e: Exception) {
+                        EventNotifier.trackError(
+                            "print_exception",
+                            e,
+                            mapOf(
+                                "printer" to sp.name,
+                                "local" to sp.isLocal,
+                                "gcode" to gp,
+                            ),
+                        )
+                        CloudResult.Err(e.message ?: "Print failed")
+                    }
+
+                ticker.cancel()
+                when (result) {
+                    is CloudResult.Ok -> {
+                        printRetryGcodeAfterCode = null
+                        EventNotifier.trackEvent(
+                            "print_started",
+                            mapOf(
+                                "printer" to sp.name,
+                                "local" to sp.isLocal,
+                                "gcode" to gp,
+                            ),
+                        )
+                        _printSim.update {
+                            it.copy(
+                                progress = 1f,
+                                message = "Print started on ${sp.name}",
+                                complete = true,
+                                failed = false,
+                            )
+                        }
+                        // Live monitoring: LAN MQTT for local prints, cloud relay for cloud prints.
+                        if (sp.isLocal) {
+                            startPrintMonitoring(sp, lanAccessCode, autoResumeOnPause = true)
+                        } else {
+                            startCloudPrintMonitoring(sp, justStarted = true)
+                        }
+                        printMonitorActive = true
+                        printNotificationTracker.begin(justStarted = true, nowMs = android.os.SystemClock.elapsedRealtime())
+                        PrintForegroundService.start(context, sp.name)
+                        persistPrintSession(sp)
+                        autoCameraPending = true
+                    }
+
+                    is CloudResult.Err -> {
+                        if (world.yemyat.slicepilot.cloud.LanPrintManager
+                                .isAccessCodeRejection(result.message)
+                        ) {
+                            handleAccessCodeRejection(sp)
+                            printRetryGcodeAfterCode = gp
+                        }
+                        failPrint(result.message)
+                    }
+                }
+            }
+    }
+
+    private fun applyPrintStatus(msg: String) {
+        val lower = msg.lowercase()
+        val step =
+            when {
+                lower.contains("search") || lower.contains("prepare") -> 0
+                lower.contains("upload") -> 1
+                lower.contains("send") || lower.contains("download") -> 2
+                lower.contains("start") -> 3
+                else -> _printSim.value.stepIndex
+            }
+        val target =
+            when (step) {
+                0 -> 0.18f
+                1 -> 0.55f
+                2 -> 0.78f
+                3 -> 0.92f
+                else -> _printSim.value.progress
+            }
+        if (step > _printSim.value.stepIndex) {
+            EventNotifier.trackEvent(
+                "print_status_changed",
+                mapOf(
+                    "step" to step,
+                    "message" to msg,
+                    "printer" to selectedPrinter?.name.orEmpty(),
+                ),
+            )
+        }
+        _printSim.update {
+            it.copy(
+                stepIndex = it.stepIndex.coerceAtLeast(step),
+                message = msg,
+                progress = it.progress.coerceAtLeast(target),
+                failed = false,
+            )
+        }
+    }
+
+    private suspend fun simulateDemoPrint(sp: ConnectedPrinter) {
+        val slots = currentPrintSlots()
+        val amsSummary =
+            if (slots.size > 1) {
+                " (AMS: " + slots.joinToString(", ") { "T${it.t + 1}→S${it.trayId + 1}" } + ")"
+            } else {
+                ""
+            }
+        var progress = 0f
+        printSimSteps.forEachIndexed { index, step ->
+            _printSim.value =
+                PrintSimState(
+                    stepIndex = index,
+                    progress = progress,
+                    message = "Demo: ${step.label}$amsSummary",
+                )
+            delay(step.durationMs)
+            progress = step.targetProgress
+        }
+        _printSim.value =
+            PrintSimState(
+                stepIndex = printSimSteps.lastIndex,
+                progress = 1f,
+                message = "Demo print started on ${sp.name}$amsSummary — no real printer was used",
+                complete = true,
+                failed = false,
+            )
+        EventNotifier.trackEvent(
+            "demo_print_started",
+            mapOf(
+                "printer" to sp.name,
+                "gcode" to gcodePath.orEmpty(),
+            ),
+        )
+        startDemoMonitor()
+        printMonitorActive = true
+        printNotificationTracker.begin(justStarted = true, nowMs = android.os.SystemClock.elapsedRealtime())
+        PrintForegroundService.start(context, sp.name)
+        persistPrintSession(sp)
+    }
+
+    private fun failPrint(msg: String) {
+        EventNotifier.trackError(
+            "print_failed",
+            null,
+            mapOf(
+                "message" to msg,
+                "printer" to selectedPrinter?.name.orEmpty(),
+                "local" to (selectedPrinter?.isLocal ?: false),
+            ),
+        )
+        _printSim.update { it.copy(message = msg, failed = true, complete = false) }
+    }
+
+    private fun isConnectionFailure(message: String): Boolean {
+        val m = message.lowercase()
+        return m.contains("failed to connect") ||
+            m.contains("connection refused") ||
+            m.contains("connection timed out") ||
+            m.contains("econnrefused") ||
+            m.contains("etimedout") ||
+            m.contains("unable to resolve host")
+    }
+
+    fun cancelPrint() {
+        EventNotifier.trackEvent(
+            "print_cancelled",
+            mapOf("printer" to selectedPrinter?.name.orEmpty()),
+        )
+        printRetryGcodeAfterCode = null
+        printSimJob?.cancel()
+        printSimJob = null
+        _printSim.value = PrintSimState()
+        stopPrintMonitoring()
+        _screen.value = Screen.Preview
+    }
+
+    fun finishPrintToHome() {
+        EventNotifier.trackEvent(
+            "print_finished",
+            mapOf("printer" to selectedPrinter?.name.orEmpty()),
+        )
+        printRetryGcodeAfterCode = null
+        printSimJob?.cancel()
+        printSimJob = null
+        _printSim.value = PrintSimState()
+        stopCamera()
+        // An active print keeps its monitor + notification (the notification is the way
+        // back); terminal states tear everything down.
+        val state = _printStatus.value?.state
+        if (state == null || state.isTerminal) stopPrintMonitoring()
+        _modelError.value = null
+        _cloudMessage.value = null
+        _pendingModelPath.value = null
+        clearModel()
+        _screen.value = Screen.Home
+    }
+
+    private val mqtt =
+        world.yemyat.slicepilot.cloud
+            .MqttManager()
+    private val _filaments = MutableStateFlow<Map<String, world.yemyat.slicepilot.cloud.FilamentInfo>>(emptyMap())
+    val filaments: StateFlow<Map<String, world.yemyat.slicepilot.cloud.FilamentInfo>> = _filaments.asStateFlow()
+
+    fun filamentFor(deviceCode: String): world.yemyat.slicepilot.cloud.FilamentInfo? {
+        _filaments.value[deviceCode]?.let { return it }
+        val p = selectedPrinter
+        if (p != null && (p.id == deviceCode || p.serial == deviceCode || p.ip == deviceCode)) {
+            p.serial?.let { _filaments.value[it]?.let { f -> return f } }
+            p.ip?.let { _filaments.value[it]?.let { f -> return f } }
+            _filaments.value[p.id]?.let { return it }
+        }
+        return null
+    }
+
+    fun applyFilament(
+        serial: String?,
+        ip: String?,
+        info: world.yemyat.slicepilot.cloud.FilamentInfo,
+    ) {
+        val map = mutableMapOf<String, world.yemyat.slicepilot.cloud.FilamentInfo>()
+        if (!serial.isNullOrBlank()) map[serial] = info
+        if (!ip.isNullOrBlank()) map[ip] = info
+        val sel = _selectedPrinter.value
+        if (sel != null && (sel.serial == serial || sel.ip == ip)) {
+            map[sel.id] = info
+        }
+        _filaments.value = _filaments.value + map
+
+        val e = prefs.edit()
+        val jsonStr = filamentToJson(info)
+        if (!serial.isNullOrBlank()) e.putString("filament_$serial", jsonStr)
+        if (!ip.isNullOrBlank()) e.putString("filament_$ip", jsonStr)
+        e.apply()
+        // Skip the empty "no cached data" placeholder written on connect, so the
+        // event only ever reflects what the printer (or cloud) actually reported.
+        if (info.present || info.trays.isNotEmpty()) {
+            EventNotifier.trackEvent(
+                "filament_synced",
+                mapOf(
+                    "serial" to serial.orEmpty(),
+                    "ip" to ip.orEmpty(),
+                    "present" to info.present,
+                    "name" to info.name,
+                    "tray_count" to info.trays.size,
+                ),
+            )
+        }
+
+        // Sync setup material if needed
+        val opts = printSetupMaterials()
+        if (_setupMaterial.value == null || opts.none { it.key == _setupMaterial.value }) {
+            _setupMaterial.value = opts.firstOrNull()?.key
+        }
+    }
+
+    fun refreshLanFilament(printer: world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter? = _selectedLanPrinter.value) {
+        val p = printer ?: return
+        if (p.protocol == world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER) return
+        viewModelScope.launch {
+            var info: world.yemyat.slicepilot.cloud.FilamentInfo? = null
+            val isCc1 =
+                world.yemyat.slicepilot.cloud.LanPrintManager
+                    .isCc1Model(p.model)
+            // CC1 has no MQTT broker; its Canvas/AMS filament arrives on the
+            // SDCP monitor (Cmd 324), so read the live monitor's last report.
+            val cc1 = activeLanMonitor as? world.yemyat.slicepilot.cloud.LanPrintMonitorCC1
+            if (cc1 != null && isCc1) {
+                info = cc1.filament.value
+            }
+            if (isCc1 && (info == null || info.trays.isEmpty())) {
+                // Home card with no live monitor: one-shot WS fetch (FW-gated).
+                info =
+                    world.yemyat.slicepilot.cloud.LanPrintMonitorCC1
+                        .oneShotCanvas(p.ip, p.serial)
+            }
+            if (!isCc1 && (info == null || (!info.present && info.trays.isEmpty()))) {
+                info = lanPrint.getFilament(p.ip, p.serial, storedAccessCode(p))
+            }
+            if ((info == null || (!info.present && info.trays.isEmpty())) && cloud.auth.isLoggedIn && p.serial.isNotBlank()) {
+                info = cloud.getFilament(p.serial)
+            }
+            if (info != null && (info.present || info.trays.isNotEmpty())) {
+                applyFilament(p.serial, p.ip, info)
+            }
+        }
+    }
+
+    fun setLanPrinterFilament(
+        material: String,
+        colorHex: String?,
+        trayId: Int = 0,
+    ) {
+        val p = _selectedLanPrinter.value ?: return
+        val normColor = colorHex?.let { if (it.startsWith("#")) it else "#$it" }
+        val info =
+            world.yemyat.slicepilot.cloud.FilamentInfo(
+                present = true,
+                name = material,
+                colorHex = normColor,
+                trays =
+                    listOf(
+                        world.yemyat.slicepilot.cloud
+                            .LoadedTray(trayId, material, material, normColor),
+                    ),
+            )
+        EventNotifier.trackEvent(
+            "filament_selected",
+            mapOf(
+                "source" to "lan",
+                "material" to material,
+                "color" to normColor.orEmpty(),
+                "tray" to trayId,
+            ),
+        )
+        applyFilament(p.serial, p.ip, info)
+        setPrintSlot(canvasId = 0, trayId = trayId)
+    }
+
+    /** Spools the connected local printer reported (sorted); empty when it never reported. */
+    fun lanSpools(): List<world.yemyat.slicepilot.cloud.LoadedTray> {
+        val p = selectedPrinter ?: return emptyList()
+        val filament =
+            filamentFor(p.id)
+                ?: p.serial?.let { filamentFor(it) }
+                ?: p.ip?.let { filamentFor(it) }
+        return filament?.trays.orEmpty().sortedWith(compareBy({ it.canvasId }, { it.trayId }))
+    }
+
+    /** Choose the printer spool (canvas/tray) used as the print's slot_map. */
+    fun setPrintSlot(
+        canvasId: Int,
+        trayId: Int,
+    ) {
+        updateConfig(_config.value.copy(filamentCanvasId = canvasId, filamentTrayId = trayId))
+        EventNotifier.trackEvent("print_slot_selected", mapOf("canvas" to canvasId, "tray" to trayId))
+    }
+
+    private fun filamentToJson(f: world.yemyat.slicepilot.cloud.FilamentInfo): String {
+        val root = org.json.JSONObject()
+        root.put("present", f.present)
+        root.put("name", f.name)
+        root.put("colorHex", f.colorHex ?: "")
+        f.remaining?.let { root.put("remaining", it) }
+        val arr = org.json.JSONArray()
+        for (tray in f.trays) {
+            val t = org.json.JSONObject()
+            t.put("trayId", tray.trayId)
+            t.put("canvasId", tray.canvasId)
+            t.put("name", tray.name)
+            t.put("type", tray.type)
+            t.put("colorHex", tray.colorHex ?: "")
+            arr.put(t)
+        }
+        root.put("trays", arr)
+        return root.toString()
+    }
+
+    private fun parseFilamentJson(jsonStr: String): world.yemyat.slicepilot.cloud.FilamentInfo? =
+        try {
+            val root = org.json.JSONObject(jsonStr)
+            val present = root.optBoolean("present", true)
+            val name = root.optString("name", "")
+            val colorHex = root.optString("colorHex", "").ifBlank { null }
+            val remaining = if (root.has("remaining")) root.optInt("remaining") else null
+            val trays = mutableListOf<world.yemyat.slicepilot.cloud.LoadedTray>()
+            val arr = root.optJSONArray("trays")
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val t = arr.getJSONObject(i)
+                    trays.add(
+                        world.yemyat.slicepilot.cloud.LoadedTray(
+                            trayId = t.optInt("trayId", i),
+                            name = t.optString("name", ""),
+                            type = t.optString("type", ""),
+                            colorHex = t.optString("colorHex", "").ifBlank { null },
+                            canvasId = t.optInt("canvasId", 0),
+                        ),
+                    )
+                }
+            }
+            world.yemyat.slicepilot.cloud.FilamentInfo(
+                present = present,
+                name = name,
+                colorHex = colorHex,
+                remaining = remaining,
+                trays = trays,
+            )
+        } catch (_: Exception) {
+            null
+        }
+
+    private val _selectedPrinterId = MutableStateFlow<String?>(prefs.getString("cloud_printer_id", null))
+    val selectedPrinterId: StateFlow<String?> = _selectedPrinterId.asStateFlow()
+    private val _selectedNozzle = MutableStateFlow<String>(prefs.getString("nozzle_size", "0.4") ?: "0.4")
+    val selectedNozzle: StateFlow<String> = _selectedNozzle.asStateFlow()
+
+    private val _selectedPrinter = MutableStateFlow<ConnectedPrinter?>(null)
+    val selectedPrinterState: StateFlow<ConnectedPrinter?> = _selectedPrinter.asStateFlow()
+    val selectedPrinter: ConnectedPrinter? get() = _selectedPrinter.value
+
+    private val _availablePrinters = MutableStateFlow<List<ConnectedPrinter>>(emptyList())
+    val availablePrinters: StateFlow<List<ConnectedPrinter>> = _availablePrinters.asStateFlow()
+
+    /**
+     * The user pressed Disconnect: no printer is selected *on purpose*. The background
+     * refresh and LAN scan used to pick the first printer they saw whenever nothing was
+     * selected, which re-connected the printer the user had just dropped (on the next
+     * resume, sign-in or scan) and made Disconnect look like it did nothing. Persisted, so
+     * a relaunch does not silently reconnect either; any explicit selection clears it, and
+     * so does starting a demo.
+     */
+    private var disconnectedByUser = prefs.getBoolean("printer_disconnected_by_user", false)
+
+    private fun setDisconnectedByUser(value: Boolean) {
+        disconnectedByUser = value
+        prefs.edit().putBoolean("printer_disconnected_by_user", value).apply()
+    }
+
+    private val cloudPrint =
+        world.yemyat.slicepilot.cloud
+            .CloudPrintManager(cloud)
+    private val lanPrint =
+        world.yemyat.slicepilot.cloud
+            .LanPrintManager()
+
+    private val _lanScanning = MutableStateFlow(false)
+    val lanScanning: StateFlow<Boolean> = _lanScanning.asStateFlow()
+    private val _lanPrinters = MutableStateFlow<List<world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter>>(emptyList())
+    val lanPrinters: StateFlow<List<world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter>> = _lanPrinters.asStateFlow()
+    private val _selectedLanPrinter = MutableStateFlow<world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter?>(null)
+    val selectedLanPrinter: StateFlow<world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter?> = _selectedLanPrinter.asStateFlow()
+
+    // ---- Printer access code (Centauri Carbon 2 screens can show a code the app must send) ----
+
+    /** Printer the app should ask an access code for; non-null shows the dialog. Never tracked. */
+    private val _accessCodePrompt = MutableStateFlow<world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter?>(null)
+    val accessCodePrompt: StateFlow<world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter?> = _accessCodePrompt.asStateFlow()
+
+    /** Keyed by serial (falls back to IP), like the filament_$serial cache, so codes survive printer switching. */
+    private fun accessCodeKey(p: world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter): String =
+        "lan_access_code_" + p.serial.ifBlank { p.ip }
+
+    /** Stored code for [printer], blank when the printer uses the default (123456). */
+    fun storedAccessCode(p: world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter): String =
+        prefs.getString(accessCodeKey(p), "").orEmpty()
+
+    /** Ask for the code of the currently selected local printer (card button). */
+    fun requestAccessCodeEntry() {
+        _selectedLanPrinter.value?.let { printer ->
+            _accessCodePrompt.value = printer
+            EventNotifier.trackEvent(
+                "lan_access_code_prompted",
+                mapOf("printer" to printer.name, "ip" to printer.ip),
+            )
+        }
+    }
+
+    fun dismissAccessCodePrompt() {
+        val current = _accessCodePrompt.value
+        if (current != null) {
+            EventNotifier.trackEvent(
+                "lan_access_code_dismissed",
+                mapOf("printer" to current.name, "ip" to current.ip),
+            )
+        }
+        _accessCodePrompt.value = null
+    }
+
+    fun setLanAccessCode(
+        printer: world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter,
+        code: String,
+    ) {
+        val trimmed = code.trim()
+        if (trimmed.isEmpty()) return
+        prefs.edit().putString(accessCodeKey(printer), trimmed).apply()
+        _accessCodePrompt.value = null
+        _cloudMessage.value = "Access code saved"
+        EventNotifier.trackEvent(
+            "lan_access_code_saved",
+            mapOf(
+                "printer" to printer.name,
+                "ip" to printer.ip,
+            ),
+        )
+        refreshLanFilament(printer)
+
+        // A print was rejected on the printer's code — retry it right away.
+        val retryGcode = printRetryGcodeAfterCode
+        printRetryGcodeAfterCode = null
+        if (retryGcode != null && _screen.value == Screen.Printing &&
+            File(retryGcode).exists() && selectedPrinter?.isLocal == true
+        ) {
+            startPrint(context)
+        }
+    }
+
+    /** Set the prompt when a print failed with an access-code rejection on a local printer. */
+    private fun handleAccessCodeRejection(sp: ConnectedPrinter) {
+        if (sp.isLocal) {
+            _accessCodePrompt.value = sp.lanPrinter
+                ?: _selectedLanPrinter.value
+                ?: world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter(
+                    ip = sp.ip.orEmpty(),
+                    serial = sp.serial.orEmpty(),
+                    model = sp.model,
+                    name = sp.name,
+                    lanMode = true,
+                    needsAccessCode = true,
+                )
+        }
+    }
+
+    init {
+        val restoredPreview =
+            if (!initialOpenPreviewGcodePath.isNullOrBlank() || !initialOpenPreviewModelPath.isNullOrBlank()) {
+                openPreviewFromPaths(initialOpenPreviewGcodePath, initialOpenPreviewModelPath)
+            } else {
+                false
+            }
+        if (!restoredPreview && _demoMode.value) {
+            refreshPrinters()
+            ensureDemoModel()
+        }
+        viewModelScope.launch {
+            mqtt.filaments.collect { live ->
+                if (live.isNotEmpty()) {
+                    _filaments.value = _filaments.value + live
+                }
+            }
+        }
+        viewModelScope.launch {
+            mqtt.onlineStatuses.collect { map ->
+                if (map.isEmpty()) return@collect
+                var changed = false
+                val updatedPrinters =
+                    _printers.value.map { p ->
+                        val nextOnline = map[p.id]
+                        if (nextOnline != null && nextOnline != p.online) {
+                            changed = true
+                            p.copy(online = nextOnline)
+                        } else {
+                            p
+                        }
+                    }
+                if (changed) {
+                    _printers.value = updatedPrinters
+                    recomputeAvailablePrinters()
+                }
+                val sel = _selectedPrinter.value
+                if (sel != null && !sel.isLocal) {
+                    val nextOnline = map[sel.cloudPrinter?.id ?: sel.id]
+                    if (nextOnline != null && nextOnline != sel.online) {
+                        _selectedPrinter.value =
+                            sel.copy(
+                                online = nextOnline,
+                                cloudPrinter = sel.cloudPrinter?.copy(online = nextOnline),
+                            )
+                    }
+                }
+            }
+        }
+        // App opened while the printer is printing (started by this app earlier,
+        // e.g. before a swipe-away): bring the monitor up so the home print
+        // banner shows live status. No navigation switch.
+        if (prefs.getBoolean("print_session_active", false)) {
+            viewModelScope.launch { restorePrintSession(switchScreen = false) }
+        } else {
+            // No SlicePilot session: probe the selected printer so prints started
+            // outside the app (Matrix, cloud) also light up the home banner.
+            viewModelScope.launch { probeSelectedPrinterStatus() }
+        }
+    }
+
+    /** Printers whose live status the Home print banner probes (CC1/CC2 + COSMOS/Moonraker). */
+    private fun isPrintBannerPrinter(sp: ConnectedPrinter): Boolean =
+        sp.lanPrinter?.protocol == world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER ||
+            sp.model.contains("Centauri", true) ||
+            sp.model.contains("CC1", true) || sp.model.contains("CC2", true)
+
+    /**
+     * Prints started outside SlicePilot (Matrix app / cloud): open the same
+     * idle monitor the device-status view uses for the selected CC1/CC2
+     * printer, so the home print banner shows the live job. Idle monitoring
+     * is dropped when the app is backgrounded, as for the device-status view.
+     */
+    private suspend fun probeSelectedPrinterStatus() {
+        if (_demoMode.value) return
+        // Printer selection restores asynchronously (cloud login / LAN prefs);
+        // wait for a supported printer to show up.
+        val sp =
+            kotlinx.coroutines.withTimeoutOrNull(20_000) {
+                _selectedPrinter.first { it != null && isPrintBannerPrinter(it) }
+            } ?: return
+        val cur = _printStatus.value
+        if (printMonitorActive || (cur != null && !cur.state.isTerminal)) return
+        if (sp.isLocal) {
+            val lp = sp.lanPrinter ?: _selectedLanPrinter.value ?: return
+            startPrintMonitoring(sp, storedAccessCode(lp))
+        } else {
+            var cp = sp.cloudPrinter ?: _printers.value.firstOrNull { it.id == sp.id }
+            if (cp == null && cloudLoggedIn) {
+                refreshPrinters()
+                cp = _printers.value.firstOrNull { it.id == sp.id }
+                    ?: _printers.value.firstOrNull { it.name == sp.name }
+            }
+            cp ?: return
+            startCloudPrintMonitoring(cp.toConnectedPrinter())
+        }
+    }
+
+    fun nozzleSizesFor(model: String): List<String> {
+        if (model.isBlank()) return listOf("0.4")
+        val local = parseJsonStringArray(NativeLib.nativeGetPrinters())
+        val norm = model.replace("_", " ").replace("-", " ")
+        val keywords = norm.split(" ").filter { it.isNotBlank() }
+        var matching =
+            local.filter { p ->
+                p.contains(norm, ignoreCase = true) || (keywords.isNotEmpty() && keywords.all { kw -> p.contains(kw, ignoreCase = true) })
+            }
+        if (matching.isEmpty() && (norm.contains("CC2", true) || (norm.contains("Centauri", true) && norm.contains("2", true)))) {
+            matching = local.filter { it.contains("Centauri Carbon 2", true) }
+        }
+        val sizes =
+            matching
+                .mapNotNull { Regex("(\\d\\.\\d)\\s+nozzle", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1) }
+                .distinct()
+                .sorted()
+        return sizes.ifEmpty { listOf("0.4") }
+    }
+
+    fun selectCloudPrinter(
+        p: CloudPrinter,
+        auto: Boolean = false,
+    ) {
+        setDisconnectedByUser(false)
+        _selectedPrinterId.value = p.id
+        _selectedPrinter.value = p.toConnectedPrinter()
+        prefs
+            .edit()
+            .putString("selected_printer_type", "cloud")
+            .putString("cloud_printer_id", p.id)
+            .apply()
+        recomputeAvailablePrinters()
+        syncPrinterProfileToConfig()
+        openQueuedPrintSetup()
+        if (!auto) {
+            EventNotifier.trackEvent(
+                "printer_selected",
+                mapOf(
+                    "type" to "cloud",
+                    "printer" to p.name,
+                    "model" to p.model,
+                    "online" to p.online,
+                ),
+            )
+            EventNotifier.trackEvent(
+                "cloud_printer_selected",
+                mapOf(
+                    "printer" to p.name,
+                    "model" to p.model,
+                    "online" to p.online,
+                ),
+            )
+        }
+    }
+
+    fun selectNozzle(size: String) {
+        _selectedNozzle.value = size
+        prefs.edit().putString("nozzle_size", size).apply()
+        syncPrinterProfileToConfig()
+        EventNotifier.trackEvent("nozzle_selected", mapOf("size" to size))
+    }
+
+    private fun syncPrinterProfileToConfig() {
+        val p = selectedPrinter ?: return
+        var local = findLocalProfile(p.model, _selectedNozzle.value) ?: return
+        // Keep a selected support material working across nozzle changes:
+        // re-apply its multi-material profile variant.
+        if (_config.value.supportFilamentPreset != null) local = dualizeProfile(local, p.model) ?: local
+        if (_config.value.printer != local) {
+            updateConfig(_config.value.copy(printer = local))
+        }
+    }
+
+    private fun findLocalProfile(
+        model: String,
+        nozzle: String,
+    ): String? {
+        if (model.isBlank()) return null
+        val local = parseJsonStringArray(NativeLib.nativeGetPrinters())
+        if (local.isEmpty()) return null
+
+        val norm = model.replace("_", " ").replace("-", " ")
+        val keywords = norm.split(" ").filter { it.isNotBlank() }
+
+        // 1. Exact match with nozzle
+        local.firstOrNull { it.contains(norm, true) && it.contains("$nozzle nozzle", true) }?.let { return it }
+
+        // 2. All keywords match with nozzle
+        if (keywords.isNotEmpty()) {
+            local.firstOrNull { p -> keywords.all { kw -> p.contains(kw, true) } && p.contains("$nozzle nozzle", true) }?.let { return it }
+        }
+
+        // 3. Fallback for CC2 / Centauri Carbon 2 aliases
+        if (norm.contains("CC2", true) || (norm.contains("Centauri", true) && norm.contains("2", true))) {
+            local.firstOrNull { it.contains("Centauri Carbon 2", true) && it.contains("$nozzle nozzle", true) }?.let { return it }
+        }
+        if (norm.contains("CC", true) || norm.contains("Centauri Carbon", true)) {
+            local.firstOrNull { it.contains("Centauri Carbon", true) && it.contains("$nozzle nozzle", true) }?.let { return it }
+        }
+
+        // 4. Any match containing norm or keywords
+        return local.firstOrNull { it.contains(norm, true) }
+            ?: local.firstOrNull { p -> keywords.all { kw -> p.contains(kw, true) } }
+            ?: local.firstOrNull { it.contains("Centauri Carbon 2", true) }
+            ?: local.firstOrNull()
+    }
+
+    // ---- Print setup ----
+    private val _setupMaterial = MutableStateFlow<String?>(null)
+    val setupMaterial: StateFlow<String?> = _setupMaterial.asStateFlow()
+    private val _setupQuality = MutableStateFlow(prefs.getString("setup_quality", "Standard") ?: "Standard")
+    val setupQuality: StateFlow<String> = _setupQuality.asStateFlow()
+
+    /** A slicer preset picked on the page's Process row; null lets [printSetupProcess] derive one
+     *  from the tier. It used to be local state inside the Configure print sheet. */
+    private val _setupProcess = MutableStateFlow<String?>(prefs.getString("setup_process", null))
+    val setupProcess: StateFlow<String?> = _setupProcess.asStateFlow()
+    private val _setupPlate = MutableStateFlow(prefs.getString("setup_plate", "Textured") ?: "Textured")
+    val setupPlate: StateFlow<String> = _setupPlate.asStateFlow()
+
+    // ---- Multi-colour (AMS / Canvas) ----
+    private val _modelFilamentInfo = MutableStateFlow<ModelFilamentInfo?>(null)
+    val modelFilamentInfo: StateFlow<ModelFilamentInfo?> = _modelFilamentInfo.asStateFlow()
+
+    private val _multiColourEnabled = MutableStateFlow(true)
+    val multiColourEnabled: StateFlow<Boolean> = _multiColourEnabled.asStateFlow()
+
+    private val _amsSlotOverrides = MutableStateFlow<Map<Int, FilamentSlot>>(emptyMap())
+    val amsSlotOverrides: StateFlow<Map<Int, FilamentSlot>> = _amsSlotOverrides.asStateFlow()
+
+    /** True when the selected printer supports multi-colour AMS/Canvas printing. */
+    fun amsCapablePrinter(): Boolean = _demoMode.value || supportMaterialAvailable()
+
+    /** True when the loaded model is multi-colour and the user is slicing it in AMS multi-colour mode. */
+    fun isMultiColourActive(): Boolean =
+        _modelFilamentInfo.value?.isMultiColour == true &&
+            _multiColourEnabled.value &&
+            amsCapablePrinter()
+
+    /** All loaded Canvas/AMS trays reported by the selected printer (cloud or local), sorted. */
+    fun reportedPrinterTrays(): List<world.yemyat.slicepilot.cloud.LoadedTray> {
+        val p = selectedPrinter ?: return emptyList()
+        val filament =
+            filamentFor(p.id)
+                ?: p.serial?.let { filamentFor(it) }
+                ?: p.ip?.let { filamentFor(it) }
+        return filament?.trays.orEmpty().sortedWith(compareBy({ it.canvasId }, { it.trayId }))
+    }
+
+    /** Resolved model-filament -> AMS/Canvas spool assignments for the active multi-colour model. */
+    fun activeMultiColourAssignments(): List<ResolvedFilamentAssignment> {
+        val info = _modelFilamentInfo.value ?: return emptyList()
+        if (!info.isMultiColour || !_multiColourEnabled.value || !amsCapablePrinter()) return emptyList()
+        val compatible = parseJsonStringArray(NativeLib.nativeGetCompatibleFilaments())
+        val fallback = _config.value.filament ?: compatible.firstOrNull().orEmpty()
+        return MultiColourMapping.resolveAssignments(
+            modelFilaments = info.filaments,
+            reportedTrays = reportedPrinterTrays(),
+            compatiblePresets = compatible,
+            overrides = _amsSlotOverrides.value,
+            fallbackPreset = fallback,
+        )
+    }
+
+    fun setMultiColourEnabled(enabled: Boolean) {
+        _multiColourEnabled.value = enabled
+        EventNotifier.trackEvent("multi_colour_mode_toggled", mapOf("enabled" to enabled))
+    }
+
+    fun setAmsSlotForModelFilament(
+        modelIndex: Int,
+        slot: FilamentSlot,
+    ) {
+        val next = _amsSlotOverrides.value + (modelIndex to slot)
+        _amsSlotOverrides.value = next
+        EventNotifier.trackEvent(
+            "ams_slot_mapped",
+            mapOf("model_index" to modelIndex, "canvas" to slot.canvasId, "tray" to slot.trayId),
+        )
+    }
+
+    fun autoMatchAmsSlots() {
+        _amsSlotOverrides.value = emptyMap()
+        EventNotifier.trackEvent("ams_slots_auto_matched")
+    }
+
+    fun friendlyMaterial(profile: String): String = profile.removePrefix("Elegoo ").substringBefore(" @").ifBlank { profile }
+
+    private fun matchProfileForType(
+        compatible: List<String>,
+        type: String,
+    ): String? {
+        if (type.isBlank()) return null
+        compatible.firstOrNull { friendlyMaterial(it).equals(type, true) }?.let { return it }
+        compatible.firstOrNull { friendlyMaterial(it).contains(type, true) }?.let { return it }
+        return null
+    }
+
+    fun printSetupMaterials(): List<MaterialOption> {
+        val compatible = parseJsonStringArray(NativeLib.nativeGetCompatibleFilaments())
+        val p = selectedPrinter
+        val filament =
+            p?.let {
+                filamentFor(it.id)
+                    ?: it.serial?.let { s -> filamentFor(s) }
+                    ?: it.ip?.let { ip -> filamentFor(ip) }
+            }
+        val realTrays = filament?.trays.orEmpty()
+        if (realTrays.isNotEmpty()) {
+            val opts =
+                realTrays
+                    .sortedBy { it.trayId }
+                    .mapNotNull { tray ->
+                        val profile = matchProfileForType(compatible, tray.type) ?: return@mapNotNull null
+                        val label = tray.type.ifBlank { friendlyMaterial(profile) }
+                        MaterialOption(label, profile, tray.colorHex, tray.trayId, tray.canvasId)
+                    }.distinctBy { it.key }
+            if (opts.isNotEmpty()) return opts
+        }
+        val presentSingle = filament?.takeIf { it.present && (it.name.isNotBlank() || it.colorHex != null) }
+        if (presentSingle != null) {
+            val name = presentSingle.name.ifBlank { "Filament" }
+            val profile = matchProfileForType(compatible, name) ?: compatible.firstOrNull()
+            if (profile != null) {
+                return listOf(MaterialOption(name, profile, presentSingle.colorHex))
+            }
+        }
+        return compatible.map { MaterialOption(friendlyMaterial(it), it, null) }
+    }
+
+    /** Every slicer preset the selected printer offers - what the Process row lists. */
+    fun setupProcessOptions(): List<String> = parseJsonStringArray(NativeLib.nativeGetCompatibleProcesses())
+
+    /**
+     * The preset a slice uses for [tier]: the explicit pick from the Process row when it still
+     * applies, otherwise the preset named after the tier (Draft / Standard / Optimal). [procs] can
+     * be passed in when the caller already fetched the list for a dropdown, so one answer serves the
+     * row, the Advanced sheet header, the slice and the print, and a label cannot disagree with what
+     * gets sliced.
+     */
+    fun printSetupProcess(
+        tier: String,
+        procs: List<String> = setupProcessOptions(),
+    ): String? {
+        val word =
+            when (tier) {
+                "Draft" -> "Draft"
+                "Quality" -> "Optimal"
+                else -> "Standard"
+            }
+        return _setupProcess.value?.takeIf { it in procs }
+            ?: procs.firstOrNull { it.contains(word, true) }
+            ?: procs.firstOrNull()
+    }
+
+    fun bedTypeForPlate(plate: String): String =
+        when (plate) {
+            "Smooth" -> "High Temp Plate"
+            else -> "Textured PEI Plate"
+        }
+
+    fun plateColorHex(plate: String): String =
+        when (plate) {
+            "Smooth" -> "#8C93A0"
+            else -> "#2A2E36"
+        }
+
+    fun setSetupMaterial(key: String) {
+        _setupMaterial.value = key
+        EventNotifier.trackEvent("material_selected", mapOf("key" to key))
+    }
+
+    fun setSetupQuality(tier: String) {
+        _setupQuality.value = tier
+        prefs.edit().putString("setup_quality", tier).apply()
+        // The tier is what names the preset, so changing it hands the choice back to the tier.
+        setSetupProcess(null)
+    }
+
+    /** The Process row's pick; null means "derive it from the Quality tier". */
+    fun setSetupProcess(process: String?) {
+        if (_setupProcess.value == process) return
+        _setupProcess.value = process
+        prefs.edit().putString("setup_process", process).apply()
+        if (process != null) EventNotifier.trackEvent("process_preset_selected", mapOf("process" to process))
+    }
+
+    /**
+     * The machine profiles the Printer row can offer: every nozzle the connected printer has, plus
+     * the multi-material variant the config currently slices with. With no printer connected it falls
+     * back to the whole native list - the list the Configure print sheet showed.
+     */
+    fun setupPrinterOptions(): List<String> {
+        val all = parseJsonStringArray(NativeLib.nativeGetPrinters())
+        val p = selectedPrinter ?: return all
+        val mine =
+            nozzleSizesFor(p.model).mapNotNull { findLocalProfile(p.model, it) } +
+                listOfNotNull(_config.value.printer, _config.value.printer?.let { dualizeProfile(it, p.model) })
+        return mine.filter { it in all }.distinct().ifEmpty { all }
+    }
+
+    /**
+     * Slice for [profile]: make it the native selection and remember it, the way the sheet's Printer
+     * dropdown did, plus take the nozzle the profile name carries so the page header stays truthful.
+     */
+    fun setSetupPrinter(profile: String) {
+        if (!NativeLib.nativeSelectPrinter(profile)) return
+        updateConfig(_config.value.copy(printer = profile))
+        Regex("(\\d\\.\\d)\\s+nozzle").find(profile)?.let { nozzle ->
+            if (nozzle.groupValues[1] != _selectedNozzle.value) {
+                _selectedNozzle.value = nozzle.groupValues[1]
+                prefs.edit().putString("nozzle_size", nozzle.groupValues[1]).apply()
+            }
+        }
+        EventNotifier.trackEvent("printer_profile_selected", mapOf("printer" to profile))
+    }
+
+    fun setSetupPlate(plate: String) {
+        _setupPlate.value = plate
+        prefs.edit().putString("setup_plate", plate).apply()
+        EventNotifier.trackEvent("bed_type_selected", mapOf("plate" to plate))
+    }
+
+    fun openLibrary() {
+        _screen.value = Screen.Library
+    }
+
+    /** Move to a screen; [AppTabBar] routes through here with `tab.target`. */
+    fun openScreen(screen: Screen) {
+        _screen.value = screen
+    }
+
+    /** Full-screen (landscape) camera; closes back to whichever screen opened it. */
+    private var cameraReturnTo: Screen = Screen.Printer
+
+    fun openCameraFull() {
+        cameraReturnTo = _screen.value
+        _screen.value = Screen.CameraFull
+    }
+
+    fun closeCameraFull() {
+        _screen.value = cameraReturnTo
+    }
+
+    fun openPrintSetup() {
+        // "Is there a printer" is answered by selectedPrinter: config.printer is only the
+        // slicer profile *name*, which stays in prefs after a disconnect, so gating on it
+        // alone let the page open for a printer nobody was connected to (header: "No printer").
+        val profile = _config.value.printer
+        if (selectedPrinter == null || profile == null) {
+            // Nothing to print on. Say so and offer to connect: a silently
+            // un-openable page reads as a broken button.
+            modelPath?.let { _askPrinterForModel.value = it }
+            return
+        }
+        NativeLib.nativeSelectPrinter(profile)
+        val opts = printSetupMaterials()
+        if (_setupMaterial.value == null || opts.none { it.key == _setupMaterial.value }) {
+            _setupMaterial.value = opts.firstOrNull()?.key
+        }
+        _screen.value = Screen.PrintSetup
+    }
+
+    /** Ask accepted: open the connect sheet and owe the model to the printer it picks. */
+    fun onConnectForPrint() {
+        printSetupQueuedFor = _askPrinterForModel.value ?: return
+        _askPrinterForModel.value = null
+    }
+
+    /**
+     * Ask declined: the pick goes away with it. Nothing was ever selected, so there is no
+     * model on Home to undo — that is the point of asking before selecting.
+     */
+    fun onLaterForPrint() {
+        _askPrinterForModel.value = null
+    }
+
+    /** The printer a queued model was waiting for exists now — select it and set the print up. */
+    private fun openQueuedPrintSetup() {
+        val model = printSetupQueuedFor ?: return
+        if (selectedPrinter == null) return
+        printSetupQueuedFor = null
+        if (modelPath != model) selectModel(File(model))
+        openPrintSetup()
+    }
+
+    fun openSlice() {
+        if (!commitSetupConfig()) return
+        _screen.value = Screen.Slice
+    }
+
+    /** Commit the current Print setup choices and start slicing directly (no intermediate Slice step). */
+    fun sliceFromSetup() {
+        if (!commitSetupConfig()) return
+        startSlice(bedType = bedTypeForPlate(_setupPlate.value), autoPrint = false)
+    }
+
+    private fun commitSetupConfig(): Boolean {
+        val printer = _config.value.printer ?: return false
+        NativeLib.nativeSelectPrinter(printer)
+        val opts = printSetupMaterials()
+        val selected = opts.firstOrNull { it.key == _setupMaterial.value } ?: opts.firstOrNull() ?: return false
+        _setupMaterial.value = selected.key
+        val process = _setupProcess.value ?: printSetupProcess(_setupQuality.value) ?: return false
+        updateConfig(
+            _config.value.copy(
+                filament = selected.profile,
+                filamentColor = selected.colorHex,
+                // Generic (no-tray) material options keep the spool picked on the Printer spool row.
+                filamentTrayId = selected.trayId ?: _config.value.filamentTrayId,
+                filamentCanvasId = selected.canvasId ?: _config.value.filamentCanvasId,
+                process = process,
+            ),
+        )
+        return true
+    }
+
+    fun setSupportEnabled(v: Boolean) {
+        updateConfig(_config.value.copy(supportEnabled = v))
+    }
+
+    fun setSupportStyle(v: String) {
+        updateConfig(_config.value.copy(supportStyle = v))
+    }
+
+    fun setSupportFilament(v: String?) {
+        updateConfig(_config.value.copy(supportFilament = v))
+    }
+
+    fun setSupportInterfaceOnly(v: Boolean) {
+        updateConfig(_config.value.copy(supportInterfaceOnly = v))
+    }
+
+    /**
+     * Multi-material support spool (CC2 / CC1 Canvas): print support interfaces (or full supports)
+     * from [opt]'s filament tray; null prints supports "same as model".
+     * CC2 stays on its single-nozzle profile (single_extruder_multi_material=1 + M6211 Canvas
+     * swaps, zero Y offset, real single-nozzle flushing); CC1 switches to the "0.4C" Canvas variant.
+     */
+    fun setSupportMaterial(opt: MaterialOption?) {
+        val cfg = _config.value
+        val printer =
+            when {
+                opt != null -> dualizeProfile(cfg.printer, selectedPrinter?.model ?: "")
+                else -> undualizeProfile(cfg.printer)
+            }
+        updateConfig(
+            if (opt == null) {
+                cfg.copy(
+                    printer = printer,
+                    supportFilament = null,
+                    supportFilamentPreset = null,
+                    supportFilamentColor = null,
+                    supportFilamentTrayId = null,
+                    supportFilamentCanvasId = null,
+                )
+            } else {
+                cfg.copy(
+                    printer = printer,
+                    supportFilament = "2",
+                    supportFilamentPreset = opt.profile,
+                    supportFilamentColor = opt.colorHex,
+                    supportFilamentTrayId = opt.trayId,
+                    supportFilamentCanvasId = opt.canvasId,
+                )
+            },
+        )
+    }
+
+    /** True when the current printer can print supports from a separate filament:
+     *  CC2 (single nozzle + Canvas), genuine multi-extruder profiles, or CC1 reporting Canvas trays. */
+    fun supportMaterialAvailable(): Boolean {
+        val model = selectedPrinter?.model ?: ""
+        val printer = _config.value.printer ?: ""
+        val multiCapable =
+            extruderCountForProfile(context, printer) > 1 ||
+                model.contains("Carbon 2", true) || model.contains("CC2", true) ||
+                printer.contains("Carbon 2", true)
+        if (multiCapable) return true
+        // CC1 + Canvas: the Canvas report lists trays; without one a swap is impossible.
+        val isCarbon1 =
+            (model.contains("Centauri Carbon", true) && !model.contains("2", true)) ||
+                (printer.contains("Centauri Carbon", true) && !printer.contains("2", true))
+        return isCarbon1 && printSetupMaterials().any { it.trayId != null }
+    }
+
+    /**
+     * Resolve the multi-material machine profile for Canvas support printing:
+     * - CC2 is a single-nozzle + Canvas machine whose plain "0.4 nozzle" profile already carries
+     *   `single_extruder_multi_material = 1` and `M6211` swaps (using the synthetic "0.4+0.4"
+     *   profile introduced a +1.5 mm Y extruder_offset and disabled single-nozzle flushing).
+     *   Always keep CC2 on its single-nozzle profile.
+     * - CC1 + Canvas maps "0.4 nozzle" -> "0.4C nozzle" (1 nozzle + single_extruder_multi_material).
+     */
+    private fun dualizeProfile(
+        profile: String?,
+        model: String,
+    ): String? {
+        profile ?: return null
+        val presets = parseJsonStringArray(NativeLib.nativeGetPrinters())
+        return resolveSupportMachineProfile(profile, model, presets)
+    }
+
+    /** Reverse of [dualizeProfile]: back to the plain single-material profile. */
+    private fun undualizeProfile(profile: String?): String? = profile?.replace(Regex("(\\d\\.\\d)(\\+\\d\\.\\d|C) nozzle"), "$1 nozzle")
+
+    fun setLayerHeight(v: Float?) {
+        updateConfig(_config.value.copy(layerHeight = v))
+    }
+
+    fun setWallLoops(v: Int?) {
+        updateConfig(_config.value.copy(wallLoops = v))
+    }
+
+    fun setTopShellLayers(v: Int?) {
+        updateConfig(_config.value.copy(topShellLayers = v))
+    }
+
+    fun setBottomShellLayers(v: Int?) {
+        updateConfig(_config.value.copy(bottomShellLayers = v))
+    }
+
+    fun setInfillDensity(v: Int?) {
+        updateConfig(_config.value.copy(infillDensity = v))
+    }
+
+    fun setInfillPattern(v: String?) {
+        updateConfig(_config.value.copy(infillPattern = v))
+    }
+
+    fun setAdhesion(v: String) {
+        updateConfig(_config.value.copy(adhesion = v))
+    }
+
+    fun setBrimWidth(v: Int?) {
+        updateConfig(_config.value.copy(brimWidth = v))
+    }
+
+    fun setSeamPosition(v: String) {
+        updateConfig(_config.value.copy(seamPosition = v))
+    }
+
+    fun setIroning(v: Boolean) {
+        updateConfig(_config.value.copy(ironing = v))
+    }
+
+    fun setSupportOnPlateOnly(v: Boolean) {
+        updateConfig(_config.value.copy(supportOnPlateOnly = v))
+    }
+
+    fun setSupportThresholdAngle(v: Int?) {
+        updateConfig(_config.value.copy(supportThresholdAngle = v))
+    }
+
+    fun setSupportZDistance(v: Float?) {
+        updateConfig(_config.value.copy(supportZDistance = v))
+    }
+
+    fun setWallSpeed(v: Int?) {
+        updateConfig(_config.value.copy(wallSpeed = v))
+    }
+
+    fun setInfillSpeed(v: Int?) {
+        updateConfig(_config.value.copy(infillSpeed = v))
+    }
+
+    fun setTravelSpeed(v: Int?) {
+        updateConfig(_config.value.copy(travelSpeed = v))
+    }
+
+    fun printSetupSliceAndPrint() {
+        val opts = printSetupMaterials()
+        val selected = opts.firstOrNull { it.key == _setupMaterial.value } ?: opts.firstOrNull() ?: return
+        _setupMaterial.value = selected.key
+        val process = printSetupProcess(_setupQuality.value) ?: return
+        updateConfig(
+            _config.value.copy(
+                filament = selected.profile,
+                filamentColor = selected.colorHex,
+                filamentTrayId = selected.trayId ?: _config.value.filamentTrayId,
+                filamentCanvasId = selected.canvasId ?: _config.value.filamentCanvasId,
+                process = process,
+            ),
+        )
+        startSlice(bedType = bedTypeForPlate(_setupPlate.value), autoPrint = true)
+    }
+
+    val cloudUser get() = if (_demoMode.value) "Demo user" else cloud.auth.nickname
+    val cloudLoggedIn get() = cloud.auth.isLoggedIn || _demoMode.value
+    val loginPageUrl get() = if (_demoMode.value) "Demo mode" else cloud.auth.loginPageUrl
+
+    /** Google/Facebook sign-in is configured for Elegoo's international accounts only. */
+    val socialSignInAvailable get() = cloud.auth.socialSignInSupported
+    var cloudRegion: String
+        get() = cloud.auth.region
+        set(v) {
+            cloud.auth.region = v
+        }
+
+    val savedCloudEmail: String
+        get() = if (_demoMode.value) DEMO_EMAIL else prefs.getString("cloud_email", cloud.auth.email).orEmpty()
+    val savedCloudPassword: String
+        get() =
+            if (prefs.getBoolean("cloud_remember_password", false)) {
+                prefs.getString("cloud_password", "").orEmpty()
+            } else {
+                ""
+            }
+    val rememberCloudPassword: Boolean
+        get() = prefs.getBoolean("cloud_remember_password", false)
+
+    fun saveCloudCredentials(
+        email: String,
+        password: String,
+        remember: Boolean,
+    ) {
+        prefs
+            .edit()
+            .putString("cloud_email", email)
+            .putBoolean("cloud_remember_password", remember)
+            .apply()
+        if (remember) {
+            prefs.edit().putString("cloud_password", password).apply()
+        } else {
+            prefs.edit().remove("cloud_password").apply()
+        }
+    }
+
+    init {
+        val printerType = prefs.getString("selected_printer_type", null)
+        if (printerType == "lan") {
+            val serial = prefs.getString("lan_printer_serial", "") ?: ""
+            val ip = prefs.getString("lan_printer_ip", "") ?: ""
+            val name = prefs.getString("lan_printer_name", "") ?: ""
+            val model = prefs.getString("lan_printer_model", "") ?: ""
+            val lanMode = prefs.getBoolean("lan_printer_lan_mode", true)
+            val proto =
+                world.yemyat.slicepilot.cloud.PrinterProtocol.fromString(
+                    prefs.getString("lan_printer_protocol", null),
+                    model,
+                )
+            val port = prefs.getInt("lan_printer_port", proto.defaultPort)
+            if ((ip.isNotBlank() || serial.isNotBlank()) && lanMode) {
+                val lp =
+                    world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter(
+                        ip = ip,
+                        serial = serial,
+                        model = model.ifBlank { "Centauri Carbon 2" },
+                        name = name.ifBlank { model.ifBlank { "Centauri Carbon 2" } },
+                        lanMode = true,
+                        protocol = proto,
+                        port = port,
+                    )
+                _selectedLanPrinter.value = lp
+                _selectedPrinter.value = lp.toConnectedPrinter()
+                syncPrinterProfileToConfig()
+
+                // Restore cached filament or default
+                val cached =
+                    serial.takeIf { it.isNotBlank() }?.let { prefs.getString("filament_$it", null) }
+                        ?: ip.takeIf { it.isNotBlank() }?.let { prefs.getString("filament_$it", null) }
+                val info =
+                    cached?.let { parseFilamentJson(it) }
+                        ?: world.yemyat.slicepilot.cloud
+                            .FilamentInfo(present = false)
+                applyFilament(serial, ip, info)
+                refreshLanFilament(lp)
+            } else if (!lanMode) {
+                prefs
+                    .edit()
+                    .remove("selected_printer_type")
+                    .remove("lan_printer_serial")
+                    .remove("lan_printer_ip")
+                    .remove("lan_printer_name")
+                    .remove("lan_printer_model")
+                    .remove("lan_printer_lan_mode")
+                    .apply()
+            }
+        }
+        recomputeAvailablePrinters()
+        if (cloudLoggedIn) {
+            refreshPrinters()
+        } else {
+            tryAutoLogin()
+        }
+    }
+
+    fun requestLoadModel(path: String) {
+        if (_screen.value == Screen.Home) {
+            onModelPicked(path)
+        } else {
+            _pendingModelPath.value = path
+        }
+    }
+
+    fun confirmPendingModel() {
+        val path = _pendingModelPath.value ?: return
+        _pendingModelPath.value = null
+        if (_screen.value == Screen.Printing) {
+            cancelPrint()
+        }
+        onModelPicked(path)
+    }
+
+    fun dismissPendingModel() {
+        _pendingModelPath.value = null
+    }
+
+    /**
+     * Pick a file as *the* model. A printer has to exist first: with none connected the pick
+     * stops at the [askPrinterForModel] dialog and nothing is loaded, because a model sitting
+     * on Home with a "Connect your printer" block under it — and no way to print it — is a
+     * dead end the user has to undo. Answering the ask selects it (see [onConnectForPrint]).
+     */
+    fun onModelPicked(path: String) {
+        var file = File(path)
+        if (!file.exists()) {
+            reportUnsupportedFormat(file.name)
+            return
+        }
+
+        var ext = file.extension.lowercase()
+        val isZip = ModelParser.isZip(file)
+        if (isZip && ext != "3mf") {
+            val target = File(file.parentFile, "${file.nameWithoutExtension}.3mf")
+            if (file.renameTo(target)) file = target
+            ext = "3mf"
+        } else if (!isZip && ext != "stl" && ext != "3mf") {
+            val target = File(file.parentFile, "${file.nameWithoutExtension}.stl")
+            if (file.renameTo(target)) file = target
+            ext = "stl"
+        }
+
+        if (ext != "stl" && ext != "3mf") {
+            reportUnsupportedFormat(file.name)
+            return
+        }
+
+        if (selectedPrinter == null || _config.value.printer == null) {
+            _askPrinterForModel.value = file.absolutePath
+            return
+        }
+        selectModel(file)
+        openPrintSetup()
+    }
+
+    /**
+     * Make [file] the model the app works on: Home shows it (the only sign of a successful
+     * import is a small preview — feedback was "not clear if the file uploaded or not") and
+     * the preview parse starts. Only called once a printer to print it on is settled on.
+     */
+    private fun selectModel(file: File) {
+        abandonSlice()
+        resetModelTransform()
+        _modelError.value = null
+        _modelFilamentInfo.value = null
+        _amsSlotOverrides.value = emptyMap()
+        _multiColourEnabled.value = amsCapablePrinter()
+        _screen.value = Screen.Home
+        val ext = file.extension.lowercase()
+        EventNotifier.trackEvent(
+            "model_selected",
+            mapOf(
+                "name" to file.name,
+                "format" to ext,
+                "size_bytes" to file.length(),
+            ),
+        )
+        modelPath = file.absolutePath
+        viewModelScope.launch {
+            _modelLoading.value = true
+            _modelLoadProgress.value = null
+            try {
+                val t0 = android.os.SystemClock.elapsedRealtime()
+                val m =
+                    withContext(Dispatchers.Default) {
+                        // Native libslic3r readers + quadric decimation; Kotlin fallback.
+                        NativeLib.parsePreviewMesh(
+                            file.absolutePath,
+                            MeshDecimator.MAX_PREVIEW_TRIANGLES,
+                            onProgress = { _modelLoadProgress.value = it },
+                        ) ?: ModelParser.parse(file)
+                    }
+                android.util.Log.i(
+                    "ModelPreview",
+                    "parse ${file.name}: ${android.os.SystemClock.elapsedRealtime() - t0}ms " +
+                        "tris=${m.indices.size / 3} verts=${m.positions.size / 3}",
+                )
+                if (m.positions.isEmpty() || !m.maxX.isFinite() || m.maxX < m.minX) {
+                    reportUnsupportedFormat(file.name)
+                } else {
+                    EventNotifier.trackEvent(
+                        "model_loaded",
+                        mapOf(
+                            "name" to file.name,
+                            "format" to ext,
+                            "size_bytes" to file.length(),
+                            "vertices" to (m.positions.size / 3),
+                            "triangles" to (m.indices.size / 3),
+                        ),
+                    )
+                    _mesh.value = m
+                    val settings = withContext(Dispatchers.Default) { ProjectSettingsReader.read(file) }
+                    applyProjectPrintSettings(settings)
+                    if (ext == "3mf" && NativeLib.isLoaded) {
+                        val inspected =
+                            withContext(Dispatchers.Default) {
+                                var parsed: ModelFilamentInfo? = null
+                                // Retry briefly if the file is still finishing flush to cache.
+                                repeat(3) { attempt ->
+                                    if (parsed != null) return@repeat
+                                    val raw = runCatching { NativeLib.nativeInspectModel(file.absolutePath) }.getOrNull()
+                                    parsed = MultiColourMapping.parseInspectJson(raw, m.triExtruders)
+                                    if (parsed == null && attempt < 2) delay(150L)
+                                }
+                                parsed
+                            }
+                        if (modelPath == file.absolutePath) {
+                            _modelFilamentInfo.value = inspected
+                            if (inspected?.isMultiColour == true) {
+                                _multiColourEnabled.value = amsCapablePrinter()
+                                EventNotifier.trackEvent(
+                                    "model_multi_colour_detected",
+                                    mapOf(
+                                        "filaments" to inspected.filaments.size,
+                                        "used" to inspected.usedFilaments.size,
+                                        "ams_capable" to amsCapablePrinter(),
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                }
+            } catch (t: Throwable) {
+                reportModelLoadError("parse", t)
+            }
+            _modelLoading.value = false
+            _modelLoadProgress.value = null
+        }
+    }
+
+    @Volatile private var demoModelLoading = false
+
+    fun ensureDemoModel() {
+        if (!_demoMode.value) return
+        if (modelPath != null && _mesh.value != null) return
+        if (demoModelLoading) return
+        demoModelLoading = true
+        viewModelScope.launch {
+            try {
+                val file = File(cacheDir, DEMO_MODEL_FILE)
+                if (!file.exists() || file.length() == 0L) {
+                    withContext(Dispatchers.IO) {
+                        context.assets.open(DEMO_MODEL_ASSET).use { input ->
+                            file.outputStream().use { output -> input.copyTo(output) }
+                        }
+                    }
+                }
+                if (file.exists() && file.length() > 0L) {
+                    onModelPicked(file.absolutePath)
+                }
+            } catch (t: Throwable) {
+                android.util.Log.w("AppViewModel", "demo model load failed", t)
+            } finally {
+                demoModelLoading = false
+            }
+        }
+    }
+
+    /**
+     * Forget the working model. With [discardFiles] the imported copy (and any g-code cut from
+     * it) is deleted too, which is what "discard" has to mean: the cache used to keep every
+     * file the app ever opened, because nothing else ever removed one. Files the library owns
+     * ([world.yemyat.slicepilot.repo.FavoritesStore] adopts them instead of copying) and the
+     * demo cube stay on disk.
+     */
+    fun clearModel(discardFiles: Boolean = false) {
+        val model = modelPath
+        val gcode = gcodePath
+        modelPath = null
+        _mesh.value = null
+        _modelFilamentInfo.value = null
+        _amsSlotOverrides.value = emptyMap()
+        _gcodePreview.value = null
+        _gcodeStats.value = null
+        gcodePath = null
+        resetModelTransform()
+        if (discardFiles) {
+            prefs
+                .edit()
+                .remove("last_model_path")
+                .remove("last_gcode_path")
+                .apply()
+            model
+                ?.takeUnless { isDemoModel(it) }
+                ?.takeUnless { ownedByLibrary(it) }
+                ?.let { runCatching { File(it).delete() } }
+            // The G-code history keeps its own copies, so a discard must not take the
+            // slice with it; only a stray g-code still sitting in the cache goes.
+            gcode
+                ?.takeUnless { gcodeHistory.owns(it) }
+                ?.let { runCatching { File(it).delete() } }
+        }
+        if (_demoMode.value) ensureDemoModel()
+    }
+
+    /** The app's own sample model, regenerated from assets whenever it is missing. */
+    private fun isDemoModel(path: String): Boolean = path == File(cacheDir, DEMO_MODEL_FILE).absolutePath
+
+    /** True for a model the Files library keeps in private storage rather than the cache. */
+    private fun ownedByLibrary(path: String): Boolean = File(path).absolutePath.startsWith(File(context.filesDir, "favorites").absolutePath)
+
+    private fun applyProjectPrintSettings(ps: ProjectPrintSettings?) {
+        if (ps == null) return
+        val current = _config.value
+        _config.value =
+            current.copy(
+                supportEnabled = ps.supportEnabled ?: false,
+                supportStyle = ps.supportStyle ?: "grid",
+                layerHeight = ps.layerHeight,
+                wallLoops = ps.wallLoops,
+                topShellLayers = ps.topShellLayers,
+                bottomShellLayers = ps.bottomShellLayers,
+                infillDensity = ps.infillDensity,
+                infillPattern = ps.infillPattern,
+                adhesion = ps.adhesion ?: "auto",
+                brimWidth = ps.brimWidth?.toInt(),
+                seamPosition = ps.seamPosition ?: "aligned",
+                ironing = ps.ironing ?: false,
+                supportOnPlateOnly = ps.supportOnPlateOnly ?: false,
+                supportThresholdAngle = ps.supportThresholdAngle,
+                supportZDistance = ps.supportZDistance,
+                wallSpeed = ps.wallSpeed,
+                infillSpeed = ps.infillSpeed,
+                travelSpeed = ps.travelSpeed,
+            )
+        ps.bedType?.let { raw ->
+            val plate =
+                when {
+                    raw.contains("textured", ignoreCase = true) -> "Textured"
+
+                    raw.contains("smooth", ignoreCase = true) || raw.contains("high temp", ignoreCase = true) ||
+                        raw.contains("engineering", ignoreCase = true) || raw.contains("cool", ignoreCase = true) -> "Smooth"
+
+                    else -> null
+                }
+            if (plate != null) setSetupPlate(plate)
+        }
+    }
+
+    fun updateConfig(newConfig: SliceConfig) {
+        _config.value = newConfig
+        prefs
+            .edit()
+            .putString("cfg_printer", newConfig.printer)
+            .putString("cfg_process", newConfig.process)
+            .putString("cfg_filament", newConfig.filament)
+            .putString("cfg_filament_color", newConfig.filamentColor)
+            .putBoolean("cfg_support", newConfig.supportEnabled)
+            .putString("cfg_support_style", newConfig.supportStyle)
+            .putString("cfg_support_filament", newConfig.supportFilament)
+            .putString("cfg_support_preset", newConfig.supportFilamentPreset)
+            .putString("cfg_support_color", newConfig.supportFilamentColor)
+            .apply()
+        val e = prefs.edit()
+        newConfig.layerHeight?.let { e.putFloat("cfg_layer_height", it) } ?: e.remove("cfg_layer_height")
+        newConfig.wallLoops?.let { e.putInt("cfg_wall_loops", it) } ?: e.remove("cfg_wall_loops")
+        newConfig.topShellLayers?.let { e.putInt("cfg_top_shells", it) } ?: e.remove("cfg_top_shells")
+        newConfig.bottomShellLayers?.let { e.putInt("cfg_bottom_shells", it) } ?: e.remove("cfg_bottom_shells")
+        newConfig.infillDensity?.let { e.putInt("cfg_infill_density", it) } ?: e.remove("cfg_infill_density")
+        newConfig.filamentTrayId?.let { e.putInt("cfg_filament_tray", it) } ?: e.remove("cfg_filament_tray")
+        newConfig.filamentCanvasId?.let { e.putInt("cfg_filament_canvas", it) } ?: e.remove("cfg_filament_canvas")
+        newConfig.supportFilamentTrayId?.let { e.putInt("cfg_support_tray", it) } ?: e.remove("cfg_support_tray")
+        newConfig.supportFilamentCanvasId?.let { e.putInt("cfg_support_canvas", it) } ?: e.remove("cfg_support_canvas")
+        e.putString("cfg_infill_pattern", newConfig.infillPattern)
+        e.putString("cfg_adhesion", newConfig.adhesion)
+        newConfig.brimWidth?.let { e.putInt("cfg_brim_width", it) } ?: e.remove("cfg_brim_width")
+        e.putString("cfg_seam_position", newConfig.seamPosition)
+        e.putBoolean("cfg_ironing", newConfig.ironing)
+        e.putBoolean("cfg_support_plate_only", newConfig.supportOnPlateOnly)
+        e.putBoolean("cfg_support_interface_only", newConfig.supportInterfaceOnly)
+        newConfig.supportThresholdAngle?.let { e.putInt("cfg_support_angle", it) } ?: e.remove("cfg_support_angle")
+        newConfig.supportZDistance?.let { e.putFloat("cfg_support_z_distance", it) } ?: e.remove("cfg_support_z_distance")
+        newConfig.wallSpeed?.let { e.putInt("cfg_wall_speed", it) } ?: e.remove("cfg_wall_speed")
+        newConfig.infillSpeed?.let { e.putInt("cfg_infill_speed", it) } ?: e.remove("cfg_infill_speed")
+        newConfig.travelSpeed?.let { e.putInt("cfg_travel_speed", it) } ?: e.remove("cfg_travel_speed")
+        e.apply()
+    }
+
+    private fun safeGcodeName(modelPath: String?): String {
+        val base = modelPath?.let { File(it).nameWithoutExtension }?.trim().orEmpty()
+        val cleaned =
+            base
+                .ifBlank { "model" }
+                .replace(Regex("[/\\\\:*?\"<>|\\x00-\\x1F]"), "_")
+                .trim()
+                .ifBlank { "model" }
+        return if (cleaned.endsWith(".gcode", ignoreCase = true)) cleaned else "$cleaned.gcode"
+    }
+
+    val suggestedGcodeName: String
+        get() = safeGcodeName(modelPath)
+
+    fun startSlice(
+        bedType: String? = null,
+        autoPrint: Boolean = false,
+    ) {
+        val mp = modelPath ?: return
+        val cfg = _config.value
+        val multiAssignments = if (isMultiColourActive()) activeMultiColourAssignments() else emptyList()
+        val multiColourActive = multiAssignments.size > 1
+        val dualSupport = !multiColourActive && cfg.supportEnabled && cfg.supportFilamentPreset != null && supportMaterialAvailable()
+        val basePrinter = cfg.printer ?: return
+        val printer =
+            if (multiColourActive || dualSupport) {
+                dualizeProfile(basePrinter, selectedPrinter?.model ?: "") ?: basePrinter
+            } else {
+                val single = undualizeProfile(basePrinter) ?: basePrinter
+                val presets = parseJsonStringArray(NativeLib.nativeGetPrinters())
+                if (single in presets) single else basePrinter
+            }
+        val process = cfg.process ?: return
+        val filament = cfg.filament ?: multiAssignments.firstOrNull()?.preset ?: return
+        val filamentArray: Array<String> =
+            when {
+                multiColourActive -> multiAssignments.map { it.preset.ifBlank { filament } }.toTypedArray()
+                dualSupport -> arrayOf(filament, cfg.supportFilamentPreset ?: filament)
+                else -> arrayOf(filament)
+            }
+        val out = File(cacheDir, suggestedGcodeName).absolutePath
+        val jobId = (++sliceGeneration).toLong()
+        activeSliceJobId = jobId
+        sliceFinalizeJob?.cancel()
+        sliceFinalizeJob = null
+        _gcodePreview.value = null
+        _gcodeStats.value = null
+        gcodePath = null
+        _slicing.value = true
+        _sliceProgress.value = 0f
+        _sliceStatus.value = "Starting…"
+        _screen.value = Screen.Slicing
+        EventNotifier.trackEvent(
+            "slice_started",
+            mapOf(
+                "printer" to printer,
+                "filament" to filament,
+                "filament_count" to filamentArray.size,
+                "multi_colour" to multiColourActive,
+                "process" to process,
+                "bed_type" to bedType.orEmpty(),
+                "auto_print" to autoPrint,
+                "output" to out,
+            ),
+        )
+        val overrides =
+            buildString {
+                if (cfg.supportEnabled) {
+                    appendLine("enable_support=1")
+                    if (cfg.supportStyle == "trees") {
+                        appendLine("support_type=tree(auto)")
+                        appendLine("support_style=organic")
+                        // Speed: tree generation cost grows with branch count; wider
+                        // branch spacing and a single support wall cut generation
+                        // time several-fold with minor surface-quality impact.
+                        appendLine("tree_support_branch_distance_organic=2")
+                        appendLine("tree_support_branch_distance=2.5")
+                        appendLine("tree_support_wall_count=1")
+                        appendLine("tree_support_top_rate=20%")
+                        // Auto-brim around tree supports adds a second full brim
+                        // pass per layer; the normal brim already anchors the model.
+                        appendLine("tree_support_auto_brim=0")
+                    } else {
+                        appendLine("support_type=normal(auto)")
+                        if (cfg.supportStyle == "snug") appendLine("support_style=snug")
+                    }
+                    if (dualSupport) {
+                        append(buildSupportFilamentOverrides(interfaceOnly = cfg.supportInterfaceOnly))
+                    } else {
+                        appendLine("support_filament=0")
+                        appendLine("support_interface_filament=0")
+                    }
+                    cfg.supportThresholdAngle?.let { appendLine("support_threshold_angle=$it") }
+                    cfg.supportZDistance?.let {
+                        appendLine("support_top_z_distance=$it")
+                        appendLine("support_bottom_z_distance=$it")
+                    }
+                    if (cfg.supportOnPlateOnly) appendLine("support_on_build_plate_only=1")
+                } else {
+                    appendLine("enable_support=0")
+                }
+                // Filament colours (and multi-colour wipe tower / single-extruder multi-material).
+                // ConfigOptionStrings uses semicolon-separated elements in INI; quoting with
+                // "\n" deserializes as a single 1-element vector and crashes ToolOrdering/WipeTower.
+                if (multiColourActive) {
+                    append(MultiColourMapping.buildIniOverrides(multiAssignments, singleNozzle = true))
+                } else {
+                    run {
+                        fun hex(c: String) = if (c.startsWith("#")) c else "#$c"
+                        val modelC = cfg.filamentColor?.let(::hex)
+                        val supportC = if (dualSupport) cfg.supportFilamentColor?.let(::hex) else null
+                        when {
+                            dualSupport && (modelC != null || supportC != null) -> {
+                                val m = modelC ?: "#26A69A"
+                                val s = supportC ?: "#B0BEC5"
+                                appendLine("filament_colour=$m;$s")
+                                appendLine("filament_multi_colour=$m;$s")
+                            }
+
+                            modelC != null -> {
+                                appendLine("filament_colour=$modelC")
+                                appendLine("filament_multi_colour=$modelC")
+                            }
+
+                            else -> {}
+                        }
+                    }
+                }
+                cfg.layerHeight?.let { appendLine("layer_height=$it") }
+                cfg.wallLoops?.let { appendLine("wall_loops=$it") }
+                cfg.topShellLayers?.let { appendLine("top_shell_layers=$it") }
+                cfg.bottomShellLayers?.let { appendLine("bottom_shell_layers=$it") }
+                cfg.infillDensity?.let { appendLine("sparse_infill_density=$it%") }
+                cfg.infillPattern?.let { appendLine("sparse_infill_pattern=$it") }
+                append(buildAdhesionOverrides(cfg.adhesion, cfg.brimWidth))
+                appendLine("seam_position=${cfg.seamPosition}")
+                appendLine("ironing_type=${if (cfg.ironing) "top" else "no ironing"}")
+                cfg.wallSpeed?.let {
+                    appendLine("outer_wall_speed=$it")
+                    appendLine("inner_wall_speed=$it")
+                }
+                cfg.infillSpeed?.let { appendLine("sparse_infill_speed=$it") }
+                cfg.travelSpeed?.let { appendLine("travel_speed=$it") }
+                if (bedType != null) appendLine("curr_bed_type=$bedType")
+                // OpenCentauri COSMOS / Klipper (Moonraker): COSMOS disables Moonraker's
+                // on-printer object processor to save RAM, so emit EXCLUDE_OBJECT_* tags
+                // directly from libslic3r to enable mid-print part skipping.
+                if (selectedPrinter?.lanPrinter?.protocol == world.yemyat.slicepilot.cloud.PrinterProtocol.MOONRAKER) {
+                    appendLine("exclude_object=1")
+                }
+            }
+        android.util.Log.i("SliceCore", "config overrides:\n$overrides")
+        val t = _modelTransform.value
+        try {
+            SliceForegroundService.start(
+                context = context,
+                jobId = jobId,
+                modelPath = mp,
+                printer = printer,
+                filament = filament,
+                process = process,
+                overrides = overrides,
+                supportFilament = if (dualSupport) cfg.supportFilamentPreset.orEmpty() else "",
+                filaments = filamentArray,
+                multiColour = multiColourActive,
+                outPath = out,
+                autoPrint = autoPrint,
+                transform =
+                    SliceTransform(
+                        rotX = t.rotX,
+                        rotY = t.rotY,
+                        rotZ = t.rotZ,
+                        mirrorX = t.mirrorX,
+                        mirrorY = t.mirrorY,
+                        mirrorZ = t.mirrorZ,
+                        offsetX = t.offsetX,
+                        offsetY = t.offsetY,
+                    ),
+                partPoseRows = partPoseRows(),
+                partPoseCount = _partPoses.value?.size ?: 0,
+            )
+        } catch (e: Exception) {
+            if (activeSliceJobId == jobId) activeSliceJobId = 0L
+            _slicing.value = false
+            _sliceProgress.value = 0f
+            _sliceStatus.value = "Could not start background slicing"
+            _cloudMessage.value = _sliceStatus.value
+            _screen.value = Screen.PrintSetup
+            EventNotifier.trackError(
+                "slice_service_start_failed",
+                e,
+                mapOf(
+                    "printer" to printer,
+                    "filament" to filament,
+                    "process" to process,
+                    "output" to out,
+                ),
+            )
+        }
+    }
+
+    private fun abandonSlice() {
+        sliceGeneration++
+        activeSliceJobId = 0L
+        val serviceState = SliceForegroundService.state.value
+        if (serviceState.isRunning) {
+            SliceForegroundService.cancel(context, serviceState.jobId)
+        }
+        _slicing.value = false
+    }
+
+    fun cancelSlice() {
+        EventNotifier.trackEvent("slice_cancelled")
+        abandonSlice()
+        _screen.value = Screen.PrintSetup
+    }
+
+    fun backHome() {
+        abandonSlice()
+        _screen.value = Screen.Home
+    }
+
+    /**
+     * True while a started print still needs the loaded model and the g-code cut from it.
+     * A connected printer answering status probes is not enough - PrintJobState.isInProgress is
+     * what separates "idle at 250 °C" from "printing the file we just sliced".
+     */
+    fun printJobHoldsModel(): Boolean =
+        _screen.value == Screen.Printing ||
+            printMonitorActive ||
+            _printStatus.value?.let { it.live && it.state.isInProgress } == true ||
+            prefs.getBoolean("print_session_active", false)
+
+    /**
+     * The one exit from [Screen.PrintSetup] (its arrow and the system back button both come
+     * through here). Leaving the flow ends the model's life, so it is discarded - asked first,
+     * because re-picking and re-slicing a 40 MB file is not something to lose by a mistap.
+     * A print in flight keeps it (the monitor and its notification point at that g-code), and
+     * so does demo mode; with no model at all there is nothing to ask about.
+     */
+    fun leavePrintSetup() {
+        val model = modelPath
+        if (model == null || printJobHoldsModel() || isDemoMode) {
+            _screen.value = Screen.Home
+            return
+        }
+        _discardOnExitModel.value = model
+    }
+
+    /** "Discard" on the exit dialog: end the print session's model and go home. */
+    fun confirmDiscardModel() {
+        val model = _discardOnExitModel.value ?: return
+        _discardOnExitModel.value = null
+        EventNotifier.trackEvent(
+            "model_discarded",
+            mapOf("name" to File(model).name, "sliced" to (gcodePath != null)),
+        )
+        discardModel()
+    }
+
+    /** "Keep editing": stay on print setup with the model exactly as it was. */
+    fun dismissDiscardPrompt() {
+        _discardOnExitModel.value = null
+    }
+
+    /** Discard the current model outright (the Files-style discard on Home's model row). */
+    fun discardModel() {
+        abandonSlice()
+        _pendingModelPath.value = null
+        _cloudMessage.value = null
+        clearModel(discardFiles = true)
+        _screen.value = Screen.Home
+    }
+
+    fun goBack() {
+        when (_screen.value) {
+            Screen.Home -> {}
+
+            Screen.Library -> {
+                _screen.value = Screen.Home
+            }
+
+            Screen.Printer -> {
+                _screen.value = Screen.Home
+            }
+
+            Screen.PrintSetup -> {
+                leavePrintSetup()
+            }
+
+            Screen.Slice -> {
+                _screen.value = Screen.PrintSetup
+            }
+
+            Screen.Slicing -> {
+                abandonSlice()
+                _screen.value = Screen.PrintSetup
+            }
+
+            Screen.Preview -> {
+                _screen.value = previewReturnTo
+            }
+
+            Screen.Printing -> {
+                if (_printSim.value.complete) finishPrintToHome() else cancelPrint()
+            }
+
+            Screen.DeviceStatus -> {
+                closeDeviceStatus()
+            }
+
+            Screen.CameraFull -> {
+                closeCameraFull()
+            }
+        }
+    }
+
+    /**
+     * Where [Screen.Preview] goes back to - the one route every back affordance on that page
+     * (its own button and the system bar) uses, so a label can name it. The preview is reached
+     * from several places and only the call that opens it knows which: the slice flow returns
+     * to the Slice screen the job ran on, the Files shelf returns to the shelf (a filed
+     * g-code was never taken through print setup, so there is no setup to go back to), and
+     * Home or a notification return to Home.
+     */
+    var previewReturnTo: Screen = Screen.Home
+        private set
+
+    /** Show the g-code preview, remembering the screen back should return to. */
+    private fun showPreview(returnTo: Screen) {
+        previewReturnTo = returnTo
+        _screen.value = Screen.Preview
+    }
+
+    fun openPreviewIfReady(returnTo: Screen = Screen.Home) {
+        if (gcodePath != null && _gcodePreview.value != null) {
+            showPreview(returnTo)
+            return
+        }
+        openPreviewFromPaths(
+            gcodePath ?: prefs.getString("last_gcode_path", null),
+            modelPath ?: prefs.getString("last_model_path", null),
+            returnTo,
+        )
+    }
+
+    fun openPreviewFromPaths(
+        gcodePath: String?,
+        modelPath: String?,
+        returnTo: Screen = Screen.Home,
+    ): Boolean {
+        val candidate =
+            gcodePath?.let(::File)?.takeIf { it.exists() && it.length() > 0L }
+                ?: this.gcodePath?.let(::File)?.takeIf { it.exists() && it.length() > 0L }
+                ?: prefs.getString("last_gcode_path", null)?.let(::File)?.takeIf { it.exists() && it.length() > 0L }
+        val gcodeFile = candidate ?: return false
+        if (this.gcodePath == gcodeFile.absolutePath && _gcodePreview.value != null) {
+            showPreview(returnTo)
+            return true
+        }
+
+        this.gcodePath = gcodeFile.absolutePath
+        val modelFile = modelPath?.let(::File)?.takeIf { it.exists() && it.length() > 0L }
+        if (modelFile != null) {
+            this.modelPath = modelFile.absolutePath
+        }
+        persistSliceResult(this.gcodePath, this.modelPath)
+
+        viewModelScope.launch {
+            _modelLoading.value = true
+            try {
+                val stats = withContext(Dispatchers.Default) { GcodePreviewParser.parseStats(gcodeFile) }
+                _gcodeStats.value = stats
+                val preview = withContext(Dispatchers.Default) { GcodePreviewParser.parse(gcodeFile) }
+                _gcodePreview.value = preview
+                showPreview(returnTo)
+            } catch (t: Throwable) {
+                reportModelLoadError("parse", t)
+            } finally {
+                _modelLoading.value = false
+            }
+        }
+        return true
+    }
+
+    private suspend fun injectGcodeThumbnail(path: String) {
+        val mesh = _mesh.value ?: return
+        try {
+            withContext(Dispatchers.IO) {
+                val file = File(path)
+                if (!file.exists() || file.length() == 0L) return@withContext
+                if (world.yemyat.slicepilot.model.GcodeThumbnail
+                        .hasThumbnail(file)
+                ) {
+                    return@withContext
+                }
+                val t = _modelTransform.value
+                val previewTransform =
+                    world.yemyat.slicepilot.preview.ModelTransform(
+                        rotX = t.rotX,
+                        rotY = t.rotY,
+                        rotZ = t.rotZ,
+                        mirrorX = t.mirrorX,
+                        mirrorY = t.mirrorY,
+                        mirrorZ = t.mirrorZ,
+                        offsetX = t.offsetX,
+                        offsetY = t.offsetY,
+                    )
+                val bmp =
+                    world.yemyat.slicepilot.preview.ThumbnailRenderer.render(
+                        mesh,
+                        144,
+                        transform = previewTransform,
+                        modelColorHex = _config.value.filamentColor,
+                    ) ?: return@withContext
+                val png =
+                    java.io.ByteArrayOutputStream().use { out ->
+                        bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                        out.toByteArray()
+                    }
+                world.yemyat.slicepilot.model.GcodeThumbnail
+                    .inject(file, png, bmp.width, bmp.height)
+                bmp.recycle()
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("AppViewModel", "gcode thumbnail failed", t)
+        }
+    }
+
+    private fun persistSliceResult(
+        gcodePath: String?,
+        modelPath: String?,
+    ) {
+        // The one-slot `last_gcode_path` used to be all the app kept, and a finished
+        // slice disappeared with the model that produced it. Filing it moves the file
+        // into the G-code history, and the app works from the archived path from here on.
+        val filed =
+            gcodePath
+                ?.let { path ->
+                    File(path)
+                        .takeIf { it.exists() }
+                        ?.let { gcodeHistory.record(it, modelPath, _config.value.printer) }
+                        ?: path
+                }
+        prefs
+            .edit()
+            .putString("last_gcode_path", filed)
+            .putString("last_model_path", modelPath)
+            .apply()
+        if (filed != null && filed != gcodePath && (this.gcodePath == null || this.gcodePath == gcodePath)) {
+            this.gcodePath = filed
+        }
+    }
+
+    private fun observeSliceService() {
+        viewModelScope.launch {
+            SliceForegroundService.state.collect { s ->
+                if (s.jobId == 0L) {
+                    // Ignore a stale cleared-job emission while a newly started slice is waiting
+                    // for SliceForegroundService.onStartCommand, unless it explicitly cancelled.
+                    if (activeSliceJobId != 0L && s.status != "Cancelled") {
+                        return@collect
+                    }
+                    activeSliceJobId = 0L
+                    _slicing.value = false
+                    _sliceProgress.value = 0f
+                    if (_screen.value == Screen.Slicing) {
+                        _screen.value = Screen.PrintSetup
+                    }
+                    return@collect
+                }
+
+                _sliceProgress.value = s.progress
+                _sliceStatus.value = s.status
+                _slicing.value = s.isRunning
+                s.gcodePath?.let { gcodePath = it }
+                s.preview?.let { _gcodePreview.value = it }
+                s.stats?.let { _gcodeStats.value = it }
+
+                if (!s.isRunning && s.error != null && s.jobId != handledSliceErrorJobId) {
+                    handledSliceErrorJobId = s.jobId
+                    if (activeSliceJobId == s.jobId) activeSliceJobId = 0L
+                    _sliceStatus.value = "Error: ${s.error}"
+                    _cloudMessage.value = _sliceStatus.value
+                    if (_screen.value == Screen.Slicing) {
+                        _screen.value = Screen.PrintSetup
+                    }
+                    SliceForegroundService.clearFinishedJob()
+                }
+
+                if (!s.isRunning && s.error == null && s.gcodePath != null && s.jobId != handledSliceJobId) {
+                    handledSliceJobId = s.jobId
+                    val wasActiveJob = activeSliceJobId == s.jobId
+                    if (wasActiveJob) activeSliceJobId = 0L
+                    val finishedGcodePath = s.gcodePath
+                    val finishedModelPath = modelPath
+                    val autoPrint = s.autoPrint
+                    // Ensure Preview always has a non-null GcodePreview so MainActivity never bounces
+                    // Screen.Preview back to Home, and switch screens immediately without blocking on
+                    // offscreen thumbnail rendering or disk archiving.
+                    if (_gcodePreview.value == null) {
+                        _gcodePreview.value = s.preview ?: GcodePreview(emptyList(), 0f, 0f, 1f, 1f, 1f)
+                    }
+                    val curScreen = _screen.value
+                    if (curScreen == Screen.Slicing ||
+                        (wasActiveJob && (curScreen == Screen.PrintSetup || curScreen == Screen.Slice))
+                    ) {
+                        showPreview(Screen.PrintSetup)
+                    }
+                    SliceForegroundService.clearFinishedJob()
+                    sliceFinalizeJob =
+                        viewModelScope.launch {
+                            withTimeoutOrNull(3_000L) {
+                                injectGcodeThumbnail(finishedGcodePath)
+                            }
+                            withContext(Dispatchers.IO) {
+                                runCatching { persistSliceResult(finishedGcodePath, finishedModelPath) }
+                                    .onFailure { android.util.Log.w("AppViewModel", "persistSliceResult failed", it) }
+                            }
+                            if (autoPrint) {
+                                val p = selectedPrinter
+                                if (p?.cloudPrinter != null && cloudLoggedIn) {
+                                    sendToPrinter(p.cloudPrinter)
+                                } else {
+                                    _cloudMessage.value = "Sliced. Connect a printer to print."
+                                }
+                            }
+                        }
+                }
+            }
+        }
+    }
+
+    fun signIn() {
+        // Opens the Elegoo web login; token handoff completes via checkSession when the user returns.
+    }
+
+    /** The provider whose tab is currently open, so the callback knows what it was asked for. */
+    private var pendingSocialProvider: String? = null
+
+    /** "Google" / "Facebook" — how a provider name reads in the app's own copy. */
+    private fun providerLabel(provider: String): String = CloudSocialLogin.normalizeProvider(provider).replaceFirstChar { it.uppercase() }
+
+    /**
+     * Open Google (or Facebook) sign-in in a browser tab. Elegoo runs the OAuth dance with Google on
+     * its own server, so the app only has to render their redirect and wait — the answer comes back on
+     * the `world.yemyat.slicepilot://social/google` deep link, where [completeSocialSignIn] picks it up.
+     */
+    fun startSocialSignIn(
+        context: Context,
+        provider: String = CloudSocialLogin.PROVIDER_GOOGLE,
+    ) {
+        val url = cloud.auth.socialSignInUrl(provider)
+        try {
+            CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url))
+        } catch (e: ActivityNotFoundException) {
+            _cloudMessage.value = "No browser on this device for ${providerLabel(provider)} sign-in — use email and password."
+            return
+        }
+        pendingSocialProvider = CloudSocialLogin.normalizeProvider(provider)
+        EventNotifier.trackEvent("social_sign_in_started", mapOf("provider" to pendingSocialProvider.orEmpty()))
+    }
+
+    /**
+     * The browser tab came back with a provider token: trade it for a session and then behave exactly
+     * like [nativeLogin] did, so every screen downstream sees one kind of signed-in account.
+     *
+     * Returns false when the uri is not a social callback, which is how [MainActivity] lets the other
+     * deep links (models, print actions) through.
+     */
+    fun completeSocialSignIn(uri: Uri): Boolean {
+        val url = uri.toString()
+        val provider = CloudSocialLogin.providerOf(url) ?: return false
+        val token = CloudSocialLogin.tokenOf(url)
+        val askedFor = providerLabel(pendingSocialProvider ?: provider)
+        pendingSocialProvider = null
+
+        if (token.isNullOrBlank()) {
+            // The provider refused instead of handing a token back: suspended account, new password…
+            _cloudMessage.value = CloudSocialLogin.errorOf(url) ?: "$askedFor sign-in did not finish"
+            return true
+        }
+
+        viewModelScope.launch {
+            when (val result = cloud.auth.loginWithSocial(provider, token)) {
+                is CloudAuthResult.Ok -> {
+                    disableDemo()
+                    _cloudReconnectNeeded.value = false
+                    prefs.edit().putString("last_cloud_auth_method", askedFor).apply()
+                    EventNotifier.trackEvent(
+                        "cloud_login_success",
+                        mapOf("user" to cloud.auth.nickname, "method" to askedFor),
+                    )
+                    _cloudMessage.value =
+                        listOfNotNull("Signed in as ${cloud.auth.nickname.ifBlank { askedFor }}", result.value.setupNote)
+                            .joinToString(" · ")
+                    refreshPrinters()
+                }
+
+                is CloudAuthResult.Err -> {
+                    EventNotifier.trackError(
+                        "cloud_login_failed",
+                        null,
+                        mapOf("message" to result.message, "method" to askedFor),
+                    )
+                    _cloudMessage.value = result.message
+                }
+            }
+        }
+        return true
+    }
+
+    fun nativeLogin(
+        email: String,
+        password: String,
+        done: (Boolean) -> Unit = {},
+    ) {
+        if (email.trim().lowercase() == DEMO_EMAIL && password == DEMO_PASSWORD) {
+            enableDemo()
+            done(true)
+            return
+        }
+        viewModelScope.launch {
+            when (val r = cloud.auth.login(email, password)) {
+                is CloudAuthResult.Ok -> {
+                    disableDemo()
+                    _cloudReconnectNeeded.value = false
+                    prefs.edit().putString("last_cloud_auth_method", "password").apply()
+                    EventNotifier.trackEvent(
+                        "cloud_login_success",
+                        mapOf("user" to cloud.auth.nickname, "method" to "password"),
+                    )
+                    _cloudMessage.value = "Signed in as ${cloud.auth.nickname}"
+                    refreshPrinters()
+                    done(true)
+                }
+
+                is CloudAuthResult.Err -> {
+                    EventNotifier.trackError(
+                        "cloud_login_failed",
+                        null,
+                        mapOf("message" to r.message, "method" to "password"),
+                    )
+                    _cloudMessage.value = r.message
+                    done(false)
+                }
+            }
+        }
+    }
+
+    /**
+     * Requests a 6-digit login verification code from Elegoo's account center for [email].
+     * Calls [done] with the resend cooldown in seconds on success, or an error message on failure.
+     */
+    fun sendEmailLoginCode(
+        email: String,
+        done: (cooldownSeconds: Int?, errorMessage: String?) -> Unit = { _, _ -> },
+    ) {
+        viewModelScope.launch {
+            when (val r = cloud.auth.sendEmailLoginCode(email)) {
+                is CloudAuthResult.Ok -> {
+                    EventNotifier.trackEvent("cloud_email_code_sent")
+                    _cloudMessage.value = "Verification code sent to ${email.trim()}"
+                    done(r.value, null)
+                }
+
+                is CloudAuthResult.Err -> {
+                    EventNotifier.trackError(
+                        "cloud_email_code_failed",
+                        null,
+                        mapOf("message" to r.message),
+                    )
+                    _cloudMessage.value = r.message
+                    done(null, r.message)
+                }
+            }
+        }
+    }
+
+    /**
+     * Signs in to Elegoo / Nexprint with [email] and the 6-digit [code] from [sendEmailLoginCode].
+     */
+    fun loginWithEmailCode(
+        email: String,
+        code: String,
+        done: (Boolean) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            when (val r = cloud.auth.loginWithEmailCode(email, code)) {
+                is CloudAuthResult.Ok -> {
+                    disableDemo()
+                    _cloudReconnectNeeded.value = false
+                    val trimmed = email.trim()
+                    prefs
+                        .edit()
+                        .putString("cloud_email", trimmed)
+                        .putString("last_cloud_auth_method", "email_code")
+                        .apply()
+                    EventNotifier.trackEvent(
+                        "cloud_login_success",
+                        mapOf("user" to cloud.auth.nickname, "method" to "email_code"),
+                    )
+                    _cloudMessage.value =
+                        listOfNotNull(
+                            "Signed in as ${cloud.auth.nickname.ifBlank { trimmed.substringBefore('@') }}",
+                            r.value.setupNote,
+                        ).joinToString(" · ")
+                    refreshPrinters()
+                    done(true)
+                }
+
+                is CloudAuthResult.Err -> {
+                    EventNotifier.trackError(
+                        "cloud_login_failed",
+                        null,
+                        mapOf("message" to r.message, "method" to "email_code"),
+                    )
+                    _cloudMessage.value = r.message
+                    done(false)
+                }
+            }
+        }
+    }
+
+    /** One pairing attempt, for the Add printer dialog: in flight, failed with a message, or done. */
+    data class PairingAttempt(
+        val busy: Boolean = false,
+        val error: String? = null,
+        val printerName: String? = null,
+    )
+
+    private val _pairingAttempt = MutableStateFlow<PairingAttempt?>(null)
+    val pairingAttempt: StateFlow<PairingAttempt?> = _pairingAttempt.asStateFlow()
+
+    /**
+     * Pair a printer the account doesn't have yet — the app's half of Matrix's Add device flow
+     * (see [PairingCode] for the two values the cloud asks for: the printer's serial and its PIN).
+     *
+     * Before this, an account with no printers was a dead end: the cloud list was the only source
+     * of printers, so a printer that had never been claimed could never be printed on from here.
+     */
+    fun pairPrinter(
+        rawPincode: String,
+        rawPcode: String = "",
+        via: String = "pin",
+    ) {
+        if (_pairingAttempt.value?.busy == true) return
+        val pincode = PairingCode.normalizePincode(rawPincode)
+        val pcode = PairingCode.normalizePcode(rawPcode)
+        if (pincode == null) {
+            _pairingAttempt.value =
+                PairingAttempt(
+                    error =
+                        if (rawPincode.trim().isEmpty()) {
+                            "Enter the 6-character PIN shown on your printer"
+                        } else {
+                            "PIN must be 6 letters or numbers (as shown on your printer)"
+                        },
+                )
+            return
+        }
+        if (_demoMode.value) {
+            // Demo has no account to bind to, so it is simulated like demo printing is.
+            val demo =
+                _printers.value.firstOrNull() ?: CloudPrinter(DEMO_PRINTER_ID, "Demo Centauri Carbon 2", "Centauri Carbon 2", true)
+            EventNotifier.trackEvent("printer_paired", mapOf("via" to via, "printer" to demo.name, "demo" to true))
+            selectCloudPrinter(demo)
+            _pairingAttempt.value = PairingAttempt(printerName = demo.name)
+            return
+        }
+        _pairingAttempt.value = PairingAttempt(busy = true)
+        viewModelScope.launch {
+            val result =
+                when (val identified = identifyPrinter(pincode, pcode)) {
+                    is CloudResult.Err -> {
+                        CloudResult.Err(identified.message)
+                    }
+
+                    is CloudResult.Ok -> {
+                        when (val checked = cloud.checkPincode(identified.value)) {
+                            is CloudResult.Err -> CloudResult.Err(checked.message)
+                            is CloudResult.Ok -> cloud.bindPrinter(checked.value)
+                        }
+                    }
+                }
+            when (result) {
+                is CloudResult.Ok -> {
+                    EventNotifier.trackEvent(
+                        "printer_paired",
+                        mapOf("via" to via, "printer" to result.value.name, "model" to result.value.model),
+                    )
+                    refreshPrinters()
+                    selectCloudPrinter(result.value)
+                    _cloudMessage.value = "${result.value.name} is paired"
+                    _pairingAttempt.value = PairingAttempt(printerName = result.value.name)
+                }
+
+                is CloudResult.Err -> {
+                    EventNotifier.trackError("printer_pair_failed", null, mapOf("via" to via, "message" to result.message))
+                    _pairingAttempt.value = PairingAttempt(error = result.message)
+                }
+            }
+        }
+    }
+
+    /**
+     * The values `check-pincode` wants, from whatever the user gave. A typed PIN is asked about
+     * with `pincode/detail` the way Matrix's PIN entry does it, and that answer is where both the
+     * pcode and the serial come from — so a second field is never needed unless it was scanned or
+     * copied from the label, in which case it goes in the pcode slot it belongs to.
+     */
+    private suspend fun identifyPrinter(
+        pincode: String?,
+        pcode: String?,
+    ): CloudResult<PairingValues> {
+        if (pincode.isNullOrBlank()) {
+            return CloudResult.Err("Enter the PIN code the printer's settings show")
+        }
+        val scanned = pcode?.let { PairingValues(pcode = it, pincode = pincode) }
+        // Ask the cloud first, exactly as Matrix's PIN entry does: its answer is the only current
+        // answer. A QR's pcode is kept as the fallback, never the priority — a QR from an earlier
+        // pairing carries a PIN that has since expired, and pairing with it answers
+        // `pcode not match serialno` because the cloud matches the PIN to a different printer.
+        return when (val detail = cloud.pincodeDetail(pincode)) {
+            is CloudResult.Ok -> {
+                CloudResult.Ok(detail.value.orElse(scanned ?: PairingValues(pincode = pincode)))
+            }
+
+            is CloudResult.Err -> {
+                scanned?.let { CloudResult.Ok(it) } ?: CloudResult.Err(detail.message)
+            }
+        }
+    }
+
+    fun dismissPairing() {
+        _pairingAttempt.value = null
+    }
+
+    private var autoLoginJob: Job? = null
+
+    /**
+     * Silently signs back in at app start when the user checked "Remember password".
+     * The Elegoo cloud only allows one session per account, so being signed out on
+     * another device leaves the saved tokens dead; a fresh login restores the session.
+     */
+    private fun tryAutoLogin() {
+        if (_demoMode.value) return
+        if (autoLoginJob?.isActive == true) return
+        val email = savedCloudEmail
+        val password = savedCloudPassword // non-blank only when "Remember password" is set
+        if (email.isBlank() || password.isBlank()) return
+        autoLoginJob =
+            viewModelScope.launch {
+                when (val r = cloud.auth.login(email, password)) {
+                    is CloudAuthResult.Ok -> {
+                        android.util.Log.i("AppViewModel", "auto-login succeeded for $email")
+                        EventNotifier.trackEvent("cloud_auto_login", mapOf("user" to cloud.auth.nickname))
+                        refreshPrinters()
+                    }
+
+                    is CloudAuthResult.Err -> {
+                        android.util.Log.w("AppViewModel", "auto-login failed: ${r.message}")
+                        EventNotifier.trackEvent("cloud_auto_login_failed", mapOf("message" to r.message))
+                    }
+                }
+            }
+    }
+
+    fun checkSession() {
+        if (_demoMode.value) return
+        if (!cloud.auth.isLoggedIn) {
+            // A sign-in may be in flight from app start; don't clobber its new tokens.
+            tryAutoLogin()
+            return
+        }
+        if (checkSessionJob?.isActive == true) return
+        val wasLoggedIn = cloud.auth.isLoggedIn
+        checkSessionJob =
+            viewModelScope.launch {
+                when (val r = cloud.validateSession()) {
+                    is CloudResult.Ok -> {
+                        EventNotifier.trackEvent(
+                            "cloud_session_validated",
+                            mapOf("user" to r.value.email.orEmpty()),
+                        )
+                        cloud.auth.saveSession(
+                            cloud.auth.accessToken ?: "",
+                            cloud.auth.refreshToken,
+                            r.value.nickname,
+                            r.value.email,
+                        )
+                        refreshPrinters()
+                    }
+
+                    is CloudResult.Err -> {
+                        android.util.Log.w("AppViewModel", "checkSession failed: ${r.message}")
+                        if (cloud.auth.isAuthFailure(r.message)) {
+                            EventNotifier.trackEvent(
+                                "cloud_session_expired",
+                                mapOf("was_logged_in" to wasLoggedIn, "message" to r.message),
+                            )
+                            handleCloudSessionEvicted(wasLoggedIn)
+                        } else if (wasLoggedIn) {
+                            _cloudMessage.value = r.message
+                        }
+                    }
+                }
+            }
+    }
+
+    private fun handleCloudSessionEvicted(wasLoggedIn: Boolean) {
+        if (wasLoggedIn && savedCloudEmail.isNotBlank() && savedCloudPassword.isNotBlank()) {
+            // Silently recover saved email/password sessions when Elegoo evicts the token.
+            handleCloudSignedOut(null)
+            tryAutoLogin()
+            return
+        }
+        if (wasLoggedIn) _cloudReconnectNeeded.value = true
+        handleCloudSignedOut(
+            if (wasLoggedIn) "Signed out — Elegoo allows one active session at a time" else null,
+        )
+    }
+
+    private fun handleCloudSignedOut(message: String? = null) {
+        val wasCloudSelected = _selectedPrinter.value?.isLocal == false
+        val hadCloudState = wasCloudSelected || _printers.value.isNotEmpty() || cloud.auth.isLoggedIn
+        if (!hadCloudState && message.isNullOrBlank()) return
+
+        EventNotifier.trackEvent(
+            "cloud_signed_out",
+            mapOf(
+                "message" to message.orEmpty(),
+                "was_cloud_selected" to wasCloudSelected,
+                "method" to prefs.getString("last_cloud_auth_method", "unknown").orEmpty(),
+            ),
+        )
+        mqtt.stop()
+        cloud.auth.logout()
+        _printers.value = emptyList()
+        if (wasCloudSelected) {
+            _selectedPrinter.value = null
+            _selectedPrinterId.value = null
+            prefs
+                .edit()
+                .remove("cloud_printer_id")
+                .remove("selected_printer_type")
+                .apply()
+        }
+        recomputeAvailablePrinters()
+        if (!message.isNullOrBlank()) _cloudMessage.value = message
+    }
+
+    suspend fun tryLoginWithWebViewCookies(): Boolean {
+        if (_demoMode.value) return false
+        val cookie = cloud.auth.captureWebViewCookie()
+        if (cookie.isBlank()) return false
+        cloud.auth.sessionCookie = cookie
+        return when (val r = cloud.auth.checkSession()) {
+            is CloudAuthResult.Ok -> {
+                cloud.auth.saveSession(
+                    cloud.auth.accessToken ?: "",
+                    cloud.auth.refreshToken,
+                    r.value.nickname,
+                    r.value.email,
+                )
+                cloud.auth.sessionCookie = cookie
+                refreshPrinters()
+                true
+            }
+
+            is CloudAuthResult.Err -> {
+                android.util.Log.i("CloudClient", "tryLogin not yet: ${r.message}")
+                false
+            }
+        }
+    }
+
+    private fun recomputeAvailablePrinters() {
+        val list = mutableListOf<ConnectedPrinter>()
+        val seen = mutableSetOf<String>()
+
+        for (lp in _lanPrinters.value) {
+            if (!lp.lanMode) continue
+            val key = "lan:${lp.serial.ifBlank { lp.ip }}"
+            if (seen.add(key)) {
+                list.add(lp.toConnectedPrinter())
+            }
+        }
+        val selLan = _selectedLanPrinter.value
+        if (selLan != null && selLan.lanMode) {
+            val key = "lan:${selLan.serial.ifBlank { selLan.ip }}"
+            if (seen.add(key)) {
+                list.add(selLan.toConnectedPrinter())
+            }
+        }
+        for (cp in _printers.value) {
+            val key = "cloud:${cp.id}"
+            if (seen.add(key)) {
+                list.add(cp.toConnectedPrinter())
+            }
+        }
+        _availablePrinters.value = list
+    }
+
+    fun refreshPrinters() {
+        if (_demoMode.value) {
+            val demoPrinter =
+                CloudPrinter(
+                    id = DEMO_PRINTER_ID,
+                    name = "Demo Centauri Carbon 2",
+                    model = "Centauri Carbon 2",
+                    online = true,
+                )
+            _printers.value = listOf(demoPrinter)
+            recomputeAvailablePrinters()
+            val printerType = prefs.getString("selected_printer_type", null)
+            if (!disconnectedByUser && (_selectedPrinter.value == null || printerType == "cloud")) {
+                selectCloudPrinter(demoPrinter)
+            }
+            _filaments.value = _filaments.value + (
+                DEMO_PRINTER_ID to
+                    world.yemyat.slicepilot.cloud.FilamentInfo(
+                        present = true,
+                        name = "Demo PLA",
+                        colorHex = "#E53935",
+                        remaining = 80,
+                        trays =
+                            listOf(
+                                world.yemyat.slicepilot.cloud.LoadedTray(
+                                    trayId = 0,
+                                    name = "Demo Red PLA",
+                                    type = "PLA",
+                                    colorHex = "#E53935",
+                                    canvasId = 0,
+                                ),
+                                world.yemyat.slicepilot.cloud.LoadedTray(
+                                    trayId = 1,
+                                    name = "Demo White PLA",
+                                    type = "PLA",
+                                    colorHex = "#F5F5F5",
+                                    canvasId = 0,
+                                ),
+                                world.yemyat.slicepilot.cloud.LoadedTray(
+                                    trayId = 2,
+                                    name = "Demo Blue PLA",
+                                    type = "PLA",
+                                    colorHex = "#1E88E5",
+                                    canvasId = 0,
+                                ),
+                                world.yemyat.slicepilot.cloud.LoadedTray(
+                                    trayId = 3,
+                                    name = "Demo Black PLA",
+                                    type = "PLA",
+                                    colorHex = "#212121",
+                                    canvasId = 0,
+                                ),
+                            ),
+                    )
+            )
+            _cloudMessage.value = "Demo printer ready — printing is simulated."
+            return
+        }
+        val wasLoggedIn = cloud.auth.isLoggedIn
+        viewModelScope.launch {
+            when (val r = cloud.listPrinters()) {
+                is CloudResult.Ok -> {
+                    _printers.value = r.value
+                    EventNotifier.trackEvent(
+                        "cloud_printers_refreshed",
+                        mapOf(
+                            "count" to r.value.size,
+                            "online_count" to r.value.count { it.online },
+                        ),
+                    )
+                    recomputeAvailablePrinters()
+                    val printerType = prefs.getString("selected_printer_type", null)
+                    if (!disconnectedByUser && (_selectedPrinter.value == null || printerType == "cloud")) {
+                        val savedId = _selectedPrinterId.value
+                        val match =
+                            r.value.firstOrNull { it.id == savedId }
+                                ?: r.value.firstOrNull { it.online }
+                                ?: r.value.firstOrNull()
+                        if (match != null) {
+                            val cur = _selectedPrinter.value
+                            val unchanged =
+                                cur != null &&
+                                    !cur.isLocal &&
+                                    cur.id == match.id &&
+                                    cur.name == match.name &&
+                                    cur.model == match.model &&
+                                    cur.online == match.online
+                            if (!unchanged) selectCloudPrinter(match, auto = true)
+                        }
+                    }
+                    startMqtt()
+                    refreshFilaments(r.value)
+                }
+
+                is CloudResult.Err -> {
+                    android.util.Log.w("AppViewModel", "refreshPrinters failed: ${r.message}")
+                    if (cloud.auth.isAuthFailure(r.message)) {
+                        handleCloudSessionEvicted(wasLoggedIn)
+                    } else if (wasLoggedIn) {
+                        _cloudMessage.value = r.message
+                    }
+                }
+            }
+        }
+    }
+
+    private fun refreshFilaments(printers: List<CloudPrinter>) {
+        viewModelScope.launch {
+            for (p in printers.filter { it.online }) {
+                val f = cloud.getFilament(p.id)
+                if (f != null) {
+                    _filaments.value = _filaments.value + (p.id to f)
+                }
+            }
+        }
+    }
+
+    private fun startMqtt() {
+        if (mqtt.connected || mqttStartJob?.isActive == true) return
+        mqttStartJob =
+            viewModelScope.launch {
+                when (val r = cloud.getMqttConfig()) {
+                    is CloudResult.Ok -> {
+                        val c = r.value
+                        mqtt.start(c.host, c.port, c.path, c.clientId, c.username, c.password, c.topicFilter, c.extraTopicFilters)
+                    }
+
+                    is CloudResult.Err -> {
+                        android.util.Log.w("AppViewModel", "mqtt config: ${r.message}")
+                    }
+                }
+            }
+    }
+
+    fun enableDemo() {
+        _demoMode.value = true
+        setDisconnectedByUser(false)
+        prefs.edit().putBoolean("demo_mode", true).apply()
+        EventNotifier.trackEvent("demo_mode_enabled")
+        _cloudMessage.value = "Demo mode enabled — no real printer is connected."
+        refreshPrinters()
+        ensureDemoModel()
+    }
+
+    fun disableDemo() {
+        val wasDemo = _demoMode.value
+        _demoMode.value = false
+        prefs.edit().remove("demo_mode").apply()
+        if (wasDemo) {
+            EventNotifier.trackEvent("demo_mode_disabled")
+            if (modelPath == File(cacheDir, DEMO_MODEL_FILE).absolutePath) {
+                clearModel()
+            }
+            if (_selectedPrinterId.value == DEMO_PRINTER_ID || _selectedPrinter.value?.cloudPrinter?.id == DEMO_PRINTER_ID) {
+                _selectedPrinter.value = null
+                _selectedPrinterId.value = null
+                prefs
+                    .edit()
+                    .remove("cloud_printer_id")
+                    .remove("selected_printer_type")
+                    .apply()
+            }
+            _printers.value = emptyList()
+            recomputeAvailablePrinters()
+            if (cloud.auth.isLoggedIn) refreshPrinters()
+        }
+    }
+
+    fun signOut() {
+        if (_demoMode.value) {
+            disableDemo()
+            _cloudMessage.value = "Demo mode ended"
+            return
+        }
+        EventNotifier.trackEvent("cloud_sign_out")
+        handleCloudSignedOut("Signed out")
+    }
+
+    fun scanLan(context: android.content.Context) {
+        if (_lanScanning.value) return
+        viewModelScope.launch {
+            _lanScanning.value = true
+            val scanStartedAt = System.currentTimeMillis()
+            EventNotifier.trackEvent("lan_scan_started")
+            try {
+                val found = lanPrint.discoverAll(context.applicationContext, 5000)
+                _lanPrinters.value = found
+                recomputeAvailablePrinters()
+                for (p in found) {
+                    EventNotifier.trackEvent(
+                        "lan_printer_found",
+                        mapOf(
+                            "name" to p.name,
+                            "model" to p.model,
+                            "ip" to p.ip,
+                            "lan_mode" to p.lanMode,
+                        ),
+                    )
+                    refreshLanFilament(p)
+                }
+
+                val selectable = found.filter { it.lanMode }
+                EventNotifier.trackEvent(
+                    "lan_scan_completed",
+                    mapOf(
+                        "found" to found.size,
+                        "selectable" to selectable.size,
+                        "cloud_only" to (found.size - selectable.size),
+                        "duration_ms" to (System.currentTimeMillis() - scanStartedAt),
+                    ),
+                )
+                val current = _selectedLanPrinter.value
+                if (current != null) {
+                    val updated = found.firstOrNull { it.serial == current.serial || it.ip == current.ip }
+                    if (updated != null) {
+                        if (updated.lanMode) {
+                            selectLanPrinter(updated)
+                        } else {
+                            clearSelectedPrinter()
+                            _cloudMessage.value =
+                                "This printer is in cloud mode. Switch it to LAN-only mode to connect locally."
+                        }
+                    }
+                } else if (!disconnectedByUser && _selectedPrinter.value == null && selectable.isNotEmpty()) {
+                    selectLanPrinter(selectable.first())
+                } else if (found.isNotEmpty() && selectable.isEmpty()) {
+                    val noun = if (found.size == 1) "printer" else "printers"
+                    _cloudMessage.value =
+                        "Found ${found.size} $noun in cloud mode. Switch one to LAN-only mode to connect locally."
+                }
+            } finally {
+                _lanScanning.value = false
+            }
+        }
+    }
+
+    private val _moonrakerConnecting = MutableStateFlow(false)
+    val moonrakerConnecting: StateFlow<Boolean> = _moonrakerConnecting.asStateFlow()
+    private val _moonrakerConnectError = MutableStateFlow<String?>(null)
+    val moonrakerConnectError: StateFlow<String?> = _moonrakerConnectError.asStateFlow()
+
+    fun clearMoonrakerConnectError() {
+        _moonrakerConnectError.value = null
+    }
+
+    /**
+     * Manually connect to an OpenCentauri COSMOS or Klipper/Moonraker printer by IP or hostname
+     * (e.g. `192.168.1.42`, `cosmos.local`, or `192.168.1.42:7125`).
+     */
+    fun connectMoonrakerByHost(
+        rawHost: String,
+        apiKey: String = "",
+    ) {
+        if (_moonrakerConnecting.value) return
+        viewModelScope.launch {
+            _moonrakerConnecting.value = true
+            _moonrakerConnectError.value = null
+            try {
+                when (val res = lanPrint.probeMoonraker(rawHost, apiKey)) {
+                    is CloudResult.Ok -> {
+                        val printer = res.value
+                        if (apiKey.isNotBlank()) {
+                            prefs.edit().putString(accessCodeKey(printer), apiKey.trim()).apply()
+                        }
+                        val existing = _lanPrinters.value.filterNot { it.ip == printer.ip && it.port == printer.port }
+                        _lanPrinters.value = listOf(printer) + existing
+                        selectLanPrinter(printer)
+                        _cloudMessage.value = "Connected to ${printer.name}"
+                        EventNotifier.trackEvent(
+                            "lan_moonraker_manual_connected",
+                            mapOf("model" to printer.model, "port" to printer.port),
+                        )
+                    }
+
+                    is CloudResult.Err -> {
+                        _moonrakerConnectError.value = res.message
+                    }
+                }
+            } finally {
+                _moonrakerConnecting.value = false
+            }
+        }
+    }
+
+    fun selectLanPrinter(printer: world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter) {
+        if (!printer.lanMode) {
+            _cloudMessage.value =
+                "This printer is in cloud mode. Switch it to LAN-only mode to connect locally."
+            return
+        }
+        _selectedLanPrinter.value = printer
+        _selectedPrinter.value = printer.toConnectedPrinter()
+        setDisconnectedByUser(false)
+        openQueuedPrintSetup()
+        prefs
+            .edit()
+            .putString("selected_printer_type", "lan")
+            .putString("lan_printer_serial", printer.serial)
+            .putString("lan_printer_ip", printer.ip)
+            .putString("lan_printer_name", printer.name)
+            .putString("lan_printer_model", printer.model)
+            .putString("lan_printer_protocol", printer.protocol.name)
+            .putInt("lan_printer_port", printer.port)
+            .putBoolean("lan_printer_lan_mode", true)
+            .apply()
+        recomputeAvailablePrinters()
+        syncPrinterProfileToConfig()
+
+        // Check if we have cached filament for this printer or use default
+        val cached =
+            printer.serial.takeIf { it.isNotBlank() }?.let { prefs.getString("filament_$it", null) }
+                ?: printer.ip.takeIf { it.isNotBlank() }?.let { prefs.getString("filament_$it", null) }
+        val info =
+            cached?.let { parseFilamentJson(it) }
+                ?: world.yemyat.slicepilot.cloud
+                    .FilamentInfo(present = false)
+        applyFilament(printer.serial, printer.ip, info)
+        refreshLanFilament(printer)
+        if (printer.needsAccessCode && storedAccessCode(printer).isBlank()) {
+            _accessCodePrompt.value = printer
+        }
+        EventNotifier.trackEvent(
+            "printer_selected",
+            mapOf(
+                "type" to "local",
+                "printer" to printer.name,
+                "model" to printer.model,
+                "ip" to printer.ip,
+            ),
+        )
+    }
+
+    fun selectPrinter(printer: ConnectedPrinter) {
+        if (printer.isLocal) {
+            printer.lanPrinter?.let { selectLanPrinter(it) } ?: run {
+                val lp =
+                    world.yemyat.slicepilot.cloud.LanPrintManager.DiscoveredPrinter(
+                        ip = printer.ip ?: "",
+                        serial = printer.serial ?: "",
+                        model = printer.model,
+                        name = printer.name,
+                    )
+                selectLanPrinter(lp)
+            }
+        } else {
+            printer.cloudPrinter?.let { selectCloudPrinter(it) } ?: run {
+                val cp =
+                    CloudPrinter(
+                        id = printer.id,
+                        name = printer.name,
+                        model = printer.model,
+                        online = printer.online,
+                    )
+                selectCloudPrinter(cp)
+            }
+        }
+    }
+
+    fun clearSelectedPrinter() {
+        setDisconnectedByUser(true)
+        val previous = _selectedPrinter.value
+        EventNotifier.trackEvent(
+            "printer_disconnected",
+            mapOf(
+                "printer" to previous?.name.orEmpty(),
+                "type" to if (previous?.isLocal == true) "local" else "cloud",
+            ),
+        )
+        _selectedPrinter.value = null
+        _selectedLanPrinter.value = null
+        _selectedPrinterId.value = null
+        prefs
+            .edit()
+            .remove("selected_printer_type")
+            .remove("lan_printer_serial")
+            .remove("lan_printer_ip")
+            .remove("lan_printer_name")
+            .remove("lan_printer_model")
+            .remove("lan_printer_protocol")
+            .remove("lan_printer_port")
+            .remove("lan_printer_lan_mode")
+            .remove("cloud_printer_id")
+            .apply()
+        recomputeAvailablePrinters()
+    }
+
+    fun sendToPrinter(printer: CloudPrinter) {
+        if (_demoMode.value) {
+            viewModelScope.launch {
+                awaitSliceFinalized()
+                if (gcodePath == null) {
+                    _cloudMessage.value = "No sliced file to print"
+                    return@launch
+                }
+                simulateDemoPrint(printer.toConnectedPrinter())
+            }
+            return
+        }
+        viewModelScope.launch {
+            awaitSliceFinalized()
+            val gp = gcodePath
+            if (gp == null) {
+                _cloudMessage.value = "No sliced file to print"
+                return@launch
+            }
+            _cloudMessage.value = "Preparing print…"
+            when (val r = cloudPrint.print(printer, File(gp), currentPrintSlots()) { msg -> _cloudMessage.value = msg }) {
+                is CloudResult.Ok -> _cloudMessage.value = "Print started on ${printer.name}"
+                is CloudResult.Err -> _cloudMessage.value = r.message
+            }
+        }
+    }
+
+    /** Print the sliced file: cloud when signed in, otherwise local network. */
+    fun printSliced(context: android.content.Context) {
+        val gp = gcodePath
+        if (gp == null) {
+            _cloudMessage.value = "No sliced file to print"
+            return
+        }
+        val sp = selectedPrinter
+        if (sp == null) {
+            _cloudMessage.value = "No printer selected"
+            return
+        }
+        if (_demoMode.value) {
+            startPrint(context)
+            return
+        }
+        if (sp.isLocal) {
+            val lanTarget = sp.lanPrinter ?: _selectedLanPrinter.value
+            viewModelScope.launch {
+                _cloudMessage.value = "Preparing local print…"
+                val accessCode = lanTarget?.let { storedAccessCode(it) }.orEmpty()
+                when (
+                    val r =
+                        lanPrint.print(context.applicationContext, File(gp), lanTarget, currentPrintSlots(), accessCode) { msg ->
+                            _cloudMessage.value =
+                                msg
+                        }
+                ) {
+                    is CloudResult.Ok -> {
+                        _cloudMessage.value = "Print started on ${sp.name}"
+                    }
+
+                    is CloudResult.Err -> {
+                        if (world.yemyat.slicepilot.cloud.LanPrintManager
+                                .isAccessCodeRejection(r.message)
+                        ) {
+                            handleAccessCodeRejection(sp)
+                        }
+                        _cloudMessage.value = r.message
+                    }
+                }
+            }
+        } else {
+            val cp = sp.cloudPrinter ?: _printers.value.firstOrNull { it.id == sp.id }
+            if (cp == null || !cloudLoggedIn) {
+                _cloudMessage.value = "Sign in to cloud to print on ${sp.name}"
+                return
+            }
+            sendToPrinter(cp)
+        }
+    }
+
+    override fun onCleared() {
+        cloudPrint.release()
+        lanPrintMonitor.shutdown()
+        lanPrintMonitorCc1.shutdown()
+        lanPrintMonitorMoonraker.shutdown()
+        super.onCleared()
+    }
+
+    fun consumeCloudMessage() {
+        _cloudMessage.value = null
+        _cloudReconnectNeeded.value = false
+    }
+}

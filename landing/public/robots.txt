@@ -1,0 +1,30 @@
+User-agent: *
+Allow: /
+
+# Explicitly welcome search & AI answer-engine crawlers
+User-agent: Googlebot
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+Sitemap: https://slicepilot.eu/sitemap.xml
+# AI-readable project summary: https://slicepilot.eu/llms.txt

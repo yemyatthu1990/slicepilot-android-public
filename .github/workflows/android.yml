@@ -1,0 +1,88 @@
+name: Android CI
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Repository secrets (Settings -> Secrets and variables -> Actions) are
+      # written to the gitignored locations the Gradle build expects:
+      #   BUILD_PROPERTIES        contents of secrets/build.properties (cloud
+      #                           endpoints, client ids, RSA public key, Agora App ID)
+      #   GOOGLE_SERVICES_JSON    Firebase config for the SlicePilot app
+      #   KEYSTORE_PROPERTIES     contents of secrets/upload-keystore.properties
+      #   UPLOAD_KEYSTORE_BASE64  base64 of secrets/slicepilot-upload.jks
+      - name: Write build secrets
+        env:
+          BUILD_PROPERTIES: ${{ secrets.BUILD_PROPERTIES }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          KEYSTORE_PROPERTIES: ${{ secrets.KEYSTORE_PROPERTIES }}
+          UPLOAD_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEYSTORE_BASE64 }}
+        run: |
+          mkdir -p secrets
+          printf '%s\n' "$BUILD_PROPERTIES" > secrets/build.properties
+          printf '%s\n' "$GOOGLE_SERVICES_JSON" > secrets/google-services.json
+          printf '%s\n' "$KEYSTORE_PROPERTIES" > secrets/upload-keystore.properties
+          printf '%s' "$UPLOAD_KEYSTORE_BASE64" | base64 -d > secrets/slicepilot-upload.jks
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build autoconf libtool yasm nasm
+
+      - name: Point build.sh at the runner NDK
+        run: |
+          NDK_VERSION=27.0.12077973
+          if [ ! -d "$ANDROID_HOME/ndk/$NDK_VERSION" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION"
+          fi
+          mkdir -p "$HOME/Android/Sdk/ndk"
+          ln -s "$ANDROID_HOME/ndk/$NDK_VERSION" "$HOME/Android/Sdk/ndk/$NDK_VERSION"
+
+      - name: Restore native dependency cache
+        uses: actions/cache@v4
+        id: native-cache
+        with:
+          path: android/native-build/prefix
+          key: native-prefix-arm64-${{ hashFiles('android/native-build/build.sh') }}
+
+      - name: Fetch native sources
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: scripts/ci_prepare_native_src.sh
+
+      - name: Build native dependencies
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        run: android/native-build/build.sh all
+
+      - name: Assemble release APK and AAB
+        working-directory: android
+        run: ./gradlew :app:assembleRelease :app:bundleRelease
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: |
+            android/app/build/outputs/apk/release/app-release.apk
+            android/app/build/outputs/bundle/release/app-release.aab
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            android/app/build/outputs/apk/release/app-release.apk
+            android/app/build/outputs/bundle/release/app-release.aab

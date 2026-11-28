@@ -1,0 +1,259 @@
+import com.google.firebase.crashlytics.buildtools.gradle.CrashlyticsExtension
+import java.util.Properties
+
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("com.google.gms.google-services")
+    id("com.google.firebase.crashlytics")
+}
+
+val uploadKeystoreProps =
+    Properties().apply {
+        val f = file("../../secrets/upload-keystore.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+
+// Pinned debug key (gitignored, in secrets/). Without it AGP mints a throwaway key per
+// machine, so every fresh build changes signature and `adb install -r` fails with
+// INSTALL_FAILED_UPDATE_INCOMPATIBLE — an uninstall plus app-data wipe per build.
+// Absent (CI, fresh clone) simply falls back to AGP's generated debug key.
+val debugKeystoreProps =
+    Properties().apply {
+        val f = file("../../secrets/debug-keystore.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+
+// Build configuration secrets (cloud endpoints, client ids, keys). Values are
+// never committed: they come from secrets/build.properties locally, from
+// -P<KEY>= / environment in CI, where GitHub repository secrets are exposed.
+val buildSecrets =
+    Properties().apply {
+        val f = file("../../secrets/build.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+
+fun secret(key: String): String =
+    providers.gradleProperty(key).orNull
+        ?: System.getenv(key)
+        ?: buildSecrets.getProperty(key)
+        ?: error("Missing build secret '$key'. Provide it via secrets/build.properties, -P$key, or env $key.")
+
+// Site API tokens a build may legitimately lack: an empty value leaves that source signed
+// out instead of failing the build, unlike the required cloud endpoints above.
+fun optionalSecret(key: String): String =
+    providers.gradleProperty(key).orNull
+        ?: System.getenv(key)
+        ?: buildSecrets.getProperty(key)
+        ?: ""
+
+fun ktLiteral(v: String): String = "\"" + v.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\""
+
+// google-services.json is kept out of the repo (in secrets/). Copy it into the
+// module directory where the google-services plugin expects it.
+val copyFirebaseConfig =
+    tasks.register<Copy>("copyFirebaseConfig") {
+        from(rootDir.resolve("../secrets/google-services.json"))
+        into(layout.projectDirectory)
+    }
+tasks.matching { it.name.endsWith("GoogleServices") }.configureEach {
+    dependsOn(copyFirebaseConfig)
+}
+tasks.matching { it.name.startsWith("generate") && it.name.endsWith("Resources") }.configureEach {
+    dependsOn(copyFirebaseConfig)
+}
+tasks.matching { it.name.startsWith("merge") }.configureEach {
+    dependsOn(copyFirebaseConfig)
+}
+tasks.named("preBuild").configure { dependsOn(copyFirebaseConfig) }
+
+android {
+    namespace = "world.yemyat.slicepilot"
+    compileSdk = 36
+    ndkVersion = "27.0.12077973"
+
+    signingConfigs {
+        if (debugKeystoreProps.isNotEmpty()) {
+            getByName("debug") {
+                storeFile = file(debugKeystoreProps.getProperty("storeFile"))
+                storePassword = debugKeystoreProps.getProperty("storePassword")
+                keyAlias = debugKeystoreProps.getProperty("keyAlias")
+                keyPassword = debugKeystoreProps.getProperty("keyPassword")
+            }
+        }
+        create("release") {
+            if (uploadKeystoreProps.isNotEmpty()) {
+                storeFile = file(uploadKeystoreProps.getProperty("storeFile"))
+                storePassword = uploadKeystoreProps.getProperty("storePassword")
+                keyAlias = uploadKeystoreProps.getProperty("keyAlias")
+                keyPassword = uploadKeystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
+    defaultConfig {
+        applicationId = "world.yemyat.slicepilot"
+        minSdk = 28
+        targetSdk = 36
+        versionCode = 58
+        versionName = "1.11.5-android"
+
+        buildConfigField("String", "CLOUD_GATEWAY_GLOBAL", ktLiteral(secret("CLOUD_GATEWAY_GLOBAL")))
+        buildConfigField("String", "CLOUD_GATEWAY_CHINA", ktLiteral(secret("CLOUD_GATEWAY_CHINA")))
+        buildConfigField("String", "CLOUD_LOGIN_URL_GLOBAL", ktLiteral(secret("CLOUD_LOGIN_URL_GLOBAL")))
+        buildConfigField("String", "CLOUD_LOGIN_URL_CHINA", ktLiteral(secret("CLOUD_LOGIN_URL_CHINA")))
+        buildConfigField("String", "CLOUD_COOKIE_DOMAINS", ktLiteral(secret("CLOUD_COOKIE_DOMAINS")))
+        buildConfigField("String", "CLOUD_OAUTH_CLIENT_ID", ktLiteral(secret("CLOUD_OAUTH_CLIENT_ID")))
+        buildConfigField("String", "AGORA_APP_ID", ktLiteral(secret("AGORA_APP_ID")))
+        buildConfigField(
+            "String",
+            "THINGIVERSE_TOKEN",
+            ktLiteral(optionalSecret("THINGIVERSE_TOKEN")),
+        )
+
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+        externalNativeBuild {
+            cmake {
+                arguments(
+                    "-DANDROID_STL=c++_static",
+                    "-DANDROID_PLATFORM=android-28",
+                    "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
+                    "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+                    "-DELEGOO_GLOBAL_IOT_URL=${secret("CLOUD_GATEWAY_GLOBAL")}",
+                    "-DELEGOO_CHINA_IOT_URL=${secret("CLOUD_GATEWAY_CHINA")}",
+                    "-DELEGOO_GLOBAL_LOGIN_URL=${secret("CLOUD_LOGIN_URL_GLOBAL")}",
+                    "-DELEGOO_CHINA_LOGIN_URL=${secret("CLOUD_LOGIN_URL_CHINA")}",
+                )
+                cppFlags("-std=c++17", "-DNDEBUG")
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("../core/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            configure<CrashlyticsExtension> {
+                nativeSymbolUploadEnabled = true
+            }
+            signingConfig =
+                if (uploadKeystoreProps.isNotEmpty()) {
+                    signingConfigs.getByName("release")
+                } else {
+                    signingConfigs.getByName("debug")
+                }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.14"
+    }
+    packaging {
+        // full-sdk (RTC) and rtm-sdk both ship the Agora Shared Library; RTC's is newer.
+        jniLibs.pickFirsts += "**/libaosl.so"
+        // Printer camera viewing needs the core RTC stack only — drop the unused
+        // Agora AI/codec extension libraries (smaller bundle, smaller attack
+        // surface; they load on demand only when a feature is enabled).
+        jniLibs.excludes +=
+            setOf(
+                "lib/**/libagora_ai_echo_cancellation_extension.so",
+                "lib/**/libagora_ai_echo_cancellation_ll_extension.so",
+                "lib/**/libagora_ai_noise_suppression_extension.so",
+                "lib/**/libagora_ai_noise_suppression_ll_extension.so",
+                "lib/**/libagora_audio_beauty_extension.so",
+                "lib/**/libagora_clear_vision_extension.so",
+                "lib/**/libagora_content_inspect_extension.so",
+                "lib/**/libagora_face_capture_extension.so",
+                "lib/**/libagora_face_detection_extension.so",
+                "lib/**/libagora_lip_sync_extension.so",
+                "lib/**/libagora_screen_capture_extension.so",
+                "lib/**/libagora_segmentation_extension.so",
+                "lib/**/libagora_spatial_audio_extension.so",
+                "lib/**/libagora_video_av1_decoder_extension.so",
+                "lib/**/libagora_video_av1_encoder_extension.so",
+                "lib/**/libagora_video_quality_analyzer_extension.so",
+            )
+        resources {
+            excludes +=
+                setOf(
+                    "META-INF/INDEX.LIST",
+                    "META-INF/*.kotlin_module",
+                    "META-INF/DEPENDENCIES",
+                    "META-INF/LICENSE*",
+                    "META-INF/NOTICE*",
+                    "META-INF/io.netty.versions.properties",
+                )
+        }
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
+}
+
+dependencies {
+    implementation(project(":cloud-auth"))
+    implementation(platform("androidx.compose:compose-bom:2024.06.00"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.activity:activity-compose:1.9.0")
+    implementation("androidx.fragment:fragment-ktx:1.6.2")
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.2")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.2")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("androidx.browser:browser:1.8.0")
+    // Printer pairing: the Elegoo printer shows a QR (its pairing code) on the panel, and
+    // Matrix scans it — CameraX drives the preview, ML Kit decodes the frame.
+    //
+    // 1.4.2, not 1.3.4, for the Android 16 KB page-size requirement: 1.3.4 shipped
+    // jni/arm64-v8a/libimage_processing_util_jni.so with ELF p_align 0x1000 (4 KB), which was the
+    // only non-compliant library left in the APK once our own NDK r27 build and Agora 4.5.3 were
+    // both 0x4000. Play flags the whole app for one such lib; 1.4.x is the first CameraX line
+    // built with max-page-size=16384 (verified with readelf on the published AAR).
+    implementation("androidx.camera:camera-core:1.4.2")
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
+    implementation("androidx.camera:camera-view:1.4.2")
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    implementation("com.hivemq:hivemq-mqtt-client:1.3.3")
+    implementation("io.netty:netty-codec-http:4.1.99.Final")
+    implementation("io.agora.rtm:rtm-sdk:2.2.8")
+    implementation("io.agora.rtc:full-sdk:4.5.3")
+    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
+    implementation("com.google.firebase:firebase-analytics-ktx")
+    implementation("com.google.firebase:firebase-crashlytics")
+    implementation("com.google.firebase:firebase-crashlytics-ndk")
+    implementation("com.google.android.play:app-update:2.1.0")
+    implementation("com.google.android.play:app-update-ktx:2.1.0")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+    testImplementation("net.sf.kxml:kxml2:2.3.0")
+}
